@@ -7,14 +7,14 @@ Quamm XOS 的测试资源分配中心：把公司所有 ADB 设备（网络 ADB�
 
 ## 当前状态
 
-**设计已定稿，进入实施阶段。** 代码尚未开始（首轮实现由 CodeBuddy 按 `docs/` 落地）。
+**设计已定稿，第一阶段已实现**（可运行骨架 + 模拟设备端到端）。实现评审见 `docs/IMPLEMENTATION_REVIEW.md`。
 
 | 阶段 | 状态 |
 |---|---|
 | 需求与架构设计 | ✅ 11 份文档 + 9 张框图 |
-| 工程脚手架 / 领域模型 / MCP 工具 / Web 骨架 | ⏳ 待实现 |
-| 模拟设备 + 预置 20 token 端到端测试 | ⏳ 待实现 |
-| 本地部署（WSL Ubuntu，可迁移到其他局域网 Ubuntu） | ⏳ 待实现 |
+| 工程脚手架 / 领域模型 / MCP 17 工具 / Web 骨架 | ✅ 已实现 |
+| 模拟设备 + 预置 20 token 端到端测试 | ✅ 已实现（`pytest tests/ -q`） |
+| 本地部署（WSL Ubuntu，可迁移到其他局域网 Ubuntu） | ✅ 已实现 |
 
 ## 目录
 
@@ -70,12 +70,84 @@ tests/           # 端到端测试（含模拟设备）
 | 凭据 | `rr_` 前缀 · 一人一条 · 90 天 · 续期不换 token |
 | MCP | `quamm-res`，团队共享单实例，streamable HTTP |
 
-## 本地运行（规划）
+## 如何运行
+
+### 0. 环境
+
+- Python 3.11+（WSL Ubuntu 下用 3.11/3.12 均可）
+- Node.js 18+（仅构建前端时需要）
+
+### 1. 安装依赖
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d   # app / worker / postgres
-# Web 控制台 http://localhost:8080
-# MCP 端点      http://localhost:8765/mcp
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-迁移到其他局域网 Ubuntu：只改 `deploy/.env` 里的库地址、设备网段、SMTP 与域名，三个容器整体搬迁。
+### 2. 预置数据（机型字典 + 20 个 token）
+
+```bash
+python -m app.seed
+# 输出 5 类机型 + 20 个 token（每人 1 条，90 天），并打印可复制的 MCP 配置
+```
+
+### 3. 构建前端看板（可选；不构建则退化为内联看板）
+
+```bash
+cd web && npm install && npm run build && cd ..
+```
+
+### 4. 启动服务（Web + MCP 同进程）
+
+```bash
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8080
+# Web 控制台  http://localhost:8080/
+# MCP 端点    http://localhost:8080/mcp/   （streamable HTTP）
+```
+
+> 进程模型：一个 app 挂两个路由组（Web API + MCP）。生产/容器部署时，
+> `docker-compose` 把宿主 `:8765` 映射到容器内 `:8080`，因此对外 MCP 端点写作
+> `http://<host>:8765/mcp/`，与 Web 的 `:8080` 分开。
+
+### 5. 巡检 worker（独立进程）
+
+```bash
+python -m app.workers.main   # 租约到期扫描(10s) + 巡检(默认 30min)
+```
+
+### 6. 跑测试
+
+```bash
+pytest tests/ -q
+```
+
+### 7. 用任意 token 走通 MCP（客户端配置示例）
+
+```json
+{
+  "mcpServers": {
+    "quamm-res": {
+      "url": "http://localhost:8765/mcp/",
+      "headers": {
+        "Authorization": "Bearer rr_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+    }
+  }
+}
+```
+
+流程：`res_list_products`（查机型）→ `res_list_devices`（查设备）→
+`res_apply`（申请，拿到 `adb_address`）→ `res_renew`（续约）→ `res_release`（释放）。
+
+### 8. Docker 部署（app / worker / postgres 三容器）
+
+```bash
+cp deploy/.env.example deploy/.env   # 按环境改库地址、设备网段、SMTP、域名
+docker compose -f deploy/docker-compose.yml up -d --build
+# Web 控制台 http://localhost:8080
+# MCP 端点    http://localhost:8765/mcp/
+```
+
+迁移到其他局域网 Ubuntu：只改 `deploy/.env` 里的库地址、设备网段、SMTP 与域名，
+三个容器整体搬迁。首次启动后执行一次 `python -m app.seed`（或 `docker compose exec app python -m app.seed`）生成 token。
