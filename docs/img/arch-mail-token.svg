@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="760" viewBox="0 0 1280 760" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,1 L8,4.5 L0,8 z" fill="#8fa3bb"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="760" fill="#f6f7f9"/>
+
+  <text x="40" y="50" font-size="26" font-weight="700" fill="#16283d">A 域 · 按邮箱分发凭据（主路径）</text>
+  <text x="40" y="77" font-size="13" fill="#6b7a8d">邮件里直接就是 token 和可用的 URL · 复制进配置即用 · 首次调用自动激活 · 无需审批、无需登录</text>
+  <line x1="40" y1="94" x2="1240" y2="94" stroke="#e2e8ef" stroke-width="1.2"/>
+
+  <rect x="40" y="118" width="222" height="176" rx="10" fill="#fff" stroke="#c9d8ec"/>
+  <circle cx="64" cy="142" r="12" fill="#20447a"/>
+  <text x="64" y="146" font-size="11.5" fill="#fff" text-anchor="middle">1</text>
+  <text x="84" y="147" font-size="12.5" font-weight="700" fill="#16283d">维护参与名单</text>
+  <text x="56" y="174" font-size="10.5" fill="#54657a">邮箱 · 姓名 · 资源组</text>
+  <text x="56" y="194" font-size="10.5" fill="#54657a">每人配额 · 有效期</text>
+  <text x="56" y="222" font-size="10.2" fill="#8a5a12">名单即授权：进名单就能用</text>
+  <text x="56" y="240" font-size="10.2" fill="#8a5a12">离职必须摘，否则一直有效</text>
+
+  <line x1="262" y1="206" x2="282" y2="206" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="288" y="118" width="222" height="176" rx="10" fill="#fff" stroke="#c9d8ec"/>
+  <circle cx="312" cy="142" r="12" fill="#20447a"/>
+  <text x="312" y="146" font-size="11.5" fill="#fff" text-anchor="middle">2</text>
+  <text x="332" y="147" font-size="12.5" font-weight="700" fill="#16283d">每人发一条</text>
+  <text x="304" y="174" font-size="10.5" fill="#54657a">默认一人 1 条 token</text>
+  <text x="304" y="194" font-size="10.5" fill="#54657a">配一条可直接用的 URL</text>
+  <text x="304" y="222" font-size="10.2" fill="#54657a">形如 res.corp.com/mcp?t=rr_</text>
+  <text x="304" y="240" font-size="10.2" fill="#8b9aab">要第二个再单独补发，一人一封</text>
+
+  <line x1="510" y1="206" x2="530" y2="206" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="536" y="118" width="222" height="176" rx="10" fill="#fff" stroke="#c9d8ec"/>
+  <circle cx="560" cy="142" r="12" fill="#20447a"/>
+  <text x="560" y="146" font-size="11.5" fill="#fff" text-anchor="middle">3</text>
+  <text x="580" y="147" font-size="12.5" font-weight="700" fill="#16283d">邮件即凭据</text>
+  <text x="552" y="174" font-size="10.5" fill="#54657a">正文：1 条 token + 1 条 URL</text>
+  <text x="552" y="194" font-size="10.5" fill="#54657a">+ 三行「照着填」的配置说明</text>
+  <text x="552" y="222" font-size="10.2" fill="#54657a">+ 使用约定：先 apply 再连</text>
+  <text x="552" y="240" font-size="10.2" fill="#8b9aab">收件人不需登录任何界面</text>
+
+  <line x1="758" y1="206" x2="778" y2="206" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="784" y="118" width="222" height="176" rx="10" fill="#fff" stroke="#c9d8ec"/>
+  <circle cx="808" cy="142" r="12" fill="#20447a"/>
+  <text x="808" y="146" font-size="11.5" fill="#fff" text-anchor="middle">4</text>
+  <text x="828" y="147" font-size="12.5" font-weight="700" fill="#16283d">复制进配置</text>
+  <text x="800" y="174" font-size="10.5" fill="#54657a">把 URL 粘到 MCP 配置里</text>
+  <text x="800" y="194" font-size="10.5" fill="#54657a">一个 Agent 用这一条</text>
+  <text x="800" y="222" font-size="10.2" fill="#54657a">或用 header 带 Bearer token</text>
+  <text x="800" y="240" font-size="10.2" fill="#8b9aab">全程不需要登录、不需要领取</text>
+
+  <line x1="1006" y1="206" x2="1026" y2="206" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="1032" y="118" width="196" height="176" rx="10" fill="#fff8ea" stroke="#e6cd9a"/>
+  <circle cx="1056" cy="142" r="12" fill="#8a5a12"/>
+  <text x="1056" y="146" font-size="11.5" fill="#fff" text-anchor="middle">5</text>
+  <text x="1076" y="147" font-size="12.5" font-weight="700" fill="#5c4514">首次调用即生效</text>
+  <text x="1048" y="174" font-size="10.5" fill="#6b5522">自动记一次首见信息</text>
+  <text x="1048" y="194" font-size="10.5" fill="#6b5522">Agent 名 / 来源 / 时间</text>
+  <text x="1048" y="222" font-size="10.2" fill="#5c4514" font-weight="700">无需审批</text>
+  <text x="1048" y="240" font-size="10.2" fill="#8b9aab">之后只校验 token</text>
+
+  <!-- 说明卡 -->
+  <rect x="40" y="320" width="392" height="112" rx="10" fill="#fff" stroke="#dde3ea"/>
+  <text x="58" y="346" font-size="13" font-weight="700" fill="#16283d">代价一：谁来保证名单是对的</text>
+  <text x="58" y="368" font-size="10.8" fill="#54657a">进名单就等于有权限，没有第二道审批</text>
+  <text x="58" y="387" font-size="10.8" fill="#54657a">所以要有一套动作：离职当天摘、季度核对</text>
+  <text x="58" y="406" font-size="10.8" fill="#8b9aab">系统提供「长期未调用」清单和变更流水</text>
+
+  <rect x="452" y="320" width="392" height="112" rx="10" fill="#fff" stroke="#dde3ea"/>
+  <text x="470" y="346" font-size="13" font-weight="700" fill="#16283d">代价二：已消解 —— 只认 token</text>
+  <text x="470" y="368" font-size="10.8" fill="#54657a">token 绑人，谁占着设备始终确定</text>
+  <text x="470" y="387" font-size="10.8" fill="#54657a">Agent 名只记首见一次，不参与鉴权</text>
+  <text x="470" y="406" font-size="10.8" fill="#8b9aab">默认一人一条；要第二个 Agent 时单独补发</text>
+
+  <rect x="864" y="320" width="364" height="112" rx="10" fill="#fff" stroke="#dde3ea"/>
+  <text x="882" y="346" font-size="13" font-weight="700" fill="#16283d">代价三：token 明文在邮箱（已接受）</text>
+  <text x="882" y="368" font-size="10.8" fill="#54657a">邮件会归档、可搜索、可转发</text>
+  <text x="882" y="387" font-size="10.8" fill="#54657a">补偿：90 天到期 · 随时吊销 · 离职摘除</text>
+  <text x="882" y="406" font-size="10.8" fill="#8b9aab">换来：少一次领取动作，配置一步到位</text>
+
+  <!-- 发放台账 -->
+  <rect x="40" y="452" width="1188" height="118" rx="10" fill="#eff4fb" stroke="#bfd2e8"/>
+  <text x="60" y="478" font-size="13.5" font-weight="700" fill="#20447a">发放台账（管理员每天看这一页）</text>
+
+  <rect x="60" y="492" width="266" height="60" rx="7" fill="#fff" stroke="#dbe6f2"/>
+  <text x="76" y="513" font-size="11.5" font-weight="700" fill="#16283d">已发出 / 从未调用</text>
+  <text x="76" y="533" font-size="10.5" fill="#54657a">邮件没看，或配置没填对</text>
+
+  <rect x="342" y="492" width="266" height="60" rx="7" fill="#fff" stroke="#dbe6f2"/>
+  <text x="358" y="513" font-size="11.5" font-weight="700" fill="#16283d">发送失败 / 退信</text>
+  <text x="358" y="533" font-size="10.5" fill="#54657a">邮箱写错，改完一键重发</text>
+
+  <rect x="624" y="492" width="266" height="60" rx="7" fill="#fff" stroke="#dbe6f2"/>
+  <text x="640" y="513" font-size="11.5" font-weight="700" fill="#16283d">近 7 天未调用</text>
+  <text x="640" y="533" font-size="10.5" fill="#54657a">可以回收，也可以留观</text>
+
+  <rect x="906" y="492" width="302" height="60" rx="7" fill="#fff" stroke="#dbe6f2"/>
+  <text x="922" y="513" font-size="11.5" font-weight="700" fill="#16283d">即将到期（7 天内）</text>
+  <text x="922" y="533" font-size="10.5" fill="#54657a">批量续期，token 不换</text>
+
+  <text x="40" y="600" font-size="11" fill="#a3b0c0">审批成本从「每个 Agent 一次」降到「名单维护一次」；领取环节整个消失，因为邮件本身就是凭据</text>
+
+  <rect x="40" y="622" width="1188" height="90" rx="10" fill="#fff" stroke="#dde3ea"/>
+  <text x="60" y="648" font-size="12.5" font-weight="700" fill="#16283d">三条路径的分工</text>
+  <text x="60" y="671" font-size="10.8" fill="#54657a">主路径：按邮箱批量发放 —— 覆盖 90% 的人，一封邮件、填完即用</text>
+  <text x="60" y="690" font-size="10.8" fill="#54657a">补充：管理员单手补发 —— 要第二个 Agent、token 泄露、过期太久，都走这条（一封邮件一条）</text>
+
+  <text x="40" y="740" font-size="10.5" fill="#a3b0c0">图例：蓝 = 主流程　橙 = 关键差异（免审批、免登录、免领取）</text>
+</svg>

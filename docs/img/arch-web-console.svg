@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <rect x="0" y="0" width="1280" height="720" fill="#f6f7f9"/>
+
+  <text x="40" y="48" font-size="25" font-weight="700" fill="#16283d">Web 控制台信息架构（管理员唯一入口）</text>
+  <text x="40" y="74" font-size="12.5" fill="#6b7a8d">八个一级菜单，每个只回答一个问题；日常看的是前五个，配置类只碰后两个</text>
+  <line x1="40" y1="90" x2="1240" y2="90" stroke="#e2e8ef" stroke-width="1.2"/>
+
+  <!-- 1 看板 -->
+  <rect x="40" y="106" width="340" height="62" rx="8" fill="#e8eff9" stroke="#bfd2e8"/>
+  <text x="60" y="132" font-size="13" font-weight="700" fill="#20447a">1　看板</text>
+  <text x="60" y="152" font-size="9.8" fill="#54657a">今天到底还有几台能用</text>
+  <rect x="404" y="106" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="130" font-size="10.5" fill="#16283d">按机型分组的余量表：总数 / 可用 / 占用 / 待验证 / 故障，红黄绿一眼扫完</text>
+  <text x="420" y="150" font-size="10.5" fill="#8a5a12">余量要给两个数：「现在能申请几台」与「排完队还能剩几台」—— 只看一个会误判</text>
+
+  <!-- 2 设备 -->
+  <rect x="40" y="174" width="340" height="62" rx="8" fill="#e8eff9" stroke="#bfd2e8"/>
+  <text x="60" y="200" font-size="13" font-weight="700" fill="#20447a">2　设备</text>
+  <text x="60" y="220" font-size="9.8" fill="#54657a">每一台在哪里、归谁、什么状态</text>
+  <rect x="404" y="174" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="198" font-size="10.5" fill="#16283d">列表：位置编号 · 机型 · owner · 状态 · 当前占用者 · 最后探测时间</text>
+  <text x="420" y="218" font-size="10.5" fill="#54657a">单台详情页：探测历史 / 身份变更 / 租约历史 / 通知历史 —— 出问题就看这一页</text>
+
+  <!-- 3 占用 -->
+  <rect x="40" y="242" width="340" height="62" rx="8" fill="#e8eff9" stroke="#bfd2e8"/>
+  <text x="60" y="268" font-size="13" font-weight="700" fill="#20447a">3　占用</text>
+  <text x="60" y="288" font-size="9.8" fill="#54657a">谁正在用，还要用多久</text>
+  <rect x="404" y="242" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="266" font-size="10.5" fill="#16283d">按人 / 按机型两种视角：占用者 · 起止时间 · 剩余时长 · 最近一次调用</text>
+  <text x="420" y="286" font-size="10.5" fill="#8a5a12">到期前 10 分钟标黄、超期宽限标红：管理员一眼看出「谁占着不用」</text>
+
+  <!-- 4 排队 -->
+  <rect x="40" y="310" width="340" height="62" rx="8" fill="#e8eff9" stroke="#bfd2e8"/>
+  <text x="60" y="336" font-size="13" font-weight="700" fill="#20447a">4　排队</text>
+  <text x="60" y="356" font-size="9.8" fill="#54657a">谁在等，等了多久</text>
+  <rect x="404" y="310" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="334" font-size="10.5" fill="#16283d">每个机型一条队列：队首是谁、排了几人、最长等待时长、今日已唤醒几次</text>
+  <text x="420" y="354" font-size="10.5" fill="#8a5a12">排队长度就是扩容依据 —— 没有这一页，加不加设备只能拍脑袋</text>
+
+  <!-- 5 异常 -->
+  <rect x="40" y="378" width="340" height="62" rx="8" fill="#fff8ea" stroke="#e6cd9a"/>
+  <text x="60" y="404" font-size="13" font-weight="700" fill="#5c4514">5　异常 / 待修复</text>
+  <text x="60" y="424" font-size="9.8" fill="#6b5522">坏了的那几台，该谁去修</text>
+  <rect x="404" y="378" width="876" height="62" rx="8" fill="#fff" stroke="#e6cd9a"/>
+  <text x="420" y="402" font-size="10.5" fill="#16283d">按 owner 分组：每人只看自己名下坏掉的设备，附 L0–L3 结论与恢复手册直达</text>
+  <text x="420" y="422" font-size="10.5" fill="#54657a">另有三个小队列：身份待确认 · 冲突待裁定 · 30 天没通的待清理</text>
+
+  <!-- 6 凭据 -->
+  <rect x="40" y="446" width="340" height="62" rx="8" fill="#e8eff9" stroke="#bfd2e8"/>
+  <text x="60" y="472" font-size="13" font-weight="700" fill="#20447a">6　凭据</text>
+  <text x="60" y="492" font-size="9.8" fill="#54657a">发出去的 token 还活着吗</text>
+  <rect x="404" y="446" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="470" font-size="10.5" fill="#16283d">一人一行：邮箱 · token 尾号 · 有效期 · 是否调用过 · 最后调用时间</text>
+  <text x="420" y="490" font-size="10.5" fill="#54657a">动作：续期（不换 token）· 吊销 · 补发 · 一键摘人（连带其租约）</text>
+
+  <!-- 7 审计 -->
+  <rect x="40" y="514" width="340" height="62" rx="8" fill="#e8eff9" stroke="#bfd2e8"/>
+  <text x="60" y="540" font-size="13" font-weight="700" fill="#20447a">7　审计</text>
+  <text x="60" y="560" font-size="9.8" fill="#54657a">这件事是谁干的</text>
+  <rect x="404" y="514" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="538" font-size="10.5" fill="#16283d">全量流水，按人 / 设备 / 时间 / 动作四种方式检索，可导 CSV</text>
+  <text x="420" y="558" font-size="10.5" fill="#54657a">强制回收、改位置、改 owner、摘除 —— 这几类必须能追到人</text>
+
+  <!-- 8 设置 -->
+  <rect x="40" y="582" width="340" height="62" rx="8" fill="#f2f4f7" stroke="#c9d2dd"/>
+  <text x="60" y="608" font-size="13" font-weight="700" fill="#4a5563">8　设置</text>
+  <text x="60" y="628" font-size="9.8" fill="#54657a">系统自己还健康吗</text>
+  <rect x="404" y="582" width="876" height="62" rx="8" fill="#fff" stroke="#dde3ea"/>
+  <text x="420" y="606" font-size="10.5" fill="#16283d">巡检周期 · 通知渠道 · 邮件 SMTP · 去重窗口 · 管理员账号</text>
+  <text x="420" y="626" font-size="10.5" fill="#54657a">系统健康：MCP 服务在不在 · 上一轮巡检什么时候跑完 · 邮件发送成功率</text>
+
+  <text x="40" y="676" font-size="10.5" fill="#8a5a12">凭据不要塞进「设置」：它是天天要动的运营页，不是配一次就不管的配置项，必须是一级菜单</text>
+  <text x="40" y="696" font-size="10.5" fill="#a3b0c0">前五页是给「今天要干活」的，后两页是给「出事要查」的；机型字典和位置规则挂在「设备」下的子页，不单列</text>
+</svg>

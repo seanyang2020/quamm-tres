@@ -1,0 +1,169 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1100" viewBox="0 0 1280 1100" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,1 L8,4.5 L0,8 z" fill="#8fa3bb"/>
+    </marker>
+    <marker id="as" markerWidth="9" markerHeight="9" refX="2" refY="4.5" orient="auto">
+      <path d="M8,1 L0,4.5 L8,8 z" fill="#8fa3bb"/>
+    </marker>
+    <marker id="ad" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,1 L8,4.5 L0,8 z" fill="#c6a068"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="1100" fill="#f6f7f9"/>
+
+  <text x="40" y="50" font-size="26" font-weight="700" fill="#16283d">测试资源分配管理系统 · 软件架构</text>
+  <text x="40" y="77" font-size="13" fill="#6b7a8d">一个后端 · 两套入口（Web / MCP）· 四个部署进程 · 共用一套 Domain 与一个 PostgreSQL</text>
+  <line x1="40" y1="94" x2="1240" y2="94" stroke="#e2e8ef" stroke-width="1.2"/>
+
+  <!-- ===== 客户端层 ===== -->
+  <rect x="24" y="118" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="141" font-size="12.5" fill="#fff" text-anchor="middle">客户端</text>
+
+  <rect x="132" y="118" width="540" height="86" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="152" y="148" font-size="16" font-weight="700" fill="#16283d">Web 前端（Vue 3 SPA）</text>
+  <text x="152" y="172" font-size="12" fill="#54657a">占用墙 · 队列 · 我的占用 · 资源管理 · 审计</text>
+  <text x="152" y="192" font-size="12" fill="#54657a">Element Plus · WebSocket 实时刷新</text>
+
+  <rect x="700" y="118" width="540" height="86" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="720" y="148" font-size="16" font-weight="700" fill="#16283d">MCP 客户端（AI 助手）</text>
+  <text x="720" y="172" font-size="12" fill="#54657a">Cursor · CodeBuddy · Claude，只配 URL + 个人 token</text>
+  <text x="720" y="192" font-size="12" fill="#54657a">零本地组件 · 工具按 token 权限动态可见</text>
+
+  <line x1="402" y1="204" x2="402" y2="236" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="970" y1="204" x2="970" y2="236" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- ===== 接入层 ===== -->
+  <rect x="24" y="238" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="261" font-size="12.5" fill="#fff" text-anchor="middle">接入层</text>
+
+  <rect x="132" y="238" width="1108" height="40" rx="8" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="152" y="263" font-size="13" font-weight="700" fill="#16283d">Nginx</text>
+  <text x="212" y="263" font-size="12" fill="#54657a">HTTPS / 反向代理　·　/  →  Web API :8080　·　/mcp/*  →  MCP Server :8765</text>
+
+  <line x1="402" y1="278" x2="402" y2="292" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="970" y1="278" x2="970" y2="292" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <rect x="132" y="294" width="540" height="78" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="152" y="322" font-size="15" font-weight="700" fill="#16283d">Web API 入口　:8080（同进程）</text>
+  <text x="152" y="345" font-size="12" fill="#54657a">FastAPI · REST + WebSocket 推送</text>
+  <text x="152" y="364" font-size="12" fill="#54657a">鉴权 · 参数校验 · 会话与看板推送</text>
+
+  <rect x="700" y="294" width="540" height="78" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="720" y="322" font-size="15" font-weight="700" fill="#16283d">MCP Server 入口　:8765（同进程）</text>
+  <text x="720" y="345" font-size="12" fill="#54657a">FastMCP · streamable HTTP · 9 个 res_* 工具</text>
+  <text x="720" y="364" font-size="12" fill="#54657a">工具按 token 注册（管理类对普通用户不可见）</text>
+
+  <line x1="402" y1="372" x2="402" y2="404" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <line x1="970" y1="372" x2="970" y2="404" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+
+  <!-- ===== 应用层 ===== -->
+  <rect x="24" y="406" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="429" font-size="12.5" fill="#fff" text-anchor="middle">应用层</text>
+
+  <rect x="132" y="406" width="1108" height="42" rx="8" fill="#e8effa" stroke="#bccfea"/>
+  <text x="152" y="432" font-size="13" font-weight="700" fill="#20447a">Domain Service（同一套业务逻辑，两个进程共用）：认证与配额 · 唯一事实来源 · 授予以原子事务 · 事件发布</text>
+
+  <!-- 模块第一行 -->
+  <rect x="132" y="462" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="150" y="489" font-size="14" font-weight="700" fill="#16283d">1. 资源目录与注册</text>
+  <text x="150" y="512" font-size="11.5" fill="#54657a">设备/串口/位置编号维护</text>
+  <text x="150" y="531" font-size="11.5" fill="#54657a">认领 · 下线 · 分组</text>
+  <text x="150" y="550" font-size="11.5" fill="#8b9aab">CRUD + 状态机</text>
+
+  <rect x="412" y="462" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="430" y="489" font-size="14" font-weight="700" fill="#16283d">2. 身份识别与匹配</text>
+  <text x="430" y="512" font-size="11.5" fill="#54657a">采集 MAC/SN/硬件ID/资产文件</text>
+  <text x="430" y="531" font-size="11.5" fill="#54657a">打分 · 漂移 · 冲突 · 待认领</text>
+  <text x="430" y="550" font-size="11.5" fill="#8b9aab">identity_claim / identity_event</text>
+
+  <rect x="692" y="462" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="710" y="489" font-size="14" font-weight="700" fill="#16283d">3. 租约引擎</text>
+  <text x="710" y="512" font-size="11.5" fill="#54657a">TTL · 续约 · 宽限期 · 强制回收</text>
+  <text x="710" y="531" font-size="11.5" fill="#54657a">幂等 · 行锁 · 原子授予</text>
+  <text x="710" y="550" font-size="11.5" fill="#8b9aab">lease 表 + 事务边界</text>
+
+  <rect x="972" y="462" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="990" y="489" font-size="14" font-weight="700" fill="#16283d">4. 队列服务</text>
+  <text x="990" y="512" font-size="11.5" fill="#54657a">按组/按设备排队 · 优先级 + FIFO</text>
+  <text x="990" y="531" font-size="11.5" fill="#54657a">offer 窗口 · 顺延 · 票据</text>
+  <text x="990" y="550" font-size="11.5" fill="#8b9aab">queue_entry · 原子序号</text>
+
+  <!-- 模块第二行 -->
+  <rect x="132" y="574" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="150" y="601" font-size="14" font-weight="700" fill="#16283d">5. 巡检与健康</text>
+  <text x="150" y="624" font-size="11.5" fill="#54657a">L0–L3 四级探测 · 连续 2 轮判离线</text>
+  <text x="150" y="643" font-size="11.5" fill="#54657a">data 区被擦检测 · 自动恢复</text>
+  <text x="150" y="662" font-size="11.5" fill="#8b9aab">探测策略 + 状态回写</text>
+
+  <rect x="412" y="574" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="430" y="601" font-size="14" font-weight="700" fill="#16283d">6. 通知网关</text>
+  <text x="430" y="624" font-size="11.5" fill="#54657a">企微 / 飞书 Webhook</text>
+  <text x="430" y="643" font-size="11.5" fill="#54657a">模板 · 去重 · 责任人路由</text>
+  <text x="430" y="662" font-size="11.5" fill="#8b9aab">事件订阅 → 消息</text>
+
+  <rect x="692" y="574" width="268" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="710" y="601" font-size="14" font-weight="700" fill="#16283d">7. 审计与报表</text>
+  <text x="710" y="624" font-size="11.5" fill="#54657a">状态迁移只追加 · 强制回收原因</text>
+  <text x="710" y="643" font-size="11.5" fill="#54657a">利用率聚合 · CSV 导出</text>
+  <text x="710" y="662" font-size="11.5" fill="#8b9aab">audit_event</text>
+
+  <rect x="972" y="574" width="268" height="100" rx="10" fill="#fff5e6" stroke="#e6cd9a"/>
+  <text x="990" y="601" font-size="14" font-weight="700" fill="#5c4514">8. Worker 进程（独立）</text>
+  <text x="990" y="624" font-size="11.5" fill="#6b5522">巡检 30min · 租约扫描 10s</text>
+  <text x="990" y="643" font-size="11.5" fill="#6b5522">网段发现 30min · 到期提醒</text>
+  <text x="990" y="662" font-size="11.5" fill="#8b9aab">APScheduler · 单实例锁</text>
+
+  <line x1="420" y1="674" x2="420" y2="714" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <line x1="1120" y1="674" x2="1120" y2="714" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+
+  <!-- ===== 数据层 ===== -->
+  <rect x="24" y="716" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="739" font-size="12.5" fill="#fff" text-anchor="middle">数据层</text>
+
+  <rect x="132" y="716" width="660" height="86" rx="10" fill="#f1f5fb" stroke="#c9d8ec"/>
+  <text x="152" y="745" font-size="15" font-weight="700" fill="#20447a">PostgreSQL 16</text>
+  <text x="152" y="769" font-size="11.5" fill="#4a617f">device · identity_claim · identity_event · lease</text>
+  <text x="152" y="789" font-size="11.5" fill="#4a617f">queue_entry · audit_event · 唯一索引：MAC / SN / 位置编号</text>
+
+  <rect x="812" y="716" width="428" height="86" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="832" y="745" font-size="15" font-weight="700" fill="#16283d">文件与日志</text>
+  <text x="832" y="769" font-size="11.5" fill="#54657a">采集快照 · 巡检原始结果 · 应用日志</text>
+  <text x="832" y="789" font-size="11.5" fill="#54657a">按天轮转，保留 180 天</text>
+
+  <line x1="402" y1="802" x2="402" y2="832" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <line x1="1020" y1="802" x2="1020" y2="832" stroke="#c6a068" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#ad)"/>
+
+  <!-- ===== 外部依赖 ===== -->
+  <rect x="24" y="834" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="857" font-size="12.5" fill="#fff" text-anchor="middle">外部</text>
+
+  <rect x="132" y="834" width="360" height="110" rx="10" fill="#fff8ea" stroke="#e6cd9a"/>
+  <text x="150" y="862" font-size="14" font-weight="700" fill="#5c4514">设备池</text>
+  <text x="150" y="886" font-size="11.5" fill="#6b5522">15 类 / 500–750 台 · 网络 ADB tcp 5555</text>
+  <text x="150" y="906" font-size="11.5" fill="#6b5522">data 区钩子自启 adbd · 禁刷 data 区</text>
+  <text x="150" y="926" font-size="11.5" fill="#6b5522">只读探测 + 授权发参数，不代理流量</text>
+
+  <rect x="516" y="834" width="300" height="110" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="534" y="862" font-size="14" font-weight="700" fill="#16283d">SerialBridge</text>
+  <text x="534" y="886" font-size="11.5" fill="#54657a">串口访问通道 · sb_agent_* token</text>
+  <text x="534" y="906" font-size="11.5" fill="#54657a">本系统只发授权，不接管字节流</text>
+
+  <rect x="840" y="834" width="400" height="110" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="858" y="862" font-size="14" font-weight="700" fill="#16283d">企业微信 / 飞书</text>
+  <text x="858" y="886" font-size="11.5" fill="#54657a">掉线 · 疑似 data 被擦 · 超时回收</text>
+  <text x="858" y="906" font-size="11.5" fill="#54657a">排队过久提醒 · 同设备 2 小时内去重</text>
+
+  <!-- ===== 底部：部署与选型 ===== -->
+  <rect x="132" y="972" width="1108" height="60" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="152" y="996" font-size="12.5" font-weight="700" fill="#16283d">部署形态</text>
+  <text x="240" y="996" font-size="11.5" fill="#54657a">单台内网服务器 · Docker Compose 三容器：app（Web API :8080 + MCP :8765 同进程）· worker · postgres；共用一个库与一套 domain 代码</text>
+  <text x="152" y="1019" font-size="11.5" fill="#54657a">技术栈建议：Python 3.11 + FastAPI + FastMCP + SQLAlchemy + PostgreSQL 16 + APScheduler + Vue 3 + Element Plus + Nginx　（后端换 Go / Node 亦可，MCP 与 API 必须共用 domain）</text>
+
+  <line x1="132" y1="1052" x2="182" y2="1052" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <text x="192" y="1057" font-size="11.5" fill="#6b7a8d">同步调用</text>
+  <line x1="302" y1="1052" x2="352" y2="1052" stroke="#c6a068" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#ad)"/>
+  <text x="362" y="1057" font-size="11.5" fill="#6b7a8d">事件推送 / 告警</text>
+  <text x="760" y="1057" font-size="11.5" fill="#a3b0c0">橙底框 = 独立进程或外部系统</text>
+</svg>

@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1060" viewBox="0 0 1280 1060" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <marker id="a" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,1 L8,4.5 L0,8 z" fill="#8fa3bb"/>
+    </marker>
+    <marker id="as" markerWidth="9" markerHeight="9" refX="2" refY="4.5" orient="auto">
+      <path d="M8,1 L0,4.5 L8,8 z" fill="#8fa3bb"/>
+    </marker>
+    <marker id="ad" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,1 L8,4.5 L0,8 z" fill="#c6a068"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="1060" fill="#f6f7f9"/>
+
+  <text x="40" y="50" font-size="26" font-weight="700" fill="#16283d">测试资源分配管理系统 · 子系统框图</text>
+  <text x="40" y="77" font-size="13" fill="#6b7a8d">13 个子系统 · 一个后端 · Web 与 MCP 双入口 · 共用一套领域逻辑与一个 PostgreSQL</text>
+  <line x1="40" y1="94" x2="1240" y2="94" stroke="#e2e8ef" stroke-width="1.2"/>
+
+  <!-- 使用者 -->
+  <rect x="24" y="110" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="133" font-size="12.5" fill="#fff" text-anchor="middle">使用者</text>
+
+  <rect x="132" y="110" width="540" height="80" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="152" y="140" font-size="15" font-weight="700" fill="#16283d">Web 浏览器</text>
+  <text x="152" y="163" font-size="11.5" fill="#54657a">开发 / 测试 / 资源管理员</text>
+  <text x="152" y="181" font-size="11.5" fill="#8b9aab">看占用、排队、认领、强制回收</text>
+
+  <rect x="700" y="110" width="540" height="80" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="720" y="140" font-size="15" font-weight="700" fill="#16283d">MCP 客户端</text>
+  <text x="720" y="163" font-size="11.5" fill="#54657a">Cursor · CodeBuddy · Claude 等 AI 助手</text>
+  <text x="720" y="181" font-size="11.5" fill="#8b9aab">零本地组件，只配 URL + 个人 token</text>
+
+  <line x1="402" y1="190" x2="402" y2="222" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+  <line x1="970" y1="190" x2="970" y2="222" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)"/>
+
+  <!-- 入口子系统 -->
+  <rect x="24" y="225" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="248" font-size="12.5" fill="#fff" text-anchor="middle">入口</text>
+
+  <rect x="132" y="225" width="540" height="90" rx="10" fill="#ffffff" stroke="#c9d8ec"/>
+  <text x="152" y="255" font-size="15" font-weight="700" fill="#20447a">S1　Web 控制台</text>
+  <text x="152" y="278" font-size="11.5" fill="#54657a">Vue 3 页面 · REST 调用 · WebSocket 实时刷新</text>
+  <text x="152" y="298" font-size="11.5" fill="#8b9aab">占用墙 / 队列 / 我的占用 / 资源管理 / 审计</text>
+
+  <rect x="700" y="225" width="540" height="90" rx="10" fill="#ffffff" stroke="#c9d8ec"/>
+  <text x="720" y="255" font-size="15" font-weight="700" fill="#20447a">S2　MCP 网关</text>
+  <text x="720" y="278" font-size="11.5" fill="#54657a">9 个 res_* 工具 · 鉴权 · 幂等 · 短阻塞 + 票据轮询</text>
+  <text x="720" y="298" font-size="11.5" fill="#8b9aab">清单 / 申请 / 续约 / 释放 / 排队位次 / 管理</text>
+
+  <line x1="402" y1="315" x2="402" y2="347" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <line x1="970" y1="315" x2="970" y2="347" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+
+  <!-- 业务子系统 -->
+  <rect x="24" y="350" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="373" font-size="12.5" fill="#fff" text-anchor="middle">业务</text>
+
+  <rect x="132" y="350" width="360" height="104" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="150" y="378" font-size="14" font-weight="700" fill="#16283d">S3　资源台账</text>
+  <text x="150" y="401" font-size="11.5" fill="#54657a">设备 · 串口 · 位置编号 · 产品线/平台</text>
+  <text x="150" y="421" font-size="11.5" fill="#54657a">注册 · 认领 · 下线 · 分组 · 状态机</text>
+  <text x="150" y="441" font-size="11.5" fill="#8b9aab">device / port</text>
+
+  <rect x="506" y="350" width="360" height="104" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="524" y="378" font-size="14" font-weight="700" fill="#16283d">S4　身份识别</text>
+  <text x="524" y="401" font-size="11.5" fill="#54657a">发现 · 采集 MAC/SN/硬件ID/资产文件</text>
+  <text x="524" y="421" font-size="11.5" fill="#54657a">打分 · 漂移 · 冲突 · 待认领判定</text>
+  <text x="524" y="441" font-size="11.5" fill="#8b9aab">identity_claim / identity_event</text>
+
+  <rect x="880" y="350" width="360" height="104" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="898" y="378" font-size="14" font-weight="700" fill="#16283d">S5　租约</text>
+  <text x="898" y="401" font-size="11.5" fill="#54657a">TTL · 续约 · 宽限期 · 强制回收</text>
+  <text x="898" y="421" font-size="11.5" fill="#54657a">幂等 · 行锁 · 原子授予</text>
+  <text x="898" y="441" font-size="11.5" fill="#8b9aab">lease</text>
+
+  <rect x="132" y="466" width="360" height="104" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="150" y="494" font-size="14" font-weight="700" fill="#16283d">S6　排队</text>
+  <text x="150" y="517" font-size="11.5" fill="#54657a">组队列 / 设备队列 · 优先级 + FIFO</text>
+  <text x="150" y="537" font-size="11.5" fill="#54657a">offer 60s 窗口 · 顺延 · 票据</text>
+  <text x="150" y="557" font-size="11.5" fill="#8b9aab">queue_entry</text>
+
+  <rect x="506" y="466" width="360" height="104" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="524" y="494" font-size="14" font-weight="700" fill="#16283d">S7　巡检与健康</text>
+  <text x="524" y="517" font-size="11.5" fill="#54657a">L0–L3 四级探测 · 连续 2 轮判离线</text>
+  <text x="524" y="537" font-size="11.5" fill="#54657a">data 区被擦识别 · 恢复自动上线</text>
+  <text x="524" y="557" font-size="11.5" fill="#8b9aab">周期 15 / 30 min 可配</text>
+
+  <rect x="880" y="466" width="360" height="104" rx="10" fill="#fff5e6" stroke="#e6cd9a"/>
+  <text x="898" y="494" font-size="14" font-weight="700" fill="#5c4514">S8　人工介入台</text>
+  <text x="898" y="517" font-size="11.5" fill="#6b5522">认领确认 · 强制回收 · 恢复引导</text>
+  <text x="898" y="537" font-size="11.5" fill="#6b5522">带屏 / LED 设备的辅助物理确认</text>
+  <text x="898" y="557" font-size="11.5" fill="#8b9aab">管理员专用，不当自动化处理</text>
+
+  <line x1="402" y1="570" x2="402" y2="602" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <line x1="970" y1="570" x2="970" y2="602" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+
+  <!-- 支撑子系统 -->
+  <rect x="24" y="605" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="628" font-size="12.5" fill="#fff" text-anchor="middle">支撑</text>
+
+  <rect x="132" y="605" width="266" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="150" y="632" font-size="14" font-weight="700" fill="#16283d">S9　认证与配额</text>
+  <text x="150" y="655" font-size="11.5" fill="#54657a">用户 · token · 资源组白名单</text>
+  <text x="150" y="675" font-size="11.5" fill="#54657a">并发上限跨入口合计</text>
+  <text x="150" y="695" font-size="11.5" fill="#8b9aab">吊销即时生效</text>
+
+  <rect x="412" y="605" width="266" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="430" y="632" font-size="14" font-weight="700" fill="#16283d">S10　通知</text>
+  <text x="430" y="655" font-size="11.5" fill="#54657a">企微 / 飞书 Webhook</text>
+  <text x="430" y="675" font-size="11.5" fill="#54657a">责任人路由 · 2 小时去重</text>
+  <text x="430" y="695" font-size="11.5" fill="#8b9aab">WS 推送也由这里统一发</text>
+
+  <rect x="692" y="605" width="266" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="710" y="632" font-size="14" font-weight="700" fill="#16283d">S11　审计与统计</text>
+  <text x="710" y="655" font-size="11.5" fill="#54657a">流水只追加 · 强制回收原因</text>
+  <text x="710" y="675" font-size="11.5" fill="#54657a">利用率按天聚合 · CSV 导出</text>
+  <text x="710" y="695" font-size="11.5" fill="#8b9aab">audit_event</text>
+
+  <rect x="972" y="605" width="268" height="100" rx="10" fill="#fff5e6" stroke="#e6cd9a"/>
+  <text x="990" y="632" font-size="14" font-weight="700" fill="#5c4514">S12　调度器（worker）</text>
+  <text x="990" y="655" font-size="11.5" fill="#6b5522">巡检 15/30min · 租约扫描 10s</text>
+  <text x="990" y="675" font-size="11.5" fill="#6b5522">网段发现 30min · 到期提醒</text>
+  <text x="990" y="695" font-size="11.5" fill="#8b9aab">advisory lock 单实例</text>
+
+  <line x1="402" y1="705" x2="402" y2="737" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <line x1="970" y1="705" x2="970" y2="737" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+
+  <!-- 数据子系统 -->
+  <rect x="24" y="740" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="763" font-size="12.5" fill="#fff" text-anchor="middle">数据</text>
+
+  <rect x="132" y="740" width="1108" height="80" rx="10" fill="#f1f5fb" stroke="#c9d8ec"/>
+  <text x="152" y="768" font-size="15" font-weight="700" fill="#20447a">S13　数据访问层 · PostgreSQL 16</text>
+  <text x="152" y="791" font-size="11.5" fill="#4a617f">device · identity_claim · identity_event · lease · queue_entry · audit_event　｜　唯一索引：MAC / SN / 位置编号　｜　事务、迁移、每日备份</text>
+  <text x="152" y="809" font-size="11.5" fill="#8b9aab">所有子系统只经这一层读写，不直连数据库</text>
+
+  <line x1="402" y1="820" x2="402" y2="852" stroke="#c6a068" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#ad)"/>
+
+  <!-- 外部 -->
+  <rect x="24" y="855" width="88" height="36" rx="6" fill="#27476e"/>
+  <text x="68" y="878" font-size="12.5" fill="#fff" text-anchor="middle">外部</text>
+
+  <rect x="132" y="855" width="360" height="100" rx="10" fill="#fff8ea" stroke="#e6cd9a"/>
+  <text x="150" y="882" font-size="14" font-weight="700" fill="#5c4514">设备池</text>
+  <text x="150" y="905" font-size="11.5" fill="#6b5522">15 类 / 500–750 台 · 网络 ADB tcp 5555</text>
+  <text x="150" y="925" font-size="11.5" fill="#6b5522">data 区钩子自启 adbd · 禁刷 data 区</text>
+  <text x="150" y="945" font-size="11.5" fill="#8b9aab">局域网内，本期不做网段隔离</text>
+
+  <rect x="516" y="855" width="300" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="534" y="882" font-size="14" font-weight="700" fill="#16283d">SerialBridge</text>
+  <text x="534" y="905" font-size="11.5" fill="#54657a">串口通道 · sb_agent_* token</text>
+  <text x="534" y="925" font-size="11.5" fill="#54657a">本系统只发授权</text>
+
+  <rect x="840" y="855" width="400" height="100" rx="10" fill="#ffffff" stroke="#dde3ea"/>
+  <text x="858" y="882" font-size="14" font-weight="700" fill="#16283d">企业微信 / 飞书</text>
+  <text x="858" y="905" font-size="11.5" fill="#54657a">掉线 · 疑似 data 被擦 · 超时回收</text>
+  <text x="858" y="925" font-size="11.5" fill="#54657a">排队过久提醒</text>
+
+  <!-- 图例 -->
+  <line x1="132" y1="990" x2="182" y2="990" stroke="#8fa3bb" stroke-width="1.6" marker-end="url(#a)" marker-start="url(#as)"/>
+  <text x="192" y="995" font-size="11.5" fill="#6b7a8d">调用 / 状态读写</text>
+  <line x1="302" y1="990" x2="352" y2="990" stroke="#c6a068" stroke-width="1.4" stroke-dasharray="6 5" marker-end="url(#ad)"/>
+  <text x="362" y="995" font-size="11.5" fill="#6b7a8d">探测 / 事件推送</text>
+  <text x="560" y="995" font-size="11.5" fill="#a3b0c0">橙底 = 独立进程或管理员专用路径　｜　S1–S13 为子系统编号，对应《06_子系统清单》</text>
+</svg>

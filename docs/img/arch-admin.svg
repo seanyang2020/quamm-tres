@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="686" viewBox="0 0 1280 686" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <rect x="0" y="0" width="1280" height="686" fill="#f6f7f9"/>
+
+  <text x="40" y="48" font-size="25" font-weight="700" fill="#16283d">C 域 · 设备管理（管理员视角）</text>
+  <text x="40" y="74" font-size="12.5" fill="#6b7a8d">管主数据、管档案、管状态、管异常、管账 —— 不改租约、不抢占用，只做「看」和「纠正」</text>
+  <line x1="40" y1="90" x2="1240" y2="90" stroke="#e2e8ef" stroke-width="1.2"/>
+
+  <!-- C1 -->
+  <rect x="40" y="112" width="224" height="392" rx="9" fill="#fff" stroke="#bfd2e8"/>
+  <rect x="40" y="112" width="224" height="38" rx="9" fill="#e8eff9"/>
+  <text x="56" y="137" font-size="12" font-weight="700" fill="#20447a">C1　主数据与档案</text>
+  <text x="56" y="174" font-size="10" font-weight="700" fill="#16283d">机型字典</text>
+  <text x="56" y="192" font-size="9.8" fill="#54657a">预置、有限、不可自由填</text>
+  <text x="56" y="209" font-size="9.8" fill="#54657a">能力位：有无屏 / 有无灯</text>
+  <text x="56" y="226" font-size="9.8" fill="#54657a">串口数 · ADB 端口</text>
+  <text x="56" y="252" font-size="10" font-weight="700" fill="#16283d">设备档案</text>
+  <text x="56" y="270" font-size="9.8" fill="#54657a">位置编号 · owner · MAC/SN</text>
+  <text x="56" y="287" font-size="9.8" fill="#54657a">机型 · 版本 · 注册人</text>
+  <text x="56" y="313" font-size="10" font-weight="700" fill="#16283d">位置与责任人</text>
+  <text x="56" y="331" font-size="9.8" fill="#54657a">格式校验 + 全局唯一</text>
+  <text x="56" y="348" font-size="9.8" fill="#54657a">owner 转移（工位调动）</text>
+  <text x="56" y="374" font-size="10" font-weight="700" fill="#16283d">设备状态机</text>
+  <text x="56" y="392" font-size="9.8" fill="#54657a">available / leased / pending</text>
+  <text x="56" y="409" font-size="9.8" fill="#54657a">maintenance / retired</text>
+  <text x="56" y="434" font-size="9.5" fill="#8b9aab">全系统只有这一份状态真相</text>
+
+  <!-- C2 -->
+  <rect x="284" y="112" width="224" height="392" rx="9" fill="#fff" stroke="#bfd2e8"/>
+  <rect x="284" y="112" width="224" height="38" rx="9" fill="#e8eff9"/>
+  <text x="300" y="137" font-size="12" font-weight="700" fill="#20447a">C2　状态与巡检</text>
+  <text x="300" y="174" font-size="10" font-weight="700" fill="#16283d">巡检节奏</text>
+  <text x="300" y="192" font-size="9.8" fill="#54657a">15 或 30 分钟可配（默认 30）</text>
+  <text x="300" y="209" font-size="9.8" fill="#54657a">按接入形态分层探测</text>
+  <text x="300" y="235" font-size="10" font-weight="700" fill="#16283d">四级探测</text>
+  <text x="300" y="253" font-size="9.8" fill="#54657a">L0 不通 / L1 端口 / L2 未授权</text>
+  <text x="300" y="270" font-size="9.8" fill="#54657a">L3 shell 可用 —— 只有 L3 入池</text>
+  <text x="300" y="296" font-size="10" font-weight="700" fill="#16283d">抖动过滤</text>
+  <text x="300" y="314" font-size="9.8" fill="#54657a">单轮失败只标 suspect</text>
+  <text x="300" y="331" font-size="9.8" fill="#54657a">连续 2 轮（约 60 分钟）判 offline</text>
+  <text x="300" y="357" font-size="10" font-weight="700" fill="#16283d">与租约的关系</text>
+  <text x="300" y="375" font-size="9.8" fill="#8a5a12">掉线不改租约，只标 degraded</text>
+  <text x="300" y="392" font-size="9.8" fill="#54657a">恢复 1 轮即自动上线</text>
+  <text x="300" y="418" font-size="10" font-weight="700" fill="#16283d">待办自动转正</text>
+  <text x="300" y="436" font-size="9.8" fill="#54657a">pending 通了 → available</text>
+  <text x="300" y="478" font-size="9.5" fill="#8b9aab">30 天没通的进待清理</text>
+
+  <!-- C3 -->
+  <rect x="528" y="112" width="224" height="392" rx="9" fill="#fff8ea" stroke="#e6cd9a"/>
+  <rect x="528" y="112" width="224" height="38" rx="9" fill="#f6e9cd"/>
+  <text x="544" y="137" font-size="12" font-weight="700" fill="#5c4514">C3　人工介入台</text>
+  <text x="544" y="174" font-size="10" font-weight="700" fill="#5c4514">五个触发点</text>
+  <text x="544" y="192" font-size="9.8" fill="#6b5522">① 掉线超 2 轮</text>
+  <text x="544" y="209" font-size="9.8" fill="#6b5522">② 身份冲突 / 待确认</text>
+  <text x="544" y="226" font-size="9.8" fill="#6b5522">③ 疑似 data 被擦</text>
+  <text x="544" y="243" font-size="9.8" fill="#6b5522">④ 强占不还 / 到期未释</text>
+  <text x="544" y="260" font-size="9.8" fill="#6b5522">⑤ 找不到设备（误刷）</text>
+  <text x="544" y="286" font-size="10" font-weight="700" fill="#5c4514">可用动作</text>
+  <text x="544" y="304" font-size="9.8" fill="#6b5522">按 owner 分组的待修复队列</text>
+  <text x="544" y="321" font-size="9.8" fill="#6b5522">点亮核对（屏显示 4 位码）</text>
+  <text x="544" y="338" font-size="9.8" fill="#6b5522">强制回收租约（要留痕）</text>
+  <text x="544" y="355" font-size="9.8" fill="#6b5522">一键摘除 / 批量摘</text>
+  <text x="544" y="372" font-size="9.8" fill="#6b5522">人工改位置 / 改 owner</text>
+  <text x="544" y="398" font-size="10" font-weight="700" fill="#5c4514">恢复手册</text>
+  <text x="544" y="416" font-size="9.8" fill="#6b5522">L2 未授权 → 推 adbkey</text>
+  <text x="544" y="433" font-size="9.8" fill="#6b5522">L1 端口不通 → 串口起 adbd</text>
+  <text x="544" y="450" font-size="9.8" fill="#6b5522">L0 不通 → 查电查网线</text>
+  <text x="544" y="478" font-size="9.5" fill="#8b9aab">每级修法不同，不能混成一个「离线」</text>
+
+  <!-- C4 -->
+  <rect x="772" y="112" width="224" height="392" rx="9" fill="#fff" stroke="#bfd2e8"/>
+  <rect x="772" y="112" width="224" height="38" rx="9" fill="#e8eff9"/>
+  <text x="788" y="137" font-size="12" font-weight="700" fill="#20447a">C4　通知与告警</text>
+  <text x="788" y="174" font-size="10" font-weight="700" fill="#16283d">掉线通知</text>
+  <text x="788" y="192" font-size="9.8" fill="#54657a">发 owner（维护责任人）</text>
+  <text x="788" y="209" font-size="9.8" fill="#54657a">同时发当前占用人</text>
+  <text x="788" y="226" font-size="9.8" fill="#54657a">2 小时内同设备去重</text>
+  <text x="788" y="252" font-size="10" font-weight="700" fill="#16283d">排队与唤醒</text>
+  <text x="788" y="270" font-size="9.8" fill="#54657a">释放只给队首 offer（60 秒）</text>
+  <text x="788" y="287" font-size="9.8" fill="#54657a">MCP 无推送 → 短阻塞 + 票据</text>
+  <text x="788" y="304" font-size="9.8" fill="#54657a">企微 / 飞书兜底通知</text>
+  <text x="788" y="330" font-size="10" font-weight="700" fill="#16283d">下架与变更</text>
+  <text x="788" y="348" font-size="9.8" fill="#54657a">设备注销 → 通知排队的人</text>
+  <text x="788" y="365" font-size="9.8" fill="#54657a">凭据到期 → 通知管理员</text>
+  <text x="788" y="391" font-size="10" font-weight="700" fill="#16283d">渠道</text>
+  <text x="788" y="409" font-size="9.8" fill="#54657a">企业微信 / 飞书，可切换</text>
+  <text x="788" y="426" font-size="9.8" fill="#54657a">Web 看板同步亮红</text>
+  <text x="788" y="452" font-size="9.5" fill="#8b9aab">通知只发「要动手的人」，不做广播</text>
+
+  <!-- C5 -->
+  <rect x="1016" y="112" width="224" height="392" rx="9" fill="#fff" stroke="#bfd2e8"/>
+  <rect x="1016" y="112" width="224" height="38" rx="9" fill="#e8eff9"/>
+  <text x="1032" y="137" font-size="12" font-weight="700" fill="#20447a">C5　审计统计与权限</text>
+  <text x="1032" y="174" font-size="10" font-weight="700" fill="#16283d">审计流水</text>
+  <text x="1032" y="192" font-size="9.8" fill="#54657a">注册 / 注销 / 申请 / 释放</text>
+  <text x="1032" y="209" font-size="9.8" fill="#54657a">强制回收 / 改位置 / 改 owner</text>
+  <text x="1032" y="226" font-size="9.8" fill="#54657a">全都落一笔，可检索</text>
+  <text x="1032" y="252" font-size="10" font-weight="700" fill="#16283d">统计</text>
+  <text x="1032" y="270" font-size="9.8" fill="#54657a">利用率 · 闲置 · 故障率</text>
+  <text x="1032" y="287" font-size="9.8" fill="#54657a">谁在占、占了多久</text>
+  <text x="1032" y="304" font-size="9.8" fill="#8a5a12">只能统计「经中心申请」的部分</text>
+  <text x="1032" y="330" font-size="10" font-weight="700" fill="#16283d">权限</text>
+  <text x="1032" y="348" font-size="9.8" fill="#54657a">只有管理员登录 Web</text>
+  <text x="1032" y="365" font-size="9.8" fill="#54657a">普通人零界面，只走 MCP</text>
+  <text x="1032" y="382" font-size="9.8" fill="#54657a">管理员 1–2 个账号</text>
+  <text x="1032" y="408" font-size="10" font-weight="700" fill="#16283d">导出</text>
+  <text x="1032" y="426" font-size="9.8" fill="#54657a">台账 / 流水 / 利用率</text>
+  <text x="1032" y="443" font-size="9.8" fill="#54657a">CSV，直接交给周报</text>
+  <text x="1032" y="478" font-size="9.5" fill="#8b9aab">报表要写清口径，别让人误读</text>
+
+  <!-- 三条边界 -->
+  <rect x="40" y="524" width="1200" height="104" rx="9" fill="#eff4fb" stroke="#bfd2e8"/>
+  <text x="60" y="550" font-size="13" font-weight="700" fill="#20447a">C 域的三条边界（越界就会和 A 域打架）</text>
+  <text x="60" y="572" font-size="10.5" fill="#54657a">① C 域只读租约、不改租约 —— 强制回收是唯一例外，且必须留痕 + 通知占用人</text>
+  <text x="60" y="591" font-size="10.5" fill="#54657a">② 巡检只改健康状态，不动租约 —— 掉线不等于释放，占用人回来还能接着用</text>
+  <text x="60" y="610" font-size="10.5" fill="#54657a">③ 主数据（机型 / 位置 / owner）只由管理员改，Agent 只读 —— 否则台账会被两头改乱</text>
+
+  <text x="40" y="654" font-size="10.5" fill="#a3b0c0">C 域不是第二个入口：它不管申请、不管排队、不发凭据，只负责让台账可信、让异常有人接</text>
+  <text x="40" y="674" font-size="10.5" fill="#a3b0c0">最值钱的一页是「待修复队列」：按 owner 分组，每人只看自己名下坏了的那几台，可一键跳转恢复手册</text>
+</svg>
