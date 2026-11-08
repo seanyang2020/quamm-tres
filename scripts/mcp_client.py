@@ -18,8 +18,8 @@ ADMIN_TOKEN_CACHE = Path(__file__).resolve().parent / ".demo_admin_token.json"
 
 ADMIN_EMAIL = "admin@corp.com"
 
-MCP_URL = os.environ.get("RES_DEMO_MCP_URL", "http://127.0.0.1:8080/mcp/")
-API_BASE = os.environ.get("RES_DEMO_API_BASE", "http://127.0.0.1:8080")
+MCP_URL = os.environ.get("RES_DEMO_MCP_URL", "http://127.0.0.1:9100/mcp/")
+API_BASE = os.environ.get("RES_DEMO_API_BASE", "http://127.0.0.1:9100")
 
 
 class McpError(RuntimeError):

@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     # 服务
     app_domain: str = "res.corp.com"
-    web_port: int = 8080
+    web_port: int = 9100
     mcp_port: int = 8765
 
     # 管理员凭据（用于 res_admin 与 Web 管理；一期固定环境变量，未配则默认）

@@ -10,7 +10,7 @@
   同上排队 → holder 释放 → A 收到 offer 但不确认 → 等 offer 窗口超时
   → A 的 ticket 被取消，offer 顺延给 B → B 确认拿到租约 → 清场
 
-前置：服务已在 :8080 运行（Web + MCP 同进程）。脚本会自动确保有 2 台可用设备，
+前置：服务已在 :9100 运行（Web + MCP 同进程）。脚本会自动确保有 2 台可用设备，
 不足时用 mock 设备补注册（走真实 res_device_probe/register）。
 
 用法：.venv/bin/python scripts/demo_queue_offer.py

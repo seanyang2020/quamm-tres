@@ -1,8 +1,8 @@
 """应用入口：一个 app 挂两个路由组（Web API + MCP），同一进程。
 
-本地启动：python -m uvicorn app.main:app --port 8080
-  - Web 控制台  http://localhost:8080/
-  - MCP 端点    http://localhost:8080/mcp/  （streamable HTTP）
+本地启动：python -m uvicorn app.main:app --port 9100
+  - Web 控制台  http://localhost:9100/
+  - MCP 端点    http://localhost:9100/mcp/  （streamable HTTP）
 """
 from __future__ import annotations
 

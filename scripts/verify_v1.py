@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Quamm RES 一键验收脚本（不依赖 pytest，直接打真服务）。
 
-前置：服务已在 :8080 运行（Web + MCP 同进程，默认 sqlite:///./quamm_res.db）。
+前置：服务已在 :9100 运行（Web + MCP 同进程，默认 sqlite:///./quamm_res.db）。
 脚本自动确保证据齐全（token、至少 2 台可用设备、至少 1 条巡检 run）。
 
 输出一张表：| # | 检查项 | 期望 | 实际 | PASS/FAIL |。
@@ -10,7 +10,7 @@
 
 用法：
   .venv/bin/python scripts/verify_v1.py
-  RES_DEMO_API_BASE=http://127.0.0.1:8080 RES_VERIFY_DB_URL=sqlite:///./quamm_res.db .venv/bin/python scripts/verify_v1.py
+  RES_DEMO_API_BASE=http://127.0.0.1:9100 RES_VERIFY_DB_URL=sqlite:///./quamm_res.db .venv/bin/python scripts/verify_v1.py
 """
 from __future__ import annotations
 
@@ -194,7 +194,7 @@ def main() -> int:
         _get("/api/health").raise_for_status()
     except httpx.HTTPError as exc:
         print(f"服务不可达：{API_BASE} （{exc}）")
-        print("请先启动：.venv/bin/python -m uvicorn app.main:app --port 8080")
+        print("请先启动：.venv/bin/python -m uvicorn app.main:app --port 9100")
         return 2
 
     try:

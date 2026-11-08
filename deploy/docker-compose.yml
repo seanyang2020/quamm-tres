@@ -5,8 +5,8 @@ services:
       dockerfile: deploy/Dockerfile.app
     env_file: .env
     ports:
-      - "8080:8080"   # Web 控制台
-      - "8765:8080"   # MCP 端点（同一 app，映射到容器内 8080）
+      - "9100:9100"   # Web 控制台
+      - "8765:9100"   # MCP 端点（同一 app，映射到容器内 9100）
     depends_on:
       - postgres
     restart: unless-stopped
