@@ -10,7 +10,7 @@
   </defs>
   <rect width="1280" height="896" fill="#f6f9fc"/>
 
-  <text x="52" y="54" class="t-title">Quamm RES 三条主链路</text>
+  <text x="52" y="54" class="t-title">Quamm TRES 三条主链路</text>
   <text x="52" y="78" class="t-sub">系统真正在跑的只有三条链：Agent 拿资源 · 设备进池 · 设备掉线被发现</text>
   <line x1="52" y1="96" x2="1228" y2="96" stroke="#dbe7f1" stroke-width="1"/>
 

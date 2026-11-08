@@ -11,7 +11,7 @@
   </defs>
   <rect width="1280" height="940" fill="#f6f9fc"/>
 
-  <text x="52" y="56" class="t-title">Quamm RES 功能模块划分</text>
+  <text x="52" y="56" class="t-title">Quamm TRES 功能模块划分</text>
   <text x="52" y="80" class="t-sub">按「使用者视角」切成三个功能域：谁能拿资源 · 资源怎么进来 · 资源怎么管</text>
   <line x1="52" y1="98" x2="1228" y2="98" stroke="#dbe7f1" stroke-width="1"/>
 

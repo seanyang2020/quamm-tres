@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 
 const pages = [
@@ -45,7 +45,11 @@ const editDialog = ref(false)
 const editRow = ref({ email: '', name: '', note: '' })
 const smtp = ref(null)
 const smtpTestTo = ref('')
-const sendForm = ref({ emails: [], manual_emails: '', role: 'user', note: '' })
+const sendForm = ref({ emails: [], manual_emails: '', role: 'user', note: '', valid_days: 90 })
+const previewVisible = ref(false)
+const preview = ref(null)          // batch-generate 返回的完整响应
+const generating = ref(false)
+const sending = ref(false)
 const sendResults = ref([])
 
 const newProduct = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1 })
@@ -205,19 +209,66 @@ async function testSmtp() {
   } catch (e) { ElMessage.error('发送失败：' + e.message) }
 }
 
-// ---- 发接入凭据 ----
-async function sendCredentials() {
+// ---- 发接入凭据（两步式：生成预览 -> 确认发送） ----
+async function generateCredentials() {
+  if (generating.value) return
+  generating.value = true
   sendResults.value = []
   try {
-    const r = await api('/api/credentials/send', {
+    preview.value = await api('/api/credentials/batch-generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(sendForm.value),
     })
-    sendResults.value = r.results
-    const ok = r.results.filter(x => x.sent).length
-    ElMessage.success('已生成 ' + r.count + ' 条凭据，成功发送 ' + ok + ' 封邮件')
+    previewVisible.value = true
+  } catch (e) { ElMessage.error(e.message) } finally { generating.value = false }
+}
+
+async function confirmSend() {
+  if (!preview.value || sending.value) return
+  sending.value = true
+  try {
+    const r = await api('/api/credentials/batch-send', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batch_id: preview.value.batch_id }),
+    })
+    sendResults.value = r.results || []
+    const ok = sendResults.value.filter(x => x.sent).length
+    const failed = sendResults.value.length - ok
+    if (failed) ElMessage.warning('已发邮件给 ' + ok + ' 人，' + failed + ' 人发送失败')
+    else ElMessage.success('已发邮件给 ' + ok + ' 人')
+    previewVisible.value = false
+    preview.value = null
     loadCredentials()
-  } catch (e) { ElMessage.error(e.message) }
+  } catch (e) { ElMessage.error(e.message) } finally { sending.value = false }
+}
+
+function closePreview() {
+  previewVisible.value = false
+  preview.value = null
+}
+
+async function copyText(text, okMsg) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = text
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    ElMessage.success(okMsg || '已拷贝')
+  } catch (e) { ElMessage.error('拷贝失败：' + e.message) }
+}
+
+function copyToken(token) { copyText(token, '已拷贝 token') }
+function copyMcpConfig() {
+  if (!preview.value) return
+  copyText(preview.value.mcp_config_text, '已拷贝 MCP 配置 JSON')
 }
 
 // ---- 凭据 / 机型 ----
@@ -242,9 +293,24 @@ async function addProductType() {
   loadSettings()
 }
 async function disableProductType(code) {
-  await api('/api/product-types/' + encodeURIComponent(code) + '/disable', { method: 'POST' })
-  ElMessage.success('已停用 ' + code); loadSettings()
+  try {
+    await api('/api/product-types/' + encodeURIComponent(code) + '/disable', { method: 'POST' })
+    ElMessage.success('已停用 ' + code)
+    loadProductTypes(); loadSettings()
+  } catch (e) { ElMessage.error(e.message) }
 }
+async function enableProductType(code) {
+  try {
+    await api('/api/product-types/' + encodeURIComponent(code), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: true }),
+    })
+    ElMessage.success('已启用 ' + code)
+    loadProductTypes(); loadSettings()
+  } catch (e) { ElMessage.error(e.message) }
+}
+const enabledProductTypes = computed(() => productTypes.value.filter(p => p.enabled))
+const disabledProductTypes = computed(() => productTypes.value.filter(p => !p.enabled))
 function openPtEdit(row) {
   ptEditRow.value = {
     type_code: row.type_code, display_name: row.display_name,
@@ -568,20 +634,44 @@ const statusTag = {
           <el-tab-pane label="设备类型" name="product-types">
             <h3>设备类型元数据（defconfig / SDK 获取 / 编译 / 镜像 / Jenkins / 备注）</h3>
             <p style="color: #909399">四列（defconfig + SDK 获取命令 + 编译命令 + 镜像路径）都填才算【完整】，缺任一即【信息不全】，允许信息不全的机型存在。</p>
-            <el-table :data="productTypes" border>
+            <el-table :data="enabledProductTypes" border>
               <el-table-column prop="type_code" label="type_code" width="150" />
               <el-table-column prop="display_name" label="名称" width="140" />
               <el-table-column prop="defconfig" label="defconfig" width="200" show-overflow-tooltip />
               <el-table-column label="完整度" width="110">
                 <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'warning'">{{ row.complete_label }}</el-tag></template>
               </el-table-column>
-              <el-table-column label="操作" width="100">
+              <el-table-column label="操作" width="180">
                 <template #default="{ row }">
-                  <el-button v-if="me.role === 'admin'" size="small" @click="openPtEdit(row)">编辑</el-button>
+                  <template v-if="me.role === 'admin'">
+                    <el-button size="small" @click="openPtEdit(row)">编辑</el-button>
+                    <el-button size="small" type="danger" @click="disableProductType(row.type_code)">停用</el-button>
+                  </template>
                   <span v-else style="color: #c0c4cc; font-size: 12px">仅 admin 可改</span>
                 </template>
               </el-table-column>
             </el-table>
+            <p v-if="!enabledProductTypes.length" style="color: #909399">暂无启用中的设备类型。</p>
+
+            <el-collapse style="margin-top: 16px">
+              <el-collapse-item :title="'已停用的类型 (' + disabledProductTypes.length + ')'" name="disabled">
+                <el-table :data="disabledProductTypes" border>
+                  <el-table-column prop="type_code" label="type_code" width="150" />
+                  <el-table-column prop="display_name" label="名称" width="140" />
+                  <el-table-column prop="defconfig" label="defconfig" width="200" show-overflow-tooltip />
+                  <el-table-column label="状态" width="90">
+                    <template #default><el-tag type="info">停用</el-tag></template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="120">
+                    <template #default="{ row }">
+                      <el-button v-if="me.role === 'admin'" size="small" type="success" @click="enableProductType(row.type_code)">启用</el-button>
+                      <span v-else style="color: #c0c4cc; font-size: 12px">仅 admin 可改</span>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <p v-if="!disabledProductTypes.length" style="color: #909399">没有已停用的类型。</p>
+              </el-collapse-item>
+            </el-collapse>
           </el-tab-pane>
 
           <el-tab-pane v-if="me.role === 'admin'" label="人员通讯录" name="contacts">
@@ -608,7 +698,7 @@ const statusTag = {
           </el-tab-pane>
 
           <el-tab-pane v-if="me.role === 'admin'" label="发接入凭据" name="send">
-            <h3>发接入凭据（生成 rr_ token 并邮件发送 MCP 配置）</h3>
+            <h3>发接入凭据（先预览，再决定是否发邮件）</h3>
             <el-form label-width="100px" style="max-width: 640px">
               <el-form-item label="从通讯录选">
                 <el-select v-model="sendForm.emails" multiple filterable placeholder="可多选" style="width: 100%">
@@ -625,12 +715,15 @@ const statusTag = {
                 </el-select>
               </el-form-item>
               <el-form-item label="备注"><el-input v-model="sendForm.note" placeholder="可选，写入凭据备注与邮件" /></el-form-item>
-              <el-form-item><el-button type="primary" @click="sendCredentials">发送</el-button></el-form-item>
+              <el-form-item label="有效期">
+                <el-input-number v-model="sendForm.valid_days" :min="1" :max="3650" /> <span style="margin-left: 8px">天</span>
+              </el-form-item>
+              <el-form-item><el-button type="primary" :loading="generating" @click="generateCredentials">生成凭据（预览）</el-button></el-form-item>
             </el-form>
             <el-table v-if="sendResults.length" :data="sendResults" border style="margin-top: 12px">
               <el-table-column prop="email" label="邮箱" width="240" />
               <el-table-column prop="role" label="权限" width="80" />
-              <el-table-column label="token" width="220"><template #default="{ row }"><span style="font-size:12px">{{ row.token }}</span></template></el-table-column>
+              <el-table-column label="token" width="220"><template #default="{ row }"><span class="mono">{{ row.token }}</span></template></el-table-column>
               <el-table-column label="发送结果" width="100"><template #default="{ row }"><el-tag :type="row.sent ? 'success' : 'danger'">{{ row.sent ? '成功' : '失败' }}</el-tag></template></el-table-column>
               <el-table-column prop="error" label="错误" />
             </el-table>
@@ -654,6 +747,34 @@ const statusTag = {
             </el-form>
           </el-tab-pane>
         </el-tabs>
+
+        <el-dialog v-model="previewVisible" title="凭据预览（尚未发送）" width="920px" :close-on-click-modal="false" @closed="closePreview">
+          <template v-if="preview">
+            <div style="margin-bottom: 12px">
+              <el-button type="primary" plain @click="copyMcpConfig">拷贝 MCP 配置 JSON</el-button>
+              <span style="margin-left: 12px; color: #909399">共 {{ preview.count }} 人 · 有效期 {{ preview.valid_days }} 天 · 批次 {{ preview.batch_id }}（30 分钟内可发送）</span>
+            </div>
+            <el-table :data="preview.results" border max-height="320">
+              <el-table-column prop="name" label="姓名" width="120" />
+              <el-table-column prop="email" label="邮箱" width="200" />
+              <el-table-column prop="role" label="权限" width="80" />
+              <el-table-column label="token">
+                <template #default="{ row }"><span class="mono">{{ row.token }}</span></template>
+              </el-table-column>
+              <el-table-column label="操作" width="110">
+                <template #default="{ row }"><el-button size="small" @click="copyToken(row.token)">拷贝 token</el-button></template>
+              </el-table-column>
+            </el-table>
+
+            <h3 style="margin-top: 16px">邮件正文预览</h3>
+            <p style="margin: 4px 0"><strong>主题：</strong>{{ preview.results[0].subject }}</p>
+            <pre class="mail-preview">{{ preview.results[0].body }}</pre>
+          </template>
+          <template #footer>
+            <el-button @click="closePreview">仅生成不发邮件</el-button>
+            <el-button type="primary" :loading="sending" @click="confirmSend">确认发送邮件</el-button>
+          </template>
+        </el-dialog>
 
         <el-dialog v-model="editDialog" title="编辑联系人" width="440px">
           <el-form label-width="70px">
@@ -686,4 +807,6 @@ const statusTag = {
 .auth-card h2 { margin-top: 0; }
 .err { color: #f56c6c; font-size: 13px; }
 .user-box { padding: 12px 16px; border-top: 1px solid #eee; }
+.mono { font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; word-break: break-all; }
+.mail-preview { background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 4px; padding: 12px; max-height: 260px; overflow: auto; font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; white-space: pre-wrap; }
 </style>

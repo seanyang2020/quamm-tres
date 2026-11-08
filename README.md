@@ -75,12 +75,12 @@ tests/           # 端到端测试（含模拟设备）
 - **`0.x` 为预发布**：每完成一批可验收的改动就升一位（0.10 → 0.11 → 0.12 ……）。
 - **`1.0` 的门槛** = 真实 ADB 探测接入 + 串口资源纳入 + 至少一条真实通知渠道（企微或邮件）打通。
 - **版本号只在三个地方出现**：根目录 `VERSION` 文件、`CHANGELOG.md` 标题、git tag；代码里不许硬编码版本字符串。
-  `/api/version` 返回 `{"version": "<读 VERSION>", "name": "Quamm RES", "stage": "pre-release"}`。
-  其中 `name` 为兼容历史验收脚本（`scripts/verify_v1.py`）保留的 API 契约值，产品展示名统一为 **Quamm TRES**。
+  `/api/version` 返回 `{"version": "<读 VERSION>", "name": "Quamm TRES", "stage": "pre-release"}`。
+  产品展示名统一为 **Quamm TRES**。
 
 ## Release 0.11.0
 
-Quamm TRES 0.11.0 预发布（`/api/version` 返回 `{"version":"0.11.0","name":"Quamm RES","stage":"pre-release"}`，`git tag v0.11.0`）。变更明细见 `CHANGELOG.md`。
+Quamm TRES 0.11.0 预发布（`/api/version` 返回 `{"version":"0.11.0","name":"Quamm TRES","stage":"pre-release"}`，`git tag v0.11.0`）。变更明细见 `CHANGELOG.md`。
 
 本版新增：Web 登录（rr_ token 换 8h HttpOnly cookie，admin/user 两档权限）、首次管理员引导、
 人员通讯录、发接入凭据（SMTP 邮件发 MCP 配置 token）、凭据续期/吊销台账、租约显示申请人姓名、全局改名 Quamm TRES。

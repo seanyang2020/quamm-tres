@@ -3,6 +3,17 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.13.0] - 2026-11-08
+
+### 新增
+- 发接入凭据改为两步式：先「生成凭据（预览）」调 `/api/credentials/batch-generate`，弹窗展示每人 token / 邮件正文 / MCP 配置，再「确认发送邮件」调 `/api/credentials/batch-send`
+- 设备类型分「启用中 / 已停用」两区：主区只列 enabled 类型，停用类型收进折叠面板；停用走旧 disable 接口，启用走 `PUT /api/product-types/{type_code}` body `{enabled: true}`
+- `/api/product-types` 列表返回 `enabled` 字段
+
+### 变更
+- `/api/version` 的 `name` 由 `Quamm RES` 改为 `Quamm TRES`，`scripts/verify_v1.py` 断言同步更新
+- 版本号 0.13.0
+
 ## [0.12.0] - 2026-11-08
 
 ### 新增
@@ -14,7 +25,7 @@
 - Web 排队列表行可展开：显示 agent_label + 申请人 email/name、等待机型、已等多久
 
 ### 说明
-- `/api/version` 的 `name` 仍是 `Quamm RES`（verify_v1.py 断言的 API 契约值）；版本号由 VERSION 单一真源读取
+- `/api/version` 的 `name` 当时仍为旧展示名，0.13.0 起统一为 `Quamm TRES`（verify_v1.py 断言同步更新）；版本号由 VERSION 单一真源读取
 - 排队测试用例（verify_v1.py）同步改为按机型（product_type）申请，32 项验收保持全 PASS
 
 ## [0.11.0] - 2026-11-08
@@ -31,7 +42,7 @@
 - user 登录后只看自己的租约 / 申请 / 凭据，看不到他人与占用详情
 
 ### 说明
-- `/api/version` 的 `name` 仍是 `Quamm RES`：这是 `scripts/verify_v1.py` 断言的 API 契约值，保持不变以不破坏 32 项验收。
+- `/api/version` 的 `name` 自 0.13.0 起统一为 `Quamm TRES`；此前为兼容历史验收脚本保留旧值。
 
 ## [0.10.0] - 2026-11-08
 

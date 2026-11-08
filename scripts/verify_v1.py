@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quamm RES 一键验收脚本（不依赖 pytest，直接打真服务）。
+"""Quamm TRES 一键验收脚本（不依赖 pytest，直接打真服务）。
 
 前置：服务已在 :9100 运行（Web + MCP 同进程，默认 sqlite:///./quamm_res.db）。
 脚本自动确保证据齐全（token、至少 2 台可用设备、至少 1 条巡检 run）。
@@ -248,8 +248,8 @@ def main() -> int:
         # ---- 版本 / 身份 / 健康 ----
         expected_version = _expected_version()
         v = _get("/api/version").json()
-        check("版本号", f'{{"version":"{expected_version}","name":"Quamm RES","stage":"pre-release"}}', v,
-              v.get("version") == expected_version and v.get("name") == "Quamm RES" and v.get("stage") == "pre-release")
+        check("版本号", f'{{"version":"{expected_version}","name":"Quamm TRES","stage":"pre-release"}}', v,
+              v.get("version") == expected_version and v.get("name") == "Quamm TRES" and v.get("stage") == "pre-release")
 
         who = normal.call("res_whoami")
         check("whoami（普通）", "is_admin=false", f"email={who.get('email')} is_admin={who.get('is_admin')}",

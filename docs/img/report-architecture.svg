@@ -13,7 +13,7 @@
   </defs>
 
   <rect width="1280" height="980" fill="#f6f9fc"/>
-  <text x="52" y="58" class="t-title">Quamm RES 系统架构</text>
+  <text x="52" y="58" class="t-title">Quamm TRES 系统架构</text>
   <text x="52" y="82" class="t-sub">Quamm XOS 测试资源分配中心 · 设计基线 · Agent 走 MCP，人走 Web，领域服务只有一套</text>
   <line x1="52" y1="100" x2="1228" y2="100" stroke="#dbe7f1" stroke-width="1"/>
 
