@@ -288,14 +288,17 @@ def device_register(
     else:
         final_model = "unknown_model"
 
-    # 位置唯一性
+    # 身份强锚比对（MAC/SN/asset_tag）先算出来：
+    # 重复注册同一台设备时，position_code 本来就属于它自己，不能按“位置重复”拒绝。
+    existing = _match_existing(session, probe)
+
+    # 位置唯一性：位置已被“另一台”设备占用才拒绝
     dup_pos = session.query(Device).filter(Device.position_code == position_code).first()
-    if dup_pos is not None:
+    if dup_pos is not None and (existing is None or dup_pos.device_id != existing.device_id):
         raise DomainError(
             "POSITION_DUP", f"位置编号 {position_code} 已分配给 {dup_pos.device_id}"
         )
 
-    existing = _match_existing(session, probe)
     warnings: list[str] = []
 
     now = utcnow()

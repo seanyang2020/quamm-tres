@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.router import router as api_router
 from app.config import settings
 from app.db import SessionLocal, init_db
+from app.domain.probe import setup_prober_from_settings
 from app.mcp.server import build_mcp_app
 from app.seed import seed_product_types
 
@@ -25,6 +26,9 @@ mcp_app = build_mcp_app()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # 关键：进程启动时按配置选定探测后端。此前只有 worker 调用，
+    # MCP/Web 进程会一直用默认的 AdbProber 桩（返回 L0），导致注册全部 pending。
+    setup_prober_from_settings()
     with SessionLocal() as session:
         seed_product_types(session)
     # 挂载 FastMCP 的 lifespan（初始化 streamable HTTP 会话管理）

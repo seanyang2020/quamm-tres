@@ -41,8 +41,12 @@ def seed_product_types(session) -> None:
     session.commit()
 
 
-def seed_tokens(session, count: int = 20, admin_index: int = 0) -> list[tuple[str, str]]:
-    """每人 1 条 token，返回 (email, token) 列表。admin_index 指定的邮箱设为管理员。"""
+def seed_tokens(session, count: int = 20, admin_index: int = 0, rotate: bool = False) -> list[tuple[str, str]]:
+    """每人 1 条 token，返回 (email, token) 列表。admin_index 指定的邮箱设为管理员。
+
+    rotate=True：吊销已有未吊销凭据并签发新凭据（演示脚本需要明文 token 时使用；
+    token 只存哈希，历史明文无法反查）。
+    """
     result = []
     now = utcnow()
     for i in range(1, count + 1):
@@ -67,6 +71,9 @@ def seed_tokens(session, count: int = 20, admin_index: int = 0) -> list[tuple[st
             .filter(Credential.principal_id == principal.id, Credential.revoked_at.is_(None))
             .first()
         )
+        if existing is not None and rotate:
+            existing.revoked_at = now
+            existing = None
         if existing is None:
             token = new_token()
             session.add(
@@ -84,11 +91,21 @@ def seed_tokens(session, count: int = 20, admin_index: int = 0) -> list[tuple[st
 
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="预置机型字典与 20 个 token")
+    parser.add_argument(
+        "--rotate",
+        action="store_true",
+        help="吊销已有凭据并重新签发（token 只存哈希，需要明文时使用）",
+    )
+    args = parser.parse_args()
+
     init_db()
     session = SessionLocal()
     try:
         seed_product_types(session)
-        tokens = seed_tokens(session, count=20)
+        tokens = seed_tokens(session, count=20, rotate=args.rotate)
     finally:
         session.close()
 
@@ -97,6 +114,8 @@ def main() -> None:
         print(f"  {code}  ({name})")
     print()
     print("=== 20 个 token（每人 1 条，有效期 90 天）===")
+    if not tokens:
+        print("  已有可用凭据，未重新签发（如需明文请加 --rotate）")
     mcp_url = f"http://localhost:{settings.mcp_port}/mcp/"
     for email, token in tokens:
         print(f"  {email:<22} {token}")

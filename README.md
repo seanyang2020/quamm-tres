@@ -151,3 +151,31 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 迁移到其他局域网 Ubuntu：只改 `deploy/.env` 里的库地址、设备网段、SMTP 与域名，
 三个容器整体搬迁。首次启动后执行一次 `python -m app.seed`（或 `docker compose exec app python -m app.seed`）生成 token。
+
+## 模拟演示（20 台 mock 设备 + 租约全流程）
+
+前置：服务已在 `:8080` 运行（见「如何运行」）。一条命令注册 20 台模拟设备：
+
+```bash
+.venv/bin/python scripts/demo_seed_devices.py
+```
+
+脚本会：
+
+- 在 `127.0.0.1:7001-7020` 起 20 个 mock 设备端点（`tests/mock_device.py` 的 `GET /probe`），机型按 5 类轮转，位置编号 `302-R2-01` … `302-R2-20`；
+- 用 20 个 token（`user01~user20@corp.com`）**逐个走真实 MCP streamable HTTP**（`POST /mcp/`，`Authorization: Bearer rr_...`）调用 `res_device_probe → res_device_register`，每台落各自的 `registered_by`；
+- 打印注册结果表，并从 `/api/dashboard`、`/api/devices` 复核；退出时关停全部 mock 端点，不残留端口。
+
+注册完成后跑租约演示：
+
+```bash
+.venv/bin/python scripts/demo_lease_flow.py
+```
+
+依次演示 `res_whoami → res_list_products → res_list_devices(QM102V) → res_apply → res_my_leases → res_renew → res_release`，并确认设备回到可用池。
+
+说明：
+
+- 这 20 台是 **mock 设备**，不是真实 ADB。二期接真实 ADB 时只替换 `app/domain/probe.py` 的探测实现（`HttpProber` → `AdbProber`），领域层、MCP 工具契约与注册/租约链路都不变。
+- 脚本幂等：mock 设备的 MAC/SN/asset_tag 按序号固定，重复运行会命中已有设备（`matched_as=existing`），不新增记录；位置编号不会重复。
+- token 明文只缓存在 `scripts/.demo_tokens.json`（0600，已 gitignore），避免反复吊销；需要重新签发时加 `--rotate`。

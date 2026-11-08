@@ -76,6 +76,25 @@ def test_position_duplicate_rejected(db):
         dev2.stop()
 
 
+def test_reregister_same_device_is_idempotent(db):
+    """重复注册同一台设备应命中已有记录：不新建、不报 POSITION_DUP。"""
+    dev = MockDevice(model="QM102V").start()
+    try:
+        first = register_device(db, "user01@corp.com", dev, "302-R5-01", "owner@corp.com")
+        assert first["matched_as"] == "new"
+
+        second = register_device(db, "user02@corp.com", dev, "302-R5-01", "owner@corp.com")
+        assert second.get("error") is None, second
+        assert second["matched_as"] == "existing"
+        assert second["device_id"] == first["device_id"]
+
+        s = db.session()
+        assert s.query(Device).count() == 1
+        s.close()
+    finally:
+        dev.stop()
+
+
 def test_flash_confirm_branch(db):
     """无屏无灯机型（BES2800BP）点亮核对不可用。"""
     from app.mcp.server import res_device_flash, res_device_probe

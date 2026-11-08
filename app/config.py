@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     patrol_interval_minutes: int = 30
     patrol_fail_threshold: int = 2       # 连续 N 轮失败判 offline
     probe_timeout_seconds: int = 5
-    prober_backend: str = "adb"          # adb=真实(一期 TODO) / http=模拟设备
+    # 一期只走 mock：默认 http（模拟设备端点）。二期接真实 ADB 时改为 adb 即可，
+    # 领域层只认 ProbeResult，不受影响。
+    prober_backend: str = "http"         # http=模拟设备 / adb=真实 ADB(二期)
 
     # 设备网络（worker 网段发现用，一期预留）
     device_network: str = ""
