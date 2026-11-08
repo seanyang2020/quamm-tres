@@ -3,6 +3,10 @@
 0.10.0 引入：principal 表新增 ``is_admin`` 布尔列，且仅 ``admin@corp.com`` 为管理员。
 早期库可能缺该列（模型更早版本没有），也可能把 user01 误标成管理员，这里一并修正，
 不删除任何已有记录。
+
+接入真实 XOS 设备时：device 表补 project_name / board_dt / storage_type /
+has_wifi / source 五列，并把既有行（全部是 mock 设备）统一标 source='mock'。
+只用 ALTER TABLE ADD COLUMN，不重建表、不丢任何已有记录。
 """
 from __future__ import annotations
 
@@ -11,11 +15,38 @@ from sqlalchemy.orm import Session
 
 from app.seed import ADMIN_EMAIL
 
+# device 表新增列 -> DDL 片段（顺序无关，逐列判断是否存在）
+_DEVICE_COLUMNS = {
+    "project_name": "VARCHAR(128)",
+    "board_dt": "VARCHAR(256)",
+    "storage_type": "VARCHAR(16)",
+    "has_wifi": "BOOLEAN",
+    "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
+}
+
 
 def migrate(session: Session) -> None:
-    """幂等迁移：补 is_admin 列 + 修正管理员标志。"""
+    """幂等迁移：补 device 新列 + 补 is_admin 列 + 修正管理员标志。"""
+    _ensure_device_columns(session)
     _ensure_is_admin_column(session)
     _fix_admin_flags(session)
+
+
+def _ensure_device_columns(session: Session) -> None:
+    engine = session.get_bind()
+    columns = {c["name"] for c in inspect(engine).get_columns("device")}
+    added = []
+    for name, ddl in _DEVICE_COLUMNS.items():
+        if name not in columns:
+            session.execute(text(f"ALTER TABLE device ADD COLUMN {name} {ddl}"))
+            added.append(name)
+    if added:
+        session.commit()
+    # 既有 22 台 mock 设备：source 为空 / NULL 一律补成 mock
+    session.execute(
+        text("UPDATE device SET source = 'mock' WHERE source IS NULL OR source = ''")
+    )
+    session.commit()
 
 
 def _ensure_is_admin_column(session: Session) -> None:

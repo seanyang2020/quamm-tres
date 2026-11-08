@@ -136,6 +136,7 @@ def _public_device(d: Device, for_agent: bool = True) -> dict:
         "claimable": is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect),
         "adb_address": d.adb_address,
         "position_code": d.position_code,
+        "project_name": d.project_name,
         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "last_probe_at": d.last_probe_at.isoformat() if d.last_probe_at else None,
     }
@@ -149,6 +150,10 @@ def _public_device(d: Device, for_agent: bool = True) -> dict:
                 "registered_by": d.registered_by,
                 "register_channel": d.register_channel,
                 "android_version": d.android_version,
+                "source": d.source,
+                "board_dt": d.board_dt,
+                "storage_type": d.storage_type,
+                "has_wifi": d.has_wifi,
             }
         )
     return data
@@ -204,8 +209,10 @@ def device_probe(
     port: int = 5555,
     hint_model: str | None = None,
     hint_position: str | None = None,
+    source: str | None = None,
 ) -> dict:
-    result = probe_device(ip, port or 5555, timeout=settings.probe_timeout_seconds)
+    # source 为空时沿用全局后端；给出时按来源分流（real=真实 XOS ADB）。
+    result = probe_device(ip, port or 5555, timeout=settings.probe_timeout_seconds, source=source)
     probe = {
         "ip": ip,
         "adb_port": port,

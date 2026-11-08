@@ -75,12 +75,22 @@ def dashboard(session: Session = Depends(get_session)):
         or 0
     )
     products = catalog.list_products(session)
+    # 工程配置名（project_name）分布：真实设备一眼可见属于哪个工程配置。
+    project_rows = (
+        session.query(Device.project_name, func.count(Device.device_id))
+        .group_by(Device.project_name)
+        .all()
+    )
+    projects = [
+        {"project_name": pn or "-", "count": cnt} for pn, cnt in project_rows
+    ]
     last_patrol = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
     return {
         "total_devices": total,
         "available": available,
         "suspect": suspect,
         "by_status": by_status,
+        "projects": projects,
         "allow_apply_when_suspect": settings.allow_apply_when_suspect,
         "active_leases": active_leases,
         "queued": queued,

@@ -72,6 +72,15 @@ class Device(Base):
     android_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     build_fingerprint: Mapped[str | None] = mapped_column(String(256), nullable=True)
 
+    # 真实 XOS 设备指纹 / 工程配置名 / 数据来源（mock=模拟 HTTP，real=真实 adb）
+    project_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    board_dt: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    storage_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    has_wifi: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(16), default="mock", server_default="mock", nullable=False
+    )
+
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     last_probe_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)

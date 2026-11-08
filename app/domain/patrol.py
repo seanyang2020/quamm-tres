@@ -5,7 +5,8 @@
 - 恢复 L3 自动转 available（health 回到 L3/ok），并发"已恢复"通知
 - 掉线不改租约（巡检只改健康状态，见 11 §5 边界 2）
 
-探测与注册共用 app.domain.probe.get_prober()，不存在第二套判定。
+巡检按 device.source 分流探测后端（probe.probe_device(source=...)）：
+source=mock 走模拟设备 HTTP /probe，source=real 走真实 XOS ADB 文件探测。
 可用池口径由 constants.is_claimable 统一：默认只有 status=available 且
 health_level=L3 的设备可申请；settings.allow_apply_when_suspect=True 时
 额外放行 L1/L2，但 L0 永不进池。
@@ -46,7 +47,12 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
         if not d.ip:
             continue
         # device 表的 ip/adb_port 即探测地址；端口缺失时按 ip:5555 组。
-        result = probe_device(d.ip, d.adb_port or 5555, timeout=settings.probe_timeout_seconds)
+        # 按 device.source 分流：mock 永远走 HTTP /probe，real 走 adb 读文件。
+        result = probe_device(
+            d.ip, d.adb_port or 5555,
+            timeout=settings.probe_timeout_seconds,
+            source=d.source,
+        )
         d.last_probe_at = utcnow()
 
         if result.reachable_l3:

@@ -28,8 +28,9 @@ const settings = ref(null)
 
 const newProduct = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1 })
 
+const API_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
 async function api(path, opts) {
-  const r = await fetch(path, opts)
+  const r = await fetch(API_BASE + path, opts)
   if (!r.ok) {
     let detail = String(r.status)
     try { const j = await r.json(); if (j.detail) detail = j.detail } catch (e) { /* ignore */ }
@@ -155,6 +156,7 @@ onMounted(loadDashboard)
           <el-table-column prop="device_id" label="ID" width="140" />
           <el-table-column prop="display_name" label="名称" />
           <el-table-column prop="model_class" label="机型" width="130" />
+          <el-table-column prop="project_name" label="工程配置" width="160" />
           <el-table-column prop="position_code" label="位置" width="130" />
           <el-table-column prop="owner" label="责任人" width="130" />
           <el-table-column prop="health_level" label="健康" width="80" />

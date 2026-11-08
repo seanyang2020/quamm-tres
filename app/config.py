@@ -36,8 +36,9 @@ class Settings(BaseSettings):
     patrol_interval_minutes: int = 30
     patrol_fail_threshold: int = 2       # 连续 N 轮失败判 offline
     probe_timeout_seconds: int = 5
-    # 探测后端：mock=模拟设备 HTTP /probe（默认，本地演示）；real=真实 ADB。
-    # 注册与巡检共用同一 Prober，领域层只认 ProbeResult。
+    # 探测后端：mock=模拟设备 HTTP /probe（默认，本地演示）；
+    # real=真实 Quamm XOS 设备，adb connect + shell 读文件（无 getprop）。
+    # 决定"按 IP 探测"的全局默认；巡检则按每台 device.source 分流（见 probe.get_prober_for）。
     probe_backend: str = "mock"          # mock | real
 
     # 可用池口径：suspect（单轮失败、降级未掉线）默认不可被申请，
