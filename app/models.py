@@ -51,6 +51,18 @@ class ProductType(Base):
     image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     jenkins_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v0.14：固件策略。db_project_name 对应 DB 服务器 Daily/XOS/<name>/；
+    # required_* 为最低可分配版本（0 = 不强制），对应 semver X.Y.Z。
+    db_project_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    required_major: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    required_minor: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    required_patch: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime())
 
 
@@ -78,6 +90,8 @@ class Device(Base):
     adb_port: Mapped[int] = mapped_column(Integer, default=5555, nullable=False)
     android_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     build_fingerprint: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    # v0.14：设备当前固件版本（semver 风格，探测/刷机成功后回填）
+    firmware_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # 真实 XOS 设备指纹 / 工程配置名 / 数据来源（mock=模拟 HTTP，real=真实 adb）
     project_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
@@ -282,6 +296,33 @@ class Contact(Base):
     name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     note: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class FlashJob(Base):
+    """固件刷机任务（v0.14）：异步执行，状态落库，进程重启可查历史。
+
+    status: QUEUED / RUNNING / SUCCEEDED / FAILED
+    """
+
+    __tablename__ = "flash_job"
+
+    job_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    lease_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    device_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    product_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    preserve_data: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="QUEUED", nullable=False)
+    log_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
+    __table_args__ = (
+        Index("ix_flash_job_lease", "lease_id", "status"),
+        Index("ix_flash_job_device", "device_id"),
+    )
 
 
 class Setting(Base):

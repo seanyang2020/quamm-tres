@@ -48,6 +48,15 @@ class Settings(BaseSettings):
     # 设备网络（worker 网段发现用，一期预留）
     device_network: str = ""
 
+    # 固件下载 / 刷机（v0.14，复用现成工具，不重新实现）
+    xos_base_url: str = "http://172.16.1.201/Daily/XOS"  # DB 目录根（末尾无 /）
+    dbxostest_path: str = "/home/scm/bin/dbxostest.py"   # 下载 + 刷写编排器
+    python_bin: str = "python3"
+    flash_work_dir: str = "./var/flash"                  # dbxostest 的 cwd（downloads/tmp 落此）
+    flash_log_dir: str = "./var/flash/logs"              # 每个 job 一份日志
+    flash_http_timeout: int = 8                          # 版本目录列表 HTTP 超时
+    flash_timeout_seconds: int = 1800                    # 单次刷机子进程上限（5-15 分钟）
+
     # 通知（一期只落库，不真正发信）
     smtp_host: str = ""
     smtp_port: int = 25

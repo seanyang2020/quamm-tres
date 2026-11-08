@@ -54,6 +54,10 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
             source=d.source,
         )
         d.last_probe_at = utcnow()
+        # v0.14：真实设备探测顺带读到的固件版本回填（读不到则保留原值）
+        probed_version = (result.extra or {}).get("firmware_version")
+        if probed_version:
+            d.firmware_version = probed_version
 
         if result.reachable_l3:
             d.health_level = HealthLevel.L3

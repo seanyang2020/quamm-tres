@@ -11,3 +11,6 @@ dist/
 scripts/.demo_tokens.json
 scripts/.demo_admin_token.json
 *.bak-caddyadd/
+
+# v0.14 刷机工作目录（下载包/日志）
+var/

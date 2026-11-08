@@ -14,6 +14,10 @@ contacts / settings 为全新表，由 init_db() 的 create_all 负责建表。
 0.12.0 引入：product_type 表补工程/编译元数据 6 列（defconfig / sdk_repo_cmd /
 build_cmd / image_path / jenkins_url / notes），全部可空，允许「信息不全」机型存在。
 只用 ALTER TABLE ADD COLUMN，不重建表、不丢任何已有记录。
+
+0.14.0 引入：固件策略。product_type 补 db_project_name / required_major /
+required_minor / required_patch，device 补 firmware_version；flash_job 为全新表
+（create_all 建表）。db_project_name 按当前 5 个真实机型回填（仅空值回填，不覆盖人工修改）。
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ _DEVICE_COLUMNS = {
     "storage_type": "VARCHAR(16)",
     "has_wifi": "BOOLEAN",
     "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
+    "firmware_version": "VARCHAR(64)",
 }
 
 # credential 表新增列（v0.11）-> DDL 片段
@@ -47,6 +52,24 @@ _PRODUCT_TYPE_COLUMNS = {
     "notes": "TEXT",
 }
 
+# product_type 表新增列（v0.14）-> DDL 片段
+_PRODUCT_TYPE_FIRMWARE_COLUMNS = {
+    "db_project_name": "VARCHAR(128)",
+    "required_major": "INTEGER NOT NULL DEFAULT 0",
+    "required_minor": "INTEGER NOT NULL DEFAULT 0",
+    "required_patch": "INTEGER NOT NULL DEFAULT 0",
+}
+
+# v0.14：当前 5 个真实机型的 DB 工程名（用 dbxostest.py -ls + 设备 /etc/fw_version
+# 构建号对照确认）。只回填空值，不覆盖人工修改。
+_DB_PROJECT_BACKFILL = {
+    "esl2": "esl2",
+    "framex": "framex",
+    "moto_ld": "moto_ld_102d",
+    "qm10xh_full": "10xh_sdk_demo_lh",
+    "qm10xv_full": "XOS_SDK_Daily/10xv_lv",
+}
+
 
 def migrate(session: Session) -> None:
     """幂等迁移：补 device/credential/product_type 新列 + 补 is_admin 列 + 修正管理员标志 + 回填管理员 role。"""
@@ -56,6 +79,8 @@ def migrate(session: Session) -> None:
     _ensure_is_admin_column(session)
     _fix_admin_flags(session)
     _backfill_admin_role(session)
+    _ensure_columns(session, "product_type", _PRODUCT_TYPE_FIRMWARE_COLUMNS)
+    _backfill_db_project_names(session)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:
@@ -80,6 +105,19 @@ def _backfill_admin_role(session: Session) -> None:
         ),
         {"admin": ADMIN_EMAIL},
     )
+    session.commit()
+
+
+def _backfill_db_project_names(session: Session) -> None:
+    """v0.14：为空 db_project_name 的 5 个真实机型回填 DB 工程名（幂等）。"""
+    for type_code, project in _DB_PROJECT_BACKFILL.items():
+        session.execute(
+            text(
+                "UPDATE product_type SET db_project_name = :project "
+                "WHERE type_code = :code AND (db_project_name IS NULL OR db_project_name = '')"
+            ),
+            {"project": project, "code": type_code},
+        )
     session.commit()
 
 

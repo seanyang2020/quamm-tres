@@ -1,4 +1,4 @@
-"""MCP Server：quamm-tres（17 个工具，streamable HTTP，单实例）。
+"""MCP Server：quamm-tres（21 个工具，streamable HTTP，单实例）。
 
 鉴权由 McpAuthMiddleware 完成；工具内 require_auth() 取当前身份。
 res_admin 仅管理员可用（运行时校验），普通 token 调用返回 FORBIDDEN。
@@ -10,7 +10,7 @@ from fastmcp import FastMCP
 from app.config import settings
 from app.constants import get_version
 from app.db import SessionLocal
-from app.domain import catalog, leasing
+from app.domain import catalog, flash, leasing
 from app.domain.catalog import DomainError
 from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
@@ -264,6 +264,52 @@ def res_device_unregister(device_id: str) -> dict:
         return _err(e)
     finally:
         session.close()
+
+
+# ---------- 固件（v0.14） ----------
+
+@mcp.tool()
+def res_firmware_versions(product_type: str, limit: int = 20) -> dict:
+    """列出机型在 DB 服务器上的可用固件版本（按构建时间倒序）。
+
+    数据源与 dbxostest 相同：Daily/XOS/<db_project_name>/ 的版本目录。
+    机型未配置 db_project_name -> PRODUCT_NO_DB_PROJECT；服务器不可达 -> SOURCE_UNAVAILABLE。
+    """
+    return _guard_ro(flash.list_versions, product_type=product_type, limit=limit)
+
+
+@mcp.tool()
+def res_flash(
+    lease_id: str,
+    version: str | None = None,
+    preserve_data: bool = True,
+    confirm_erase_data: bool = False,
+) -> dict:
+    """异步刷机（5-15 分钟）：立即返回 job_id，用 res_flash_status 轮询。
+
+    - 仅 GRANTED 租约、仅租约持有人（或管理员）
+    - preserve_data=True（默认）保留 data 分区用户数据；False 必须同时 confirm_erase_data=True
+    - version 为空则刷该机型最新版本；同一租约已有任务 -> FLASH_IN_PROGRESS
+    """
+    return _guard(
+        flash.start_flash,
+        lease_id,
+        version=version,
+        preserve_data=preserve_data,
+        confirm_erase_data=confirm_erase_data,
+    )
+
+
+@mcp.tool()
+def res_flash_status(job_id: str) -> dict:
+    """查询刷机任务：QUEUED / RUNNING / SUCCEEDED / FAILED + 日志最后 50 行。"""
+    return _guard(flash.flash_status, job_id)
+
+
+@mcp.tool()
+def res_firmware_status(device_id: str) -> dict:
+    """查询设备固件版本是否满足机型要求（semver X.Y.Z 门禁与升级建议）。"""
+    return _guard_ro(flash.firmware_status, device_id)
 
 
 # ---------- 管理 ----------

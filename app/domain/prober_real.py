@@ -26,6 +26,9 @@ ADB_TIMEOUT = 3  # 单条 adb 命令最长 3s（connect / shell / disconnect 统
 
 _MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 _TOKEN_RE = re.compile(r"[a-z0-9_]{1,64}")
+# v0.14：设备固件版本。实测 XOS 落在 /etc/fw_version（如 V1.00.01.236 / 1.0.0），
+# 部分工程才有 /etc/version。只认「数字点分」形态，挡掉 shell 横幅与报错。
+_VERSION_RE = re.compile(r"[Vv]?\d+(?:\.\d+){1,3}")
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
@@ -71,6 +74,37 @@ def _first_mac(out: str) -> str | None:
     return None
 
 
+def _first_version(out: str) -> str | None:
+    """从 cat /etc/fw_version 输出里取版本串（V1.00.01.236 / 1.0.0）。"""
+    for line in out.replace("\r", "\n").split("\n"):
+        s = line.strip()
+        m = _VERSION_RE.fullmatch(s)
+        if m:
+            return s
+    return None
+
+
+def read_firmware_version(host: str, port: int = 5555) -> str | None:
+    """读设备当前固件版本；连不上 / 无文件返回 None（刷机后回读用）。
+
+    /etc/fw_version 是 XOS 实际落点；老工程可能只有 /etc/version。
+    """
+    address = f"{host}:{port or 5555}"
+    rc, out = _run(["connect", address])
+    if "connected" not in out.lower():
+        _run(["disconnect", address])
+        return None
+    try:
+        _, fw_out = _run(["-s", address, "shell", "cat /etc/fw_version"])
+        version = _first_version(fw_out)
+        if version is None:
+            _, ver_out = _run(["-s", address, "shell", "cat /etc/version"])
+            version = _first_version(ver_out)
+        return version
+    finally:
+        _run(["disconnect", address])
+
+
 def _is_fixed(mac: str | None) -> bool:
     """fe: 开头是本地管理 / 随机化地址，不能当主键。"""
     return bool(mac) and not mac.lower().startswith("fe:")
@@ -94,6 +128,7 @@ class RealXosProber:
         storage_type = "unknown"
         has_wifi = False
         board_dt: str | None = None
+        firmware_version: str | None = None
 
         # 1) connect（3s 超时）。输出含 connected 才算连上；offline / 不可达直接 L0。
         rc, out = _run(["connect", address])
@@ -101,7 +136,7 @@ class RealXosProber:
         if not connected:
             logger.info("real probe connect failed %s rc=%s: %s", address, rc, out[:120])
             _run(["disconnect", address])
-            return self._result(ProbeResult, HealthLevel.L0, None, None, None, None, "unknown", False, None)
+            return self._result(ProbeResult, HealthLevel.L0, None, None, None, None, "unknown", False, None, None)
 
         try:
             # 2) 逐个读文件（每条命令都带 timeout；文件不存在时 stdout 为空 -> 跳过）
@@ -132,6 +167,12 @@ class RealXosProber:
             joined_dt = " ".join(dt_out.replace("\x00", " ").split())
             # 只认含 "xxx,yyy" 逗号对的 compatible 串；挡掉登录 shell 横幅垃圾。
             board_dt = joined_dt if re.search(r"[a-z0-9]+,[a-z0-9]+", joined_dt) else None
+
+            _, fw_out = _run(["-s", address, "shell", "cat /etc/fw_version"])
+            firmware_version = _first_version(fw_out)
+            if firmware_version is None:
+                _, ver_out = _run(["-s", address, "shell", "cat /etc/version"])
+                firmware_version = _first_version(ver_out)
         finally:
             _run(["disconnect", address])
 
@@ -146,13 +187,13 @@ class RealXosProber:
         level = HealthLevel.L3 if (product_name and fixed_mac) else HealthLevel.L0
         return self._result(
             ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
-            storage_type, has_wifi, board_dt,
+            storage_type, has_wifi, board_dt, firmware_version,
         )
 
     @staticmethod
     def _result(
         ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
-        storage_type, has_wifi, board_dt,
+        storage_type, has_wifi, board_dt, firmware_version,
     ):
         return ProbeResult(
             level=level,
@@ -160,7 +201,7 @@ class RealXosProber:
             sn=None,                       # XOS /proc/cpuinfo Serial 全 0，无 SN
             model=product_name,            # 工程配置名即机型/类型
             android_version=None,
-            build_fingerprint=None,
+            build_fingerprint=firmware_version,
             asset_tag=None,
             extra={
                 "product_name": product_name,
@@ -171,5 +212,6 @@ class RealXosProber:
                 "storage_type": storage_type,
                 "has_wifi": has_wifi,
                 "board_dt": board_dt,
+                "firmware_version": firmware_version,
             },
         )

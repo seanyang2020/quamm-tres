@@ -3,6 +3,20 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.14.0] - 2026-11-08
+
+### 新增
+- 4 个固件 MCP 工具：`res_firmware_versions`（DB 版本目录）、`res_flash`（异步刷机）、`res_flash_status`（状态 + 日志尾）、`res_firmware_status`（semver 门禁）
+- 刷机复用 `dbxostest.py` + `xosadb2update`：后台线程执行，`flash_job` 落库，QUEUED/RUNNING/SUCCEEDED/FAILED 状态机，日志逐 job 落盘
+- 默认保留 data 分区（`preserve_data=True` → `-e data`）；清空 data 必须 `confirm_erase_data=True`
+- `product_type` 增加 `db_project_name` / `required_major` / `required_minor` / `required_patch`；`device` 增加 `firmware_version`
+- `res_apply` 版本门禁：major/minor 不满足跳过该设备，全部不满足报 NO_COMPATIBLE_DEVICE；未知版本警告放行；patch 落后仅带提示
+- 真实设备探测（`prober_real`）读取 `/etc/fw_version`（回退 `/etc/version`），巡检回填 `device.firmware_version`
+
+### 变更
+- `product_type` 5 个真实机型回填 db_project_name：esl2 / framex / moto_ld_102d / 10xh_sdk_demo_lh / XOS_SDK_Daily/10xv_lv
+- 版本号 0.14.0
+
 ## [0.13.0] - 2026-11-08
 
 ### 新增

@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState
-from app.domain import audit
+from app.domain import audit, flash
 from app.domain.catalog import DomainError
 from app.domain.queueing import cancel, enqueue, find_head, position
 from app.domain.notices import create_notice
@@ -95,7 +95,19 @@ def _resolve_target(
     )
 
 
-def _find_available(session: Session, target_type: str, target_code: str) -> Device | None:
+def _find_available(
+    session: Session,
+    target_type: str,
+    target_code: str,
+    product: ProductType | None = None,
+) -> tuple[Device | None, bool, dict | None]:
+    """按可用池口径找设备，并做 v0.14 固件版本门禁。
+
+    返回 (device, had_candidates, verdict)：
+    - device 为 None 且 had_candidates=False：本来就没有可申请设备（走排队）
+    - device 为 None 且 had_candidates=True：有设备但版本全不满足（NO_COMPATIBLE_DEVICE）
+    - verdict 为命中的版本判定（UNKNOWN_VERSION / PATCH_BEHIND / OK）
+    """
     # 与 res_list_devices / dashboard 同一口径：available 且可申请。
     # suspect（L1/L2）默认不可申请，只有 allow_apply_when_suspect=True 才放行；
     # L0 无论开关如何都不进候选。
@@ -110,7 +122,29 @@ def _find_available(session: Session, target_type: str, target_code: str) -> Dev
         q = q.filter(Device.device_id == target_code)
     else:
         q = q.filter(Device.model_class == target_code)
-    return q.order_by(Device.created_at.asc()).first()
+    candidates = q.order_by(Device.created_at.asc()).all()
+    if not candidates:
+        return None, False, None
+
+    last_verdict: dict | None = None
+    for device in candidates:
+        gate_product = product
+        if gate_product is None and device.model_class:
+            gate_product = session.get(ProductType, device.model_class)
+        if gate_product is None:
+            return device, True, None
+        verdict = flash.evaluate_version(
+            device.firmware_version,
+            gate_product.required_major,
+            gate_product.required_minor,
+            gate_product.required_patch,
+        )
+        last_verdict = verdict
+        # X/Y 不满足直接跳过这台，继续找下一台同型设备
+        if verdict["state"] in ("INCOMPATIBLE", "UPGRADE_REQUIRED"):
+            continue
+        return device, True, verdict
+    return None, True, last_verdict
 
 
 def _offer_to(session: Session, device: Device, entry: QueueEntry) -> Lease:
@@ -208,7 +242,25 @@ def apply(
         if existing is not None:
             return {"state": "GRANTED", "lease": _lease_dict(existing)}
 
-    device = _find_available(session, target_type, target_code)
+    gate_product = (
+        session.get(ProductType, target_code) if target_type == "product" else None
+    )
+    device, had_candidates, verdict = _find_available(
+        session, target_type, target_code, gate_product
+    )
+    if device is None and had_candidates:
+        # 有可用设备但固件版本全部不满足：不排队，明确报无兼容设备
+        reason = (verdict or {}).get("reason") or "固件版本不满足要求"
+        raise DomainError(
+            "NO_COMPATIBLE_DEVICE",
+            f"{target_code} 当前可用设备固件版本均不满足要求：{reason}",
+            {
+                "target_type": target_type,
+                "target_code": target_code,
+                "state": (verdict or {}).get("state"),
+                "recommendation": (verdict or {}).get("recommendation"),
+            },
+        )
     if device is not None:
         ttl = _ttl_minutes(expected_minutes)
         now = utcnow()
@@ -233,11 +285,19 @@ def apply(
         )
         try:
             session.commit()
-            return {
+            result = {
                 "state": "GRANTED",
                 "lease": _lease_dict(lease, device),
                 "renew_hint": "长任务请到期前调 res_renew 续约",
             }
+            # v0.14：版本门禁只拦 X/Y；未知版本放行但警告，patch 落后仅提示
+            state = (verdict or {}).get("state")
+            if state == "UNKNOWN_VERSION":
+                result["firmware_warning"] = "UNKNOWN_VERSION"
+                result["firmware_hint"] = (verdict or {}).get("recommendation", "")
+            elif state == "PATCH_BEHIND":
+                result["firmware_hint"] = (verdict or {}).get("recommendation", "")
+            return result
         except IntegrityError:
             # 并发下这台设备已被别人抢先（数据库唯一索引兜底）
             session.rollback()
