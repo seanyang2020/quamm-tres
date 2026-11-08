@@ -8,6 +8,7 @@ v0.11 起接入登录：rr_ token 可在 /api/auth/login 换 HttpOnly 会话 coo
 """
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
@@ -43,7 +44,7 @@ from app.models import (
     QueueEntry,
 )
 from app.security import AuthError, resolve_token
-from app.utils import hash_token, new_token, token_prefix, utcnow
+from app.utils import hash_token, new_id, new_token, token_prefix, utcnow
 
 router = APIRouter(prefix="/api")
 
@@ -652,11 +653,16 @@ def update_product_type(
         if field in payload:
             value = payload[field]
             setattr(pt, field, (str(value).strip() if value is not None else None) or None)
+    # v0.13：支持「停用 / 重新启用」同一入口（bool 或 "true"/"false" 字符串都兼容）。
+    if "enabled" in payload:
+        value = payload["enabled"]
+        pt.enabled = value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "yes", "on")
     session.commit()
     return {
         "type_code": type_code,
         "complete": catalog.product_complete(pt),
         "complete_label": "完整" if catalog.product_complete(pt) else "信息不全",
+        "enabled": pt.enabled,
     }
 
 
@@ -815,8 +821,174 @@ def smtp_test(
     return {"sent": True, "to": to}
 
 
-# ---------- 发接入凭据（v0.11，管理员） ----------
+# ---------- 发接入凭据（v0.13：先生成预览、再确认发信；旧 send 保留兼容） ----------
 
+_CREDENTIAL_BATCH_TTL = timedelta(minutes=30)
+# token 明文只在生成时返回一次，之后库里只有 hash。确认发信前把明文暂存在内存里，
+# 30 分钟有效；确认发送（或批次过期）后立即清除。单进程 uvicorn 足够，重启即失效。
+_pending_batches: dict[str, dict] = {}
+_pending_lock = threading.Lock()
+
+
+def _store_pending_batch(batch: dict) -> None:
+    """明文批次入内存，顺带清掉已过期批次。"""
+    now = utcnow()
+    with _pending_lock:
+        for key in [k for k, v in _pending_batches.items() if v["expires_at"] <= now]:
+            _pending_batches.pop(key, None)
+        _pending_batches[batch["batch_id"]] = batch
+
+
+def _take_pending_batch(batch_id: str) -> dict | None:
+    """取回并移除一个未过期批次；不存在 / 已过期返回 None。"""
+    with _pending_lock:
+        batch = _pending_batches.pop(batch_id, None)
+        if batch is None:
+            return None
+        if batch["expires_at"] <= utcnow():
+            return None
+        return batch
+
+
+def _collect_recipients(payload: dict) -> list[str]:
+    """通讯录多选 + 手填邮箱（逗号/分号/换行分隔），去重保序，仅保留含 @ 的地址。"""
+    emails = [str(e).strip().lower() for e in (payload.get("emails") or []) if str(e).strip()]
+    manual = str(payload.get("manual_emails") or "")
+    for part in manual.replace(",", "\n").replace(";", "\n").splitlines():
+        if part.strip():
+            emails.append(part.strip().lower())
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for email in emails:
+        if "@" in email and email not in seen:
+            seen.add(email)
+            ordered.append(email)
+    return ordered
+
+
+def _create_credentials(
+    session: Session, ordered: list[str], role: str, note: str | None, valid_days: int
+) -> list[tuple[str, str, str]]:
+    """为每人建 principal/contact + 一条 rr_ 凭据（库里只存 hash），返回 (email, name, token)。"""
+    now = utcnow()
+    created: list[tuple[str, str, str]] = []
+    for email in ordered:
+        contact = session.get(Contact, email)
+        name = (contact.name if contact and contact.name else None) or email
+        principal = session.query(Principal).filter(Principal.email == email).first()
+        if principal is None:
+            principal = Principal(
+                email=email,
+                name=name,
+                employee_no=None,
+                quota=settings.holder_concurrency_limit,
+                is_admin=False,
+                status="active",
+                created_at=now,
+            )
+            session.add(principal)
+            session.flush()
+        if contact is None:
+            session.add(Contact(email=email, name=name, note=note, created_at=now))
+        token = new_token()
+        session.add(
+            Credential(
+                principal_id=principal.id,
+                token_hash=hash_token(token),
+                token_prefix=token_prefix(token),
+                expires_at=now + timedelta(days=valid_days),
+                role=role,
+                note=note,
+                created_at=now,
+            )
+        )
+        created.append((email, name, token))
+    session.commit()
+    return created
+
+
+def _valid_days(payload: dict) -> int:
+    try:
+        days = int(payload.get("valid_days") or settings.credential_valid_days)
+    except (TypeError, ValueError):
+        days = settings.credential_valid_days
+    return max(1, min(days, 3650))
+
+
+@router.post("/credentials/batch-generate")
+def batch_generate_credentials(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """只生成 token 入库 + 渲染邮件主题/正文（真实 token），明文暂存 30 分钟；不发信。
+
+    返回 token 明文（仅此一次）、渲染好的邮件主题/正文、含首个 token 的 mcpServers 配置。
+    """
+    ordered = _collect_recipients(payload)
+    if not ordered:
+        raise HTTPException(status_code=400, detail="请至少选择联系人或填写邮箱")
+    role = payload.get("role") if payload.get("role") in ("admin", "user") else "user"
+    note = str(payload.get("note") or "").strip() or None
+    valid_days = _valid_days(payload)
+
+    created = _create_credentials(session, ordered, role, note, valid_days)
+    results = [
+        {
+            "email": email,
+            "name": name,
+            "role": role,
+            "token": token,
+            "subject": mailer.CREDENTIAL_SUBJECT,
+            "body": mailer.build_credential_body(token, note),
+        }
+        for email, name, token in created
+    ]
+    batch_id = new_id("batch_", 6)
+    expires_at = utcnow() + _CREDENTIAL_BATCH_TTL
+    _store_pending_batch(
+        {"batch_id": batch_id, "results": results, "note": note, "expires_at": expires_at}
+    )
+    return {
+        "batch_id": batch_id,
+        "count": len(results),
+        "expires_at": _iso(expires_at),
+        "valid_days": valid_days,
+        "role": role,
+        "results": results,
+        "mcp_config": mailer.build_mcp_config(results[0]["token"]),
+        "mcp_config_text": mailer.mcp_config_text(results[0]["token"]),
+    }
+
+
+@router.post("/credentials/batch-send")
+def batch_send_credentials(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """按 batch_id 取回 30 分钟内生成的明文，逐人真正 SMTP 发信；发完立即清除 pending。"""
+    batch_id = str(payload.get("batch_id") or "").strip()
+    if not batch_id:
+        raise HTTPException(status_code=400, detail="缺少 batch_id")
+    batch = _take_pending_batch(batch_id)
+    if batch is None:
+        raise HTTPException(status_code=410, detail="批次不存在或已超过 30 分钟，请重新生成凭据")
+
+    cfg = mailer.get_smtp_config(session)
+    results = []
+    for item in batch["results"]:
+        r = {"email": item["email"], "token": item["token"], "role": item["role"], "sent": False, "error": None}
+        try:
+            mailer.send_mail(session, item["email"], item["subject"], item["body"], cfg=cfg)
+            r["sent"] = True
+        except Exception as e:  # noqa: BLE001 - 单人失败不影响其他人，token 仍可用
+            r["error"] = str(e)
+        results.append(r)
+    return {"count": len(results), "results": results}
+
+
+# 兼容：原来「一按即生成 + 直接发信」的用法保留，Web 不再调用。
 @router.post("/credentials/send")
 def send_credentials(
     payload: dict = Body(...),

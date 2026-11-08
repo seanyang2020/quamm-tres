@@ -54,8 +54,9 @@ def save_smtp_config(session: Session, payload: dict) -> dict[str, str]:
     return get_smtp_config(session)
 
 
-def build_credential_body(token: str, note: str | None = None) -> str:
-    mcp_config = {
+def build_mcp_config(token: str) -> dict:
+    """单个 token 对应的 mcpServers 配置（发信正文与「拷贝 MCP 配置」共用同一口径）。"""
+    return {
         "mcpServers": {
             "quamm-tres": {
                 "url": settings.mcp_public_url,
@@ -63,11 +64,19 @@ def build_credential_body(token: str, note: str | None = None) -> str:
             }
         }
     }
+
+
+def mcp_config_text(token: str) -> str:
+    """可拷贝的 mcpServers JSON 文本（缩进 2，ensure_ascii=False）。"""
+    return json.dumps(build_mcp_config(token), ensure_ascii=False, indent=2)
+
+
+def build_credential_body(token: str, note: str | None = None) -> str:
     lines = [
         "你好，这是 Quamm TRES（测试资源分配管理系统）的接入凭据。",
         "将以下 MCP 配置填入你的 AI Agent 即可申请 ADB 测试设备：",
         "",
-        json.dumps(mcp_config, ensure_ascii=False, indent=2),
+        mcp_config_text(token),
         "",
         "使用：Agent 调用 res_list_products / res_apply / res_release 即可申请释放设备。",
         "本 token 有效期 90 天，到期前管理员会续期。",
