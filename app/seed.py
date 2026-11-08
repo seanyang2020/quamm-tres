@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.config import settings
-from app.constants import APP_VERSION
+from app.constants import get_version
 from app.db import SessionLocal, init_db
 from app.models import Credential, Principal, ProductType
 from app.utils import hash_token, new_token, token_prefix, utcnow
@@ -161,7 +161,7 @@ def main() -> None:
     for code, name, *_ in PRODUCT_TYPES:
         print(f"  {code}  ({name})")
     print()
-    print(f"=== 管理员（{APP_VERSION}）===")
+    print(f"=== 管理员（{get_version()}）===")
     if admin_pair:
         print(f"  {admin_pair[0]:<22} {admin_pair[1]}")
     else:

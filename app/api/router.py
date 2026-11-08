@@ -12,14 +12,14 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import (
-    APP_NAME,
-    APP_VERSION,
     PENDING_CLEANUP_DAYS,
     DeviceStatus,
     HealthLevel,
     LeaseState,
     QueueState,
+    get_version,
     is_claimable,
+    version_info,
 )
 from app.db import get_session
 from app.domain import catalog, leasing, patrol
@@ -47,7 +47,7 @@ def _iso(dt) -> str | None:
 
 @router.get("/version")
 def version():
-    return {"version": APP_VERSION, "name": APP_NAME}
+    return version_info()
 
 
 @router.get("/dashboard")
@@ -260,7 +260,7 @@ def health(session: Session = Depends(get_session)):
     last = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
     return {
         "status": "ok",
-        "version": APP_VERSION,
+        "version": get_version(),
         "last_patrol_at": _iso(last.ended_at) if last else None,
     }
 

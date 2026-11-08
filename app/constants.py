@@ -1,11 +1,31 @@
 """状态与枚举常量。"""
+from __future__ import annotations
 
-# 版本（/api/version 与 res_health 共用）
+from pathlib import Path
+
+# 应用名（版本号不在此硬编码，唯一真源是根目录 VERSION 文件）
 APP_NAME = "Quamm RES"
-APP_VERSION = "1.0.0"
+
+# VERSION 文件相对 app 包的位置（仓库根）
+_VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
 
 # 异常/待修复：pending 超过该天数未转正，列为「待清理」
 PENDING_CLEANUP_DAYS = 30
+
+
+def get_version() -> str:
+    """读取根目录 VERSION 文件（单一真源）。缺失/为空即抛错，不静默降级。"""
+    value = _VERSION_FILE.read_text(encoding="utf-8").strip()
+    if not value:
+        raise RuntimeError(f"VERSION 文件为空：{_VERSION_FILE}")
+    return value
+
+
+def version_info() -> dict:
+    """/api/version 的统一口径。stage 由版本前缀推导：0.x 为 pre-release。"""
+    v = get_version()
+    stage = "pre-release" if v.startswith("0.") else "stable"
+    return {"version": v, "name": APP_NAME, "stage": stage}
 
 
 class DeviceStatus:

@@ -70,9 +70,16 @@ tests/           # 端到端测试（含模拟设备）
 | 凭据 | `rr_` 前缀 · 一人一条 · 90 天 · 续期不换 token |
 | MCP | `quamm-res`，团队共享单实例，streamable HTTP |
 
-## Release 1.0
+## 版本管理
 
-Quamm RES 1.0 收口版本（`/api/version` 返回 `{"version":"1.0.0","name":"Quamm RES"}`，`git tag v1.0.0`）。
+- **`0.x` 为预发布**：每完成一批可验收的改动就升一位（0.10 → 0.11 → 0.12 ……）。
+- **`1.0` 的门槛** = 真实 ADB 探测接入 + 串口资源纳入 + 至少一条真实通知渠道（企微或邮件）打通。
+- **版本号只在三个地方出现**：根目录 `VERSION` 文件、`CHANGELOG.md` 标题、git tag；代码里不许硬编码版本字符串。
+  `/api/version` 返回 `{"version": "<读 VERSION>", "name": "Quamm RES", "stage": "pre-release"}`。
+
+## Release 0.10.0
+
+Quamm RES 0.10.0 预发布（`/api/version` 返回 `{"version":"0.10.0","name":"Quamm RES","stage":"pre-release"}`，`git tag v0.10.0`）。变更明细见 `CHANGELOG.md`。
 
 ### 能力清单（三域）
 
@@ -108,7 +115,7 @@ Quamm RES 1.0 收口版本（`/api/version` 返回 `{"version":"1.0.0","name":"Q
 
 不依赖 pytest，直接打真服务（MCP + REST），输出一张表
 `| # | 检查项 | 期望 | 实际 | PASS/FAIL |`，覆盖身份 / 健康 / 目录 / 申请 / 续约 / 释放 /
-管理员 / 排队 offer / 巡检 run / 八页接口；**全部 PASS 且退出码 0 才算 1.0 就绪**。
+管理员 / 排队 offer / 巡检 run / 八页接口；**全部 PASS 且退出码 0 才算 0.10.0 就绪**。
 
 排队 offer 链路真服务实测（confirm 分支 + 超时顺延分支）：
 
@@ -125,7 +132,7 @@ python -m app.seed                         # 生成管理员 + 20 个 token，�
 .venv/bin/python scripts/verify_v1.py      # 一键验收
 ```
 
-老库升级到 1.0 无需清库：启动时 `app.migrations.migrate()` 幂等补 `principal.is_admin` 列并修正管理员标志（仅 `admin@corp.com` 为管理员），现有记录不丢。
+老库升级到 0.10.0 无需清库：启动时 `app.migrations.migrate()` 幂等补 `principal.is_admin` 列并修正管理员标志（仅 `admin@corp.com` 为管理员），现有记录不丢。
 
 ## 如何运行
 

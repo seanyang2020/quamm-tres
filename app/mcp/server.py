@@ -8,7 +8,7 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from app.config import settings
-from app.constants import APP_VERSION
+from app.constants import get_version
 from app.db import SessionLocal
 from app.domain import catalog, leasing
 from app.domain.catalog import DomainError
@@ -180,7 +180,7 @@ def res_health() -> dict:
             fresh = int((now - last.ended_at).total_seconds())
         return {
             "status": "ok",
-            "version": APP_VERSION,
+            "version": get_version(),
             "last_patrol_at": last.ended_at.isoformat() if last and last.ended_at else None,
             "data_age_seconds": fresh,
         }

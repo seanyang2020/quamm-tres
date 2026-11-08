@@ -1,6 +1,6 @@
 """轻量数据迁移（幂等，SQLite/PG 通用）。
 
-1.0 收口引入：principal 表新增 ``is_admin`` 布尔列，且仅 ``admin@corp.com`` 为管理员。
+0.10.0 引入：principal 表新增 ``is_admin`` 布尔列，且仅 ``admin@corp.com`` 为管理员。
 早期库可能缺该列（模型更早版本没有），也可能把 user01 误标成管理员，这里一并修正，
 不删除任何已有记录。
 """

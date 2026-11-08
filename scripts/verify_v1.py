@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Quamm RES 1.0 一键验收脚本（不依赖 pytest，直接打真服务）。
+"""Quamm RES 一键验收脚本（不依赖 pytest，直接打真服务）。
 
 前置：服务已在 :8080 运行（Web + MCP 同进程，默认 sqlite:///./quamm_res.db）。
 脚本自动确保证据齐全（token、至少 2 台可用设备、至少 1 条巡检 run）。
 
 输出一张表：| # | 检查项 | 期望 | 实际 | PASS/FAIL |。
-全部 PASS 才视为 1.0 就绪，退出码 0；任一 FAIL 退出码非 0。
+期望版本号读根目录 VERSION 文件（单一真源），不硬编码。
+全部 PASS 才视为就绪，退出码 0；任一 FAIL 退出码非 0。
 
 用法：
   .venv/bin/python scripts/verify_v1.py
@@ -35,6 +36,11 @@ from mcp_client import (  # noqa: E402
 DB_URL = os.environ.get("RES_VERIFY_DB_URL", "sqlite:///./quamm_res.db")
 
 RESULTS: list[dict] = []
+
+
+def _expected_version() -> str:
+    """读取根目录 VERSION 文件（唯一真源），缺失即抛错让验收失败。"""
+    return (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def _short(v, limit: int = 60) -> str:
@@ -202,9 +208,10 @@ def main() -> int:
     admin = McpClient(admin_token)
     try:
         # ---- 版本 / 身份 / 健康 ----
+        expected_version = _expected_version()
         v = _get("/api/version").json()
-        check("版本号", '{"version":"1.0.0","name":"Quamm RES"}', v,
-              v.get("version") == "1.0.0" and v.get("name") == "Quamm RES")
+        check("版本号", f'{{"version":"{expected_version}","name":"Quamm RES","stage":"pre-release"}}', v,
+              v.get("version") == expected_version and v.get("name") == "Quamm RES" and v.get("stage") == "pre-release")
 
         who = normal.call("res_whoami")
         check("whoami（普通）", "is_admin=false", f"email={who.get('email')} is_admin={who.get('is_admin')}",
@@ -216,7 +223,7 @@ def main() -> int:
 
         h = admin.call("res_health")
         check("res_health", "status=ok + version", f"status={h.get('status')} version={h.get('version')}",
-              h.get("status") == "ok" and h.get("version") == "1.0.0")
+              h.get("status") == "ok" and h.get("version") == expected_version)
 
         # ---- 目录 / 设备 ----
         products = normal.call("res_list_products")
@@ -312,7 +319,11 @@ def main() -> int:
     print(f"合计：{len(RESULTS)} 项，PASS {passed}，FAIL {failed}")
     print()
     if failed == 0:
-        print("结论：1.0 就绪（全部 PASS）")
+        try:
+            ver = _expected_version()
+        except OSError:
+            ver = "?"
+        print(f"结论：{ver} 就绪（全部 PASS）")
         return 0
     print(f"结论：未就绪（{failed} 项 FAIL）")
     return 1
