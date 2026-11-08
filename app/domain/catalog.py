@@ -11,14 +11,25 @@ from datetime import timedelta
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.constants import DeviceStatus, HealthLevel, RegisterChannel, is_claimable
+from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState, RegisterChannel, is_claimable
 from app.domain import audit
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
-from app.models import Device, ProductType
+from app.models import Device, Lease, ProductType, QueueEntry
 from app.utils import new_device_id, new_flash_id, new_form_id, utcnow
 
 FORM_TTL_MINUTES = 30
+
+# v0.12：四列都非空才算「完整」，缺任一即「信息不全」（不强制填全）。
+COMPLETE_FIELDS = ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path")
+METADATA_FIELDS = (
+    "defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes",
+)
+
+
+def product_complete(pt: ProductType) -> bool:
+    """工程配置/SDK 获取/编译命令/镜像路径四列都非空 = complete。"""
+    return all((getattr(pt, f, None) or "").strip() for f in COMPLETE_FIELDS)
 
 
 class DomainError(Exception):
@@ -90,12 +101,16 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
         )
     products = q.order_by(ProductType.type_code).all()
 
-    # 每个机型统计：总数 / 可用 / 占用（量级小，Python 侧计数，跨库一致）
+    # 每个机型统计：总数 / 可用 / 占用 / leased / queued（量级小，Python 侧计数，跨库一致）
     devices = session.query(Device).filter(Device.status != DeviceStatus.RETIRED).all()
-    stats: dict[str, dict] = {p.type_code: {"total": 0, "available": 0, "occupied": 0} for p in products}
+    stats: dict[str, dict] = {
+        p.type_code: {"total": 0, "available": 0, "occupied": 0, "leased": 0, "queued": 0}
+        for p in products
+    }
+    device_model = {d.device_id: d.model_class for d in devices}
     for d in devices:
         if d.model_class not in stats:
-            stats[d.model_class] = {"total": 0, "available": 0, "occupied": 0}
+            stats[d.model_class] = {"total": 0, "available": 0, "occupied": 0, "leased": 0, "queued": 0}
         st = stats[d.model_class]
         st["total"] += 1
         if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect):
@@ -103,25 +118,50 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
         if d.status == DeviceStatus.OCCUPIED:
             st["occupied"] += 1
 
+    # leased：该机型设备上处于活跃态的租约数（按机型池汇总）
+    active_leases = (
+        session.query(Lease).filter(Lease.state.in_(LeaseState.ACTIVE)).all()
+    )
+    for l in active_leases:
+        model = device_model.get(l.device_id)
+        if model in stats:
+            stats[model]["leased"] += 1
+
+    # queued：按机型排队（target_type=product）且仍 QUEUED 的人数
+    product_queues = (
+        session.query(QueueEntry)
+        .filter(QueueEntry.target_type == "product", QueueEntry.state == QueueState.QUEUED)
+        .all()
+    )
+    for e in product_queues:
+        if e.target_code in stats:
+            stats[e.target_code]["queued"] += 1
+
     result = []
     for p in products:
-        st = stats.get(p.type_code, {"total": 0, "available": 0, "occupied": 0})
+        st = stats.get(p.type_code, {"total": 0, "available": 0, "occupied": 0, "leased": 0, "queued": 0})
         if only_available and st["available"] <= 0:
             continue
-        result.append(
-            {
-                "type_code": p.type_code,
-                "display_name": p.display_name,
-                "has_screen": p.has_screen,
-                "has_led": p.has_led,
-                "serial_count": p.serial_count,
-                "adb_port": p.adb_port,
-                "enabled": p.enabled,
-                "total": st["total"],
-                "available": st["available"],
-                "occupied": st["occupied"],
-            }
-        )
+        complete = product_complete(p)
+        row = {
+            "type_code": p.type_code,
+            "display_name": p.display_name,
+            "has_screen": p.has_screen,
+            "has_led": p.has_led,
+            "serial_count": p.serial_count,
+            "adb_port": p.adb_port,
+            "enabled": p.enabled,
+            "total": st["total"],
+            "available": st["available"],
+            "occupied": st["occupied"],
+            "leased": st["leased"],
+            "queued": st["queued"],
+            "complete": complete,
+            "complete_label": "完整" if complete else "信息不全",
+        }
+        for f in METADATA_FIELDS:
+            row[f] = getattr(p, f, None)
+        result.append(row)
     return result
 
 

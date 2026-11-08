@@ -44,6 +44,13 @@ class ProductType(Base):
     adb_port: Mapped[int] = mapped_column(Integer, default=5555, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     model_pattern: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # v0.12：工程/编译元数据（可为空，四列齐全才算「完整」）。
+    defconfig: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    sdk_repo_cmd: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    build_cmd: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    jenkins_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
 
 

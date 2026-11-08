@@ -10,6 +10,9 @@ has_wifi / source 五列，并把既有行（全部是 mock 设备）统一标 s
 0.11.0 引入：credential 表补 role / note 两列（凭据自带权限档位），并把
 admin@corp.com 的既有凭据回填为 role='admin'，保证「已有管理员」不被首次引导误判。
 contacts / settings 为全新表，由 init_db() 的 create_all 负责建表。
+
+0.12.0 引入：product_type 表补工程/编译元数据 6 列（defconfig / sdk_repo_cmd /
+build_cmd / image_path / jenkins_url / notes），全部可空，允许「信息不全」机型存在。
 只用 ALTER TABLE ADD COLUMN，不重建表、不丢任何已有记录。
 """
 from __future__ import annotations
@@ -34,11 +37,22 @@ _CREDENTIAL_COLUMNS = {
     "note": "VARCHAR(256)",
 }
 
+# product_type 表新增列（v0.12）-> DDL 片段（全部可空，缺任一即「信息不全」）
+_PRODUCT_TYPE_COLUMNS = {
+    "defconfig": "VARCHAR(255)",
+    "sdk_repo_cmd": "VARCHAR(1024)",
+    "build_cmd": "VARCHAR(1024)",
+    "image_path": "VARCHAR(512)",
+    "jenkins_url": "VARCHAR(512)",
+    "notes": "TEXT",
+}
+
 
 def migrate(session: Session) -> None:
-    """幂等迁移：补 device/credential 新列 + 补 is_admin 列 + 修正管理员标志 + 回填管理员 role。"""
+    """幂等迁移：补 device/credential/product_type 新列 + 补 is_admin 列 + 修正管理员标志 + 回填管理员 role。"""
     _ensure_device_columns(session)
     _ensure_columns(session, "credential", _CREDENTIAL_COLUMNS)
+    _ensure_columns(session, "product_type", _PRODUCT_TYPE_COLUMNS)
     _ensure_is_admin_column(session)
     _fix_admin_flags(session)
     _backfill_admin_role(session)

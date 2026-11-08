@@ -57,3 +57,54 @@ def test_whoami_admin_flag(db):
     admin = db.call("admin@corp.com", res_whoami)
     assert admin["email"] == "admin@corp.com"
     assert admin["is_admin"] is True  # 仅 admin@corp.com 是管理员
+
+
+def test_product_metadata_completeness_and_stats(db):
+    """v0.12：6 字段 + 完整度标签 + total/available/leased/queued 统计。"""
+    from app.mcp.server import res_list_products
+    from app.models import ProductType
+
+    products = {p["type_code"]: p for p in db.call("user01@corp.com", res_list_products)}
+    assert len(products) == 5
+    q = products["QM102V"]
+    assert q["complete"] is False and q["complete_label"] == "信息不全"
+    for f in ("leased", "queued", "defconfig", "sdk_repo_cmd", "build_cmd",
+              "image_path", "jenkins_url", "notes"):
+        assert f in q
+
+    dev = MockDevice(model="QM102V").start()
+    try:
+        register_device(db, "user01@corp.com", dev, "302-R1-01", "owner@corp.com")
+        q = {p["type_code"]: p for p in db.call("user01@corp.com", res_list_products)}["QM102V"]
+        assert q["total"] == 1 and q["available"] == 1 and q["leased"] == 0 and q["queued"] == 0
+
+        r = db.call("user01@corp.com", res_apply, product_type="QM102V")
+        assert r["state"] == "GRANTED"
+        q = {p["type_code"]: p for p in db.call("user01@corp.com", res_list_products)}["QM102V"]
+        assert q["leased"] == 1
+
+        db.call("user02@corp.com", res_apply, product_type="QM102V")
+        q = {p["type_code"]: p for p in db.call("user01@corp.com", res_list_products)}["QM102V"]
+        assert q["queued"] == 1
+        db.call("user01@corp.com", res_release, lease_id=r["lease"]["lease_id"])
+    finally:
+        dev.stop()
+
+    # 填齐四列 -> 完整；缺任一 -> 回到信息不全
+    s = db.session()
+    pt = s.get(ProductType, "QM102V")
+    pt.defconfig = "project_qm102v_defconfig"
+    pt.sdk_repo_cmd = "repo init -u http://x/manifest; repo sync -j8"
+    pt.build_cmd = "make distclean && make project_qm102v_defconfig && make xos -j8"
+    pt.image_path = "out/qm102v_linux/qmimages/"
+    s.commit()
+    s.close()
+    q = {p["type_code"]: p for p in db.call("user01@corp.com", res_list_products)}["QM102V"]
+    assert q["complete"] is True and q["complete_label"] == "完整"
+
+    s = db.session()
+    s.get(ProductType, "QM102V").image_path = None
+    s.commit()
+    s.close()
+    q = {p["type_code"]: p for p in db.call("user01@corp.com", res_list_products)}["QM102V"]
+    assert q["complete"] is False

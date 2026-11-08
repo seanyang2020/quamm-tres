@@ -459,21 +459,46 @@ def queue_snapshot(
     if _is_user_view(identity):
         q = q.filter(QueueEntry.principal_id == identity.principal_id)
     entries = q.all()
+    # v0.12：展开行需要「是谁 / 等哪台机型 / 等多久」，一次性取好映射避免 N+1。
+    cred_labels = {c.id: c.agent_label for c in session.query(Credential).all()}
+    device_model = {d.device_id: d.model_class for d in session.query(Device).all()}
+
+    def _waited_text(seconds: int) -> str:
+        days, rem = divmod(seconds, 86400)
+        hours, rem = divmod(rem, 3600)
+        mins, secs = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days} 天")
+        if hours:
+            parts.append(f"{hours} 小时")
+        if mins:
+            parts.append(f"{mins} 分")
+        parts.append(f"{secs} 秒")
+        return "".join(parts)
+
     items = []
     for e in entries:
         remaining = None
         if e.offer_expires_at:
             remaining = int((e.offer_expires_at - now).total_seconds())
+        email = e.principal.email if e.principal else None
+        waited_seconds = max(0, int((now - e.joined_at).total_seconds())) if e.joined_at else 0
         items.append(
             {
                 "entry_id": e.entry_id,
                 "target_type": e.target_type,
                 "target_code": e.target_code,
-                "email": e.principal.email if e.principal else None,
+                "model": e.target_code if e.target_type == "product" else device_model.get(e.target_code),
+                "email": email,
+                "name": _contact_name(session, email) or (e.principal.name if e.principal else None),
+                "agent_label": cred_labels.get(e.credential_id),
                 "purpose": e.purpose,
                 "priority": e.priority,
                 "state": e.state,
                 "position": queue_position(session, e) if e.state == QueueState.QUEUED else None,
+                "waited_seconds": waited_seconds,
+                "waited_text": _waited_text(waited_seconds),
                 "joined_at": _iso(e.joined_at),
                 "offered_at": _iso(e.offered_at),
                 "offer_expires_at": _iso(e.offer_expires_at),
@@ -603,6 +628,35 @@ def settings_view(session: Session = Depends(get_session)):
         "offer_window_seconds": settings.offer_window_seconds,
         "credential_valid_days": settings.credential_valid_days,
         "probe_backend": settings.probe_backend,
+    }
+
+
+@router.get("/product-types")
+def list_product_types(session: Session = Depends(get_session)):
+    """设备类型完整列表（含 6 个元数据字段 + 完整度标签），供设置页「设备类型」Tab。"""
+    return catalog.list_products(session)
+
+
+@router.put("/product-types/{type_code}")
+def update_product_type(
+    type_code: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """admin 编辑机型工程/编译元数据（6 字段）。允许留空（信息不全）。"""
+    pt = session.get(ProductType, type_code)
+    if pt is None:
+        raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
+    for field in ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes"):
+        if field in payload:
+            value = payload[field]
+            setattr(pt, field, (str(value).strip() if value is not None else None) or None)
+    session.commit()
+    return {
+        "type_code": type_code,
+        "complete": catalog.product_complete(pt),
+        "complete_label": "完整" if catalog.product_complete(pt) else "信息不全",
     }
 
 

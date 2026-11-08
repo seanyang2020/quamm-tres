@@ -49,6 +49,9 @@ const sendForm = ref({ emails: [], manual_emails: '', role: 'user', note: '' })
 const sendResults = ref([])
 
 const newProduct = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1 })
+const productTypes = ref([])
+const ptEditDialog = ref(false)
+const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '' })
 
 const API_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
 async function api(path, opts) {
@@ -71,6 +74,7 @@ async function loadPatrol() { patrolRuns.value = await api('/api/patrol/runs') }
 async function loadQueue() { queueData.value = await api('/api/queue') }
 async function loadAnomalies() { anomalies.value = await api('/api/anomalies') }
 async function loadSettings() { settings.value = await api('/api/settings') }
+async function loadProductTypes() { productTypes.value = await api('/api/product-types') }
 async function loadContacts() { contacts.value = await api('/api/contacts') }
 async function loadSmtp() { smtp.value = await api('/api/settings/smtp') }
 
@@ -88,7 +92,7 @@ function switchPage(key) {
   else if (key === 'queue') loadQueue()
   else if (key === 'anomaly') { loadAnomalies(); loadNotices(); loadPatrol() }
   else if (key === 'audit') loadAudit()
-  else if (key === 'settings') { loadSettings(); loadContacts(); loadSmtp() }
+  else if (key === 'settings') { loadSettings(); loadProductTypes(); loadContacts(); loadSmtp() }
 }
 
 // ---- 启动 / 登录 ----
@@ -241,6 +245,30 @@ async function disableProductType(code) {
   await api('/api/product-types/' + encodeURIComponent(code) + '/disable', { method: 'POST' })
   ElMessage.success('已停用 ' + code); loadSettings()
 }
+function openPtEdit(row) {
+  ptEditRow.value = {
+    type_code: row.type_code, display_name: row.display_name,
+    defconfig: row.defconfig || '', sdk_repo_cmd: row.sdk_repo_cmd || '',
+    build_cmd: row.build_cmd || '', image_path: row.image_path || '',
+    jenkins_url: row.jenkins_url || '', notes: row.notes || '',
+  }
+  ptEditDialog.value = true
+}
+async function savePtEdit() {
+  try {
+    const r = await api('/api/product-types/' + encodeURIComponent(ptEditRow.value.type_code), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
+        build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
+        jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
+      }),
+    })
+    ElMessage.success('已保存（' + r.complete_label + '）')
+    ptEditDialog.value = false
+    loadProductTypes(); loadSettings()
+  } catch (e) { ElMessage.error(e.message) }
+}
 
 function filterAudit(action) { auditAction.value = action || ''; loadAudit() }
 function offerCountdown(row) {
@@ -325,6 +353,8 @@ const statusTag = {
           <el-table-column prop="display_name" label="名称" />
           <el-table-column prop="total" label="总数" />
           <el-table-column prop="available" label="可用" />
+          <el-table-column prop="leased" label="已租(leased)" width="120" />
+          <el-table-column prop="queued" label="排队(queued)" width="120" />
           <el-table-column prop="occupied" label="占用" />
         </el-table>
       </div>
@@ -378,8 +408,19 @@ const statusTag = {
           <el-table-column prop="offered" label="已发 offer" />
           <el-table-column label="等待者"><template #default="{ row }">{{ row.waiters.length }}</template></el-table-column>
         </el-table>
-        <h3>全部条目</h3>
+        <h3>全部条目（点行首 + 展开看「是谁 / 等哪台机型 / 等多久」）</h3>
         <el-table :data="queueData ? queueData.entries : []" border>
+          <el-table-column type="expand">
+            <template #default="{ row }">
+              <div style="padding: 8px 24px; line-height: 1.9">
+                <div><b>申请人：</b>{{ row.name || '-' }} &lt;{{ row.email || '-' }}&gt;</div>
+                <div><b>agent_label：</b>{{ row.agent_label || '-' }}</div>
+                <div><b>等待机型：</b>{{ row.model || '-' }}（{{ row.target_type === 'product' ? '按机型池' : '指定设备 ' + row.target_code }}）</div>
+                <div><b>已等待：</b>{{ row.waited_text }}</div>
+                <div><b>用途：</b>{{ row.purpose || '-' }}</div>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column prop="entry_id" label="ticket" width="140" />
           <el-table-column prop="target_code" label="目标" width="150" />
           <el-table-column prop="target_type" label="类型" width="90" />
@@ -387,6 +428,7 @@ const statusTag = {
           <el-table-column prop="priority" label="priority" width="90" />
           <el-table-column prop="position" label="队位" width="70" />
           <el-table-column prop="state" label="状态" width="110" />
+          <el-table-column label="已等待" width="130"><template #default="{ row }">{{ row.waited_text }}</template></el-table-column>
           <el-table-column label="offer 倒计时" width="130"><template #default="{ row }">{{ offerCountdown(row) }}</template></el-table-column>
           <el-table-column prop="joined_at" label="入队时间" width="200" />
         </el-table>
@@ -523,6 +565,25 @@ const statusTag = {
             </el-form>
           </el-tab-pane>
 
+          <el-tab-pane label="设备类型" name="product-types">
+            <h3>设备类型元数据（defconfig / SDK 获取 / 编译 / 镜像 / Jenkins / 备注）</h3>
+            <p style="color: #909399">四列（defconfig + SDK 获取命令 + 编译命令 + 镜像路径）都填才算【完整】，缺任一即【信息不全】，允许信息不全的机型存在。</p>
+            <el-table :data="productTypes" border>
+              <el-table-column prop="type_code" label="type_code" width="150" />
+              <el-table-column prop="display_name" label="名称" width="140" />
+              <el-table-column prop="defconfig" label="defconfig" width="200" show-overflow-tooltip />
+              <el-table-column label="完整度" width="110">
+                <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'warning'">{{ row.complete_label }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="操作" width="100">
+                <template #default="{ row }">
+                  <el-button v-if="me.role === 'admin'" size="small" @click="openPtEdit(row)">编辑</el-button>
+                  <span v-else style="color: #c0c4cc; font-size: 12px">仅 admin 可改</span>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+
           <el-tab-pane v-if="me.role === 'admin'" label="人员通讯录" name="contacts">
             <h3>人员通讯录</h3>
             <el-table :data="contacts" border>
@@ -601,6 +662,18 @@ const statusTag = {
             <el-form-item label="备注"><el-input v-model="editRow.note" /></el-form-item>
           </el-form>
           <template #footer><el-button @click="editDialog = false">取消</el-button><el-button type="primary" @click="saveEdit">保存</el-button></template>
+        </el-dialog>
+
+        <el-dialog v-model="ptEditDialog" :title="'编辑设备类型 · ' + ptEditRow.type_code" width="640px">
+          <el-form label-width="120px">
+            <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
+            <el-form-item label="SDK 获取命令"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
+            <el-form-item label="编译命令"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
+            <el-form-item label="Jenkins 链接"><el-input v-model="ptEditRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
+            <el-form-item label="备注"><el-input v-model="ptEditRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
+          </el-form>
+          <template #footer><el-button @click="ptEditDialog = false">取消</el-button><el-button type="primary" @click="savePtEdit">保存</el-button></template>
         </el-dialog>
       </div>
     </el-main>

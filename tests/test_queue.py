@@ -131,3 +131,61 @@ def test_cancel_ticket(db):
         assert c["ok"] is True
     finally:
         dev.stop()
+
+
+# ---------- v0.12：按机型池申请 / 机型等待队列 ----------
+
+def test_apply_by_product_type_queues_in_model_queue(db):
+    dev, device_id = _register_one(db, model="QM102V")
+    try:
+        # holder 占用该机型唯一设备
+        r1 = db.call("user02@corp.com", res_apply, product_type="QM102V")
+        assert r1["state"] == "GRANTED"
+        assert r1["lease"]["device_id"] == device_id
+        lease_id = r1["lease"]["lease_id"]
+
+        # A/B 按机型申请 -> 同一机型队列
+        a = db.call("user03@corp.com", res_apply, product_type="QM102V")
+        assert a["state"] == "QUEUED" and a["position"] == 1
+        assert a["target_type"] == "product" and a["target_code"] == "QM102V"
+        b = db.call("user04@corp.com", res_apply, product_type="QM102V")
+        assert b["state"] == "QUEUED" and b["position"] == 2
+
+        # 释放任意同机型设备 -> 机型队首 A 收到 offer
+        db.call("user02@corp.com", res_release, lease_id=lease_id)
+        s = db.session()
+        ea = s.query(QueueEntry).filter(QueueEntry.entry_id == a["ticket_id"]).first()
+        assert ea.state == QueueState.OFFERED
+        s.close()
+
+        # 清场：A 确认释放 -> B offer 确认释放
+        ta = db.call("user03@corp.com", res_ticket, ticket_id=a["ticket_id"])
+        assert ta["state"] == "GRANTED"
+        db.call("user03@corp.com", res_release, lease_id=ta["lease"]["lease_id"])
+        tb = db.call("user04@corp.com", res_ticket, ticket_id=b["ticket_id"])
+        assert tb["state"] == "GRANTED"
+        db.call("user04@corp.com", res_release, lease_id=tb["lease"]["lease_id"])
+    finally:
+        dev.stop()
+
+
+def test_apply_device_id_and_target_resolution(db):
+    dev, device_id = _register_one(db)
+    try:
+        # device_id 指定具体设备（兼容旧用法）
+        r = db.call("user02@corp.com", res_apply, device_id=device_id)
+        assert r["state"] == "GRANTED"
+        db.call("user02@corp.com", res_release, lease_id=r["lease"]["lease_id"])
+
+        # 二选一冲突
+        conflict = db.call("user02@corp.com", res_apply, product_type="QM102V", device_id=device_id)
+        assert conflict.get("error") == "AMBIGUOUS_TARGET"
+        # 未知机型
+        unknown = db.call("user02@corp.com", res_apply, product_type="NO_SUCH_MODEL")
+        assert unknown.get("error") == "UNKNOWN_TARGET"
+        # 旧单参数 target 仍可用
+        legacy = db.call("user02@corp.com", res_apply, target=device_id)
+        assert legacy["state"] == "GRANTED"
+        db.call("user02@corp.com", res_release, lease_id=legacy["lease"]["lease_id"])
+    finally:
+        dev.stop()

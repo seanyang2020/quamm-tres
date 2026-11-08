@@ -54,7 +54,7 @@ def _lease_dict(lease: Lease, device: Device | None = None) -> dict:
 
 
 def _classify_target(session: Session, target: str) -> tuple[str, str]:
-    """target 填 device_id 或机型 type_code。"""
+    """target 填 device_id 或机型 type_code（旧用法）。"""
     dev = session.get(Device, target)
     if dev is not None:
         return "device", target
@@ -62,6 +62,37 @@ def _classify_target(session: Session, target: str) -> tuple[str, str]:
     if pt is not None:
         return "product", target
     raise DomainError("UNKNOWN_TARGET", f"目标 {target} 既不是 device_id 也不是机型")
+
+
+def _resolve_target(
+    session: Session,
+    target: str | None,
+    product_type: str | None,
+    device_id: str | None,
+) -> tuple[str, str]:
+    """v0.12：res_apply 两种方式二选一。
+
+    - product_type：按机型池申请（product 队列，任意同机型 available 设备空闲即分配）
+    - device_id：指定具体设备（兼容旧用法）
+    - target：旧单参数用法（device_id 或 type_code），保留以不破坏历史客户端/验收
+    """
+    if product_type and device_id:
+        raise DomainError("AMBIGUOUS_TARGET", "product_type 与 device_id 只能二选一")
+    if product_type:
+        pt = session.get(ProductType, product_type)
+        if pt is None:
+            raise DomainError("UNKNOWN_TARGET", f"机型 {product_type} 不存在于机型字典")
+        return "product", product_type
+    if device_id:
+        dev = session.get(Device, device_id)
+        if dev is None:
+            raise DomainError("UNKNOWN_TARGET", f"设备 {device_id} 不存在")
+        return "device", device_id
+    if target:
+        return _classify_target(session, target)
+    raise DomainError(
+        "MISSING_TARGET", "请提供 product_type（按机型）或 device_id（指定设备）"
+    )
 
 
 def _find_available(session: Session, target_type: str, target_code: str) -> Device | None:
@@ -142,7 +173,10 @@ def _reclaim(session: Session, lease: Lease, new_state: str, end_reason: str, ac
 def apply(
     session: Session,
     auth: AuthContext,
-    target: str,
+    target: str | None = None,
+    *,
+    product_type: str | None = None,
+    device_id: str | None = None,
     purpose: str | None = None,
     expected_minutes: int | None = None,
     priority: int = 0,
@@ -158,7 +192,7 @@ def apply(
             {"active": active, "quota": principal.quota},
         )
 
-    target_type, target_code = _classify_target(session, target)
+    target_type, target_code = _resolve_target(session, target, product_type, device_id)
 
     # 幂等兜底：同一人对同一目标已有活跃租约则直接返回（02 R-B10）
     if target_type == "device":
@@ -218,7 +252,9 @@ def apply(
         "state": "QUEUED",
         "ticket_id": entry.entry_id,
         "position": pos,
-        "target": target,
+        "target_type": target_type,
+        "target_code": target_code,
+        "target": target_code,
         "poll_hint": "调 res_ticket(ticket_id) 查询位次；资源释放时会向你发 offer（60 秒确认窗口）",
     }
 

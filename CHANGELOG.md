@@ -3,6 +3,20 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.12.0] - 2026-11-08
+
+### 新增
+- product_type 扩展 6 个工程/编译元数据字段（defconfig / sdk_repo_cmd / build_cmd / image_path / jenkins_url / notes）；幂等迁移只 ALTER ADD COLUMN
+- 完整度判定：defconfig + SDK 获取命令 + 编译命令 + 镜像路径四列都非空 = 【完整】，缺任一 = 【信息不全】；允许信息不全机型存在
+- Web 设置页新增「设备类型」Tab：列表打完整度标签，admin 可弹窗编辑 6 字段（PUT /api/product-types/{type_code}）
+- res_apply 支持两种二选一：`product_type=`（按机型池申请 / 机型等待队列）或 `device_id=`（指定设备，兼容旧用法 target=）
+- res_list_products 每个机型返回 总数 / available / leased(活跃租约) / queued(机型排队人数)
+- Web 排队列表行可展开：显示 agent_label + 申请人 email/name、等待机型、已等多久
+
+### 说明
+- `/api/version` 的 `name` 仍是 `Quamm RES`（verify_v1.py 断言的 API 契约值）；版本号由 VERSION 单一真源读取
+- 排队测试用例（verify_v1.py）同步改为按机型（product_type）申请，32 项验收保持全 PASS
+
 ## [0.11.0] - 2026-11-08
 
 ### 新增

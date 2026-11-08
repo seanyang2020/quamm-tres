@@ -102,18 +102,27 @@ def res_my_leases() -> list[dict]:
 
 @mcp.tool()
 def res_apply(
-    target: str,
+    product_type: str | None = None,
+    device_id: str | None = None,
+    target: str | None = None,
     purpose: str | None = None,
     expected_minutes: int | None = None,
     priority: int = 0,
 ) -> dict:
-    """申请设备。target 填机型 type_code（如 QM102V）或 device_id。
+    """申请设备（两种方式二选一）。
+
+    - product_type="moto_ld"：按机型池申请，该机型任意 available 设备空闲即分配；
+      全被占则进该机型的等待队列（同机型的人共用一个队列）。
+    - device_id="xxx"：指定具体某台设备（兼容旧用法）。
+    - target="xxx"：旧单参数用法（device_id 或 type_code），保留兼容历史客户端。
 
     返回 GRANTED（含 adb_address）或 QUEUED（含 ticket_id 与位次）。
     """
     return _guard(
         leasing.apply,
-        target,
+        target=target,
+        product_type=product_type,
+        device_id=device_id,
         purpose=purpose,
         expected_minutes=expected_minutes,
         priority=priority,

@@ -147,18 +147,56 @@ def _run_admin_rejection(client: McpClient, email: str) -> None:
         check("被拒后不留管理员操作记录", "0 条", "audit 查询失败", False)
 
 
-def _run_queue_offer(client_holder: McpClient, client_a: McpClient, client_b: McpClient, device_id: str) -> None:
-    h = client_holder.call("res_apply", {"target": device_id, "purpose": "verify holder"})
-    check("排队前置：holder 占用设备", "GRANTED", h.get("state"), h.get("state") == "GRANTED")
+def _prepare_product_pool(client: McpClient, admin_token: str) -> str:
+    """准备一个「恰好 1 台可用设备」的机型池，返回 type_code（按机型排队验收用）。
+
+    唯一机型码 -> 走真实 Web admin REST 建机型 -> 真实 MCP 注册 1 台该机型设备。
+    每次机型码唯一，不受历史设备/队列干扰，确保「全被占则进机型等待队列」可复现。
+    """
+    import uuid
+
+    from tests.mock_device import MockDevice
+
+    code = "VFYQ" + uuid.uuid4().hex[:8].upper()
+    with httpx.Client(base_url=API_BASE, timeout=15) as c:
+        r = c.post("/api/auth/login", json={"token": admin_token})
+        r.raise_for_status()
+        r = c.post("/api/product-types", json={"type_code": code, "display_name": code})
+        r.raise_for_status()
+
+    dev = MockDevice(model=code).start()
+    try:
+        probe = client.call(
+            "res_device_probe", {"ip": dev.ip, "port": dev.port, "hint_model": code}
+        )
+        reg = client.call(
+            "res_device_register",
+            {
+                "form_id": probe["form_id"],
+                "position_code": "302-VQ-" + code[-6:],
+                "owner": "verify@corp.com",
+            },
+        )
+        if reg.get("error"):
+            raise McpError(reg.get("message", str(reg)), code=reg.get("error"))
+    finally:
+        dev.stop()
+    return code
+
+
+def _run_queue_offer(client_holder: McpClient, client_a: McpClient, client_b: McpClient, product_type: str) -> None:
+    """按机型池排队：holder 占用该机型唯一设备，A/B 进同一机型队列，释放后队首拿 offer。"""
+    h = client_holder.call("res_apply", {"product_type": product_type, "purpose": "verify holder"})
+    check("排队前置：holder 占用机型设备", "GRANTED", h.get("state"), h.get("state") == "GRANTED")
     holder_lease = h["lease"]["lease_id"]
 
-    ra = client_a.call("res_apply", {"target": device_id, "purpose": "verify A"})
+    ra = client_a.call("res_apply", {"product_type": product_type, "purpose": "verify A"})
     ticket_a = ra["ticket_id"]
-    check("A 申请同目标进队", "QUEUED position=1", ra.get("state"), ra.get("state") == "QUEUED" and ra.get("position") == 1)
+    check("A 按机型申请进队", "QUEUED position=1", ra.get("state"), ra.get("state") == "QUEUED" and ra.get("position") == 1)
 
-    rb = client_b.call("res_apply", {"target": device_id, "purpose": "verify B"})
+    rb = client_b.call("res_apply", {"product_type": product_type, "purpose": "verify B"})
     ticket_b = rb["ticket_id"]
-    check("B 再申请同目标", "QUEUED position=2", rb.get("state"), rb.get("state") == "QUEUED" and rb.get("position") == 2)
+    check("B 再按机型申请", "QUEUED position=2", rb.get("state"), rb.get("state") == "QUEUED" and rb.get("position") == 2)
 
     ta = client_a.call("res_ticket", {"ticket_id": ticket_a})
     check("ticket 查询", "QUEUED position=1", f"{ta.get('state')} pos={ta.get('position')}",
@@ -168,9 +206,9 @@ def _run_queue_offer(client_holder: McpClient, client_a: McpClient, client_b: Mc
     q = _get("/api/queue").json()
     ea = next((e for e in q["entries"] if e["entry_id"] == ticket_a), None)
     eb = next((e for e in q["entries"] if e["entry_id"] == ticket_b), None)
-    check("占有者释放 → A 收到 offer", "OFFERED", ea and ea.get("state"),
+    check("释放任意同机型设备 → 机型队首 A 收到 offer", "OFFERED", ea and ea.get("state"),
           ea is not None and ea.get("state") == "OFFERED")
-    check("B 仍在等待", "QUEUED position=1", f"{eb and eb.get('state')} pos={eb and eb.get('position')}",
+    check("B 仍在机型队列等待", "QUEUED position=1", f"{eb and eb.get('state')} pos={eb and eb.get('position')}",
           eb is not None and eb.get("state") == "QUEUED" and eb.get("position") == 1)
 
     ca = client_a.call("res_ticket", {"ticket_id": ticket_a})
@@ -184,8 +222,8 @@ def _run_queue_offer(client_holder: McpClient, client_a: McpClient, client_b: Mc
     if cb.get("state") == "GRANTED" and cb.get("lease"):
         client_b.call("res_release", {"lease_id": cb["lease"]["lease_id"], "reason": "verify cleanup"})
     q2 = _get("/api/queue").json()
-    residual = [e for e in q2["entries"] if e["target_code"] == device_id and e["state"] in ("QUEUED", "OFFERED")]
-    check("清场后队列清空", "0 条 QUEUED/OFFERED", f"{len(residual)} 条", len(residual) == 0)
+    residual = [e for e in q2["entries"] if e["target_code"] == product_type and e["state"] in ("QUEUED", "OFFERED")]
+    check("清场后机型队列清空", "0 条 QUEUED/OFFERED", f"{len(residual)} 条", len(residual) == 0)
 
 
 def main() -> int:
@@ -234,7 +272,7 @@ def main() -> int:
 
         ids = _ensure_devices(normal, need=2)
         check("可用设备准备", ">=2 台", f"{len(ids)} 台", len(ids) >= 2)
-        d1, d2 = ids[0], ids[1]
+        d1 = ids[0]
 
         info = normal.call("res_device_info", {"device_id": d1})
         check("device_info", "返回 device_id", info.get("device_id"), info.get("device_id") == d1)
@@ -269,12 +307,13 @@ def main() -> int:
         )
         check("admin stats", "devices/leases/queue/notices 四组", _short(st), ok_stats)
 
-        # ---- 排队 offer 流程 ----
+        # ---- 排队 offer 流程（v0.12：按机型池排队） ----
+        pool_code = _prepare_product_pool(normal, admin_token)
         _run_queue_offer(
             McpClient(tokens["user10@corp.com"]),
             McpClient(tokens["user11@corp.com"]),
             McpClient(tokens["user12@corp.com"]),
-            d2,
+            pool_code,
         )
 
         # ---- 巡检 run 存在 ----
