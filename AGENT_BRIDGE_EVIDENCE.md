@@ -1,106 +1,80 @@
 ---
-task_id: t788
+task_id: t792
 ---
 
-# Quamm TRES v0.12 验收证据（task_id: t788）
+# Quamm TRES v0.14 验收证据（task_id: t792）
 
-> 设备类型元数据扩展 + 排队按机型申请。改动均为本地工作树（未提交、未 push，停住等审）。
+> MCP 固件下载/刷机 + semver 版本策略 + 保留 data 分区。本地 commit `e127831`，未 push。
 
 ## a. 编译/构建
 
 | 项 | 命令 | 退出码 | 关键结果 |
 |---|---|---|---|
-| Python 编译 | `.venv/bin/python -m py_compile app/models.py app/migrations.py app/domain/catalog.py app/domain/leasing.py app/mcp/server.py app/api/router.py app/main.py app/workers/main.py scripts/verify_v1.py tests/test_queue.py tests/test_apply_flow.py` | 0 | 11 个文件 COMPILE_OK |
-| 前端构建 | `cd web && timeout 120 npm run build` | 0 | `web/dist/index.html`、`web/dist/assets/index-CcfyzpOs.js`(1,064.35 kB)、`index-BxprUP6E.css` 生成；bundle grep 命中「设备类型 / agent_label / 完整度 / defconfig / 信息不全 / 已等待」 |
-| 单测 | `.venv/bin/python -m pytest tests/ -q` | 0 | `33 passed in 17.98s`（原 30 + 新增 3） |
-| 幂等迁移 | `timeout 60 .venv/bin/python -c "... migrate(s) ..."`（对实时库） | 0 | product_type 列确认含 `defconfig/sdk_repo_cmd/build_cmd/image_path/jenkins_url/notes` 共 15 列 |
-
-（所有可能阻塞/远程命令均以 `timeout` 包裹：py_compile/npm build 120s、pytest 200s、verify 240s、migrate 60s、各 curl 15s；全程未使用 adb/ssh/scp/串口探测。`setsid nohup ... &` 仅用于启动常驻守护进程，非阻塞命令。）
+| Python 编译 | `timeout 60 .venv/bin/python -m py_compile app/config.py app/models.py app/migrations.py app/domain/flash.py app/domain/leasing.py app/domain/prober_real.py app/domain/patrol.py app/mcp/server.py` | 0 | 8 个文件编译通过（含新建 `flash.py`） |
+| 单测 | `timeout 400 .venv/bin/python -m pytest tests/ -q` | 0 | `43 passed in 22.38s`（原 33 + 新增 `tests/test_flash.py` 10 项） |
+| 实时库迁移 | `timeout 90 .venv/bin/python -c "configure(...); init_db(); migrate(s)"` | 0 | `migrate ok`；flash_job 表创建；product_type/device 新列存在 |
+| 服务重启 | kill 988126/988194 → `setsid nohup` 启 uvicorn+worker | 0 | uvicorn 991224、worker 991225；`/api/health` 200 `{"status":"ok","version":"0.14.0"}` |
 
 ## b. 改动文件清单
 
-```
-app/models.py                 ProductType 加 6 列（defconfig/sdk_repo_cmd/build_cmd/image_path/jenkins_url/notes）
-app/migrations.py             _PRODUCT_TYPE_COLUMNS 幂等 ALTER（migrate() 调 _ensure_columns）
-app/domain/catalog.py         COMPLETE_FIELDS/METADATA_FIELDS + product_complete()；
-                              list_products 输出补 6 字段 + complete/complete_label + leased/queued（保留 total/available/occupied）
-app/domain/leasing.py         _resolve_target()（product_type / device_id 二选一 + target 旧用法）；
-                              apply() 改签名，QUEUED 返回带 target_type/target_code
-app/mcp/server.py             res_apply 增 product_type/device_id 两参数（保留 target 兼容）
-app/api/router.py             /api/queue 补 name/agent_label/model/waited_seconds/waited_text；
-                              新增 GET /api/product-types、PUT /api/product-types/{type_code}（require_admin）
-scripts/verify_v1.py          _run_queue_offer 改按机型（product_type），新增 _prepare_product_pool（REST 建机型 + MCP 注册 1 台）；
-                              保持 32 项检查数不变
-tests/test_queue.py           新增 2 个按机型用例（机型队列唤醒 / device_id 与二选一错误）
-tests/test_apply_flow.py      新增 1 个用例（6 字段/完整度/leased/queued 统计）
-web/src/App.vue               设置页新增「设备类型」Tab（列表+完整度标签+编辑弹窗，admin 可改）；
-                              排队「全部条目」表加可展开行（agent_label + email/name + 机型 + 已等待）；看板机型余量加 leased/queued 列
-VERSION                        0.11.0 -> 0.12.0
-CHANGELOG.md                   新增 [0.12.0] 段
-TODO.md                        新建，追加 5 条规划项（不实现）
-AGENT_BRIDGE_PROGRESS.md       本轮进度（task_id: t788）
-AGENT_BRIDGE_EVIDENCE.md       本文件（验收四要素，task_id: t788）
-web/dist/                      构建产物（.gitignore，npm run build 重建，未入库）
-```
-
-未提交、保留不动（t786 遗留 / 他任务产物，非本任务文件域）：
-`.agent-bridge/evidence/t786.md`、`web/dist.bak-caddyadd/`、`web/src/App.vue.bak-caddyadd`、`web/vite.config.js.bak-caddyadd`
+- `app/config.py`（XOS base url / dbxostest 路径 / 日志与工作目录 / 超时）
+- `app/models.py`（FlashJob 新表；ProductType.db_project_name/required_major/minor/patch；Device.firmware_version）
+- `app/migrations.py`（幂等加列；5 个机型 db_project_name 空值回填）
+- `app/domain/flash.py`（新增：版本目录解析、semver、异步 job 状态机、日志、固件状态）
+- `app/domain/leasing.py`（res_apply 版本门禁：NO_COMPATIBLE_DEVICE / UNKNOWN_VERSION / patch hint）
+- `app/domain/prober_real.py`（读 `/etc/fw_version`，回退 `/etc/version`；`read_firmware_version`）
+- `app/domain/patrol.py`（巡检回填 device.firmware_version，3 行）
+- `app/mcp/server.py`（4 个 MCP 工具；工具数 17→21）
+- `tests/test_flash.py`（新增 10 项）
+- `VERSION` 0.13.0 → 0.14.0；`CHANGELOG.md` 增 [0.14.0]；`.gitignore` 增 `var/`
+- 未动前端 Vue / `web/`；`web/*.bak-caddyadd` 保持未跟踪
 
 ## c. 版本/提交证据
 
 ```
 $ git log -1 --oneline
-c7d3b69 docs: t787 验收四要素与进度（v0.11 登录/凭据/通讯录/SMTP 证据）
-        ↑ 本任务基线 HEAD（未新提交，工作树改动停住等审）
+e127831 feat(v0.14): MCP firmware download/flash + semver policy + preserve data (t792)
 
 $ git status --short
- M AGENT_BRIDGE_EVIDENCE.md
- M AGENT_BRIDGE_PROGRESS.md
- M CHANGELOG.md
- M VERSION
- M app/api/router.py
- M app/domain/catalog.py
- M app/domain/leasing.py
- M app/mcp/server.py
- M app/migrations.py
- M app/models.py
- M scripts/verify_v1.py
- M tests/test_apply_flow.py
- M tests/test_queue.py
- M web/src/App.vue
-?? TODO.md
-?? .agent-bridge/evidence/t786.md            （t786 遗留）
-?? web/dist.bak-caddyadd/                    （t786 遗留）
-?? web/src/App.vue.bak-caddyadd              （t786 遗留）
-?? web/vite.config.js.bak-caddyadd           （t786 遗留）
+?? web/src/App.vue.bak-caddyadd
+?? web/vite.config.js.bak-caddyadd
+（仅 t789 遗留未跟踪备份；工作树代码已全部提交）
 
-$ git diff --stat
- 14 files changed, 538 insertions(+), 135 deletions(-)
-   （另新增未跟踪 TODO.md）
+$ git diff --stat HEAD~1 HEAD
+ .gitignore                |   3 +
+ CHANGELOG.md              |  14 +
+ VERSION                   |   2 +-
+ app/config.py             |   9 +
+ app/domain/flash.py       | 523 ++++++++++++++++++++++++++++++++++
+ app/domain/leasing.py     |  70 ++++++--
+ app/domain/patrol.py      |   4 +
+ app/domain/prober_real.py |  50 ++++-
+ app/mcp/server.py         |  50 ++++-
+ app/migrations.py         |  38 ++++
+ app/models.py             |  41 ++++
+ tests/test_flash.py       | 331 ++++++++++++++++++++++
+ 12 files changed, 1123 insertions(+), 12 deletions(-)
 ```
 
-- 基线 HEAD：`c7d3b69`；本任务未 commit、未 push（停住等审）。
-- `VERSION`：0.11.0 -> 0.12.0；`/api/version` 由 VERSION 单一真源读取，`name` 保留 `Quamm RES` 契约值、`stage=pre-release`。
-- Gerrit change：无/不适用（remote 为 GitHub SSH `git@github.com:seanyang2020/quamm-tres.git`，无 Gerrit）。
+- Gerrit change：无/不适用（远端为 GitHub SSH，无 Gerrit）。
+- 基线：`65b11e8`（v0.13.0 t791）；本轮本地 commit `e127831`，未 push。
 
 ## d. 验证/自测
 
 | 项 | 命令 / 操作 | 结果 |
 |---|---|---|
-| 32 项验收（强制） | `timeout 240 .venv/bin/python scripts/verify_v1.py` | 退出码 0，`合计：32 项，PASS 32，FAIL 0`，`0.12.0 就绪（全部 PASS）`；其中 #16-23 为按机型排队（holder 占机型设备 → A/B 进机型队列 → 释放 → 机型队首 A 收 offer → 确认 → 清场） |
-| 单测 | `timeout 200 .venv/bin/python -m pytest tests/ -q` | 退出码 0，`33 passed in 17.98s` |
-| 服务重启 | kill 旧 963951/961623 → 重启 uvicorn(966592)+worker(966593)，`setsid nohup` 脱离会话 | `/api/health` 200 `{"status":"ok","version":"0.12.0"}`；`/api/version` 0.12.0；启动日志无迁移报错；两进程 SID=PID 常驻，`ss :9100` LISTEN |
-| Web 产物 | `GET /` / `GET /assets/index-CcfyzpOs.js` | 200；返回 `Quamm TRES 控制台` 且引用新 bundle |
-| 设备类型 Tab/REST | `POST /api/product-types`（admin）→ `GET /api/product-types` → `PUT`（填 4 列）→ `PUT`（清 image_path） | 200；字段齐全；初始 `信息不全` → 填齐 `完整` → 缺一列回 `信息不全`；匿名 PUT → 401 |
-| 排队展开字段 | `GET /api/queue` | entries 含 `name/agent_label/model/waited_text/waited_seconds` |
-| res_list_products | MCP `res_list_products` | 每机型含 `total/available/leased/queued` + `complete_label` |
-| res_apply 二选一 | MCP `res_apply` | `device_id=` → GRANTED；同时给 `product_type+device_id` → `AMBIGUOUS_TARGET`；未知机型 → `UNKNOWN_TARGET`；旧 `target=` 仍可用 |
-| 幂等迁移 | 实时库连续 migrate | 6 列存在，重复执行不报错、不丢记录 |
+| 单测 | `timeout 400 .venv/bin/python -m pytest tests/ -q` | 43 passed；覆盖：成功/失败/清空 data 确认/同租约互斥/他人租约拒绝/版本列表排序/不可达/无工程/门禁 |
+| MCP 工具数 | `tools/list`（HTTP JSON-RPC，临时凭据） | 21 个；含 `res_firmware_versions` / `res_flash` / `res_flash_status` / `res_firmware_status` |
+| 版本目录 | MCP `res_firmware_versions` ×5 机型 | esl2 369、framex 922、moto_ld 154、qm10xh_full 236、qm10xv_full 130（均按时间倒序） |
+| 版本门禁 | MCP `res_apply`（moto_ld，fw 为空） | GRANTED + `firmware_warning=UNKNOWN_VERSION` |
+| 真实刷机 | MCP `res_flash(lease_id=L-72569dbde9, version=154, preserve_data=true)` | job `fj_6241faa6a063`：QUEUED→RUNNING→SUCCEEDED；日志含 `xosadb2update -f -a -e data`、`✓ 更新命令执行成功` |
+| 首次失败留证 | 同上（修正前） | job `fj_16a108151b48` FAILED：`argument -u/--update-args: expected one argument`；改用 `--update-args=` 后成功 |
+| 刷机后固件 | `res_firmware_status(dev_dfbff92075)` | `current_version=154`；required 均 0；`upgrade_needed=false`（版本串为纯 build 号，按 UNKNOWN_VERSION 展示） |
+| 设备回读 | 刷机后线程 adb 回读 `/etc/fw_version` | 设备重启期间 `No route to host`，回读失败，按约定落刚刷版本号 `154`；约 15 分钟后仍不可达 |
+| 目标巡检 | `run_patrol_round(session, ['dev_dfbff92075'])` | L0、fails=1，health=L0（移出可申请池） |
+| 服务 | `/api/health`、`/api/version` | 200；`0.14.0`，name `Quamm TRES` |
 
-### 边界说明（不破坏既有验收）
+### 备注
 
-- `scripts/verify_v1.py` 32 项检查数不变、全部 PASS；排队用例已按要求同步改为按机型（`product_type`），其余 `target=device_id` 用法保留兼容。
-- `res_apply` 保留旧单参数 `target`（device_id 或 type_code），历史客户端 / httpx 验收 / pytest 直调均不受影响。
-- `/api/version` 的 `name` 保留 `Quamm RES`（verify_v1.py 硬断言契约值）。
-- `app/domain/prober_real.py` 未改动；端口 9100 不变；迁移只 `ALTER TABLE ADD COLUMN`（幂等），6 列全部可空、不强制填全。
-- 冒烟新建的临时机型 `SMOKEQ*` 已从实时库清理（无设备/队列引用）。
+- 保留 data：真实任务 `-u` 透传为 `-f -a -e data`，未出现 `-e` 缺失；erase 分支单测验证不含 `-e data`。
+- 设备未恢复网络属真实刷机常见结果，任务允许「中途失败也接受」；未再对设备做任何写操作。
