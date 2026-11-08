@@ -18,14 +18,9 @@ from app.utils import hash_token, new_token, token_prefix, utcnow
 ADMIN_EMAIL = "admin@corp.com"
 CONTACTS_SEED_PATH = "/tmp/contacts_seed.json"
 
-PRODUCT_TYPES = [
-    # type_code, display_name, has_screen, has_led, serial_count, adb_port, model_pattern
-    ("QM102V", "QM102V", True, True, 1, 5555, "QM102V"),
-    ("QM10XD", "QM10XD", True, False, 2, 5555, "QM10XD"),
-    ("QM108H", "QM108H", False, True, 1, 5555, "QM108H"),
-    ("QM102V-Lite", "QM102V Lite", False, False, 1, 5555, "QM102V-Lite"),
-    ("BES2800BP", "BES2800BP", False, False, 2, 5555, "BES2800BP"),
-]
+# v0.17：移除旧 demo/mock 机型种子，避免每次启动 seed_product_types 把它们重新插回。
+# 真实机型由设备探测/设备类型管理页维护，不再预置 mock 机型。
+PRODUCT_TYPES: list[tuple] = []
 
 
 def seed_product_types(session) -> None:
