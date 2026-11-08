@@ -57,6 +57,28 @@ const productTypes = ref([])
 const ptEditDialog = ref(false)
 const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '' })
 
+// v0.15：图例 + 新增机型
+const legendVisible = ref(false)
+const versionInfo = ref(null)
+const ptCreateDialog = ref(false)
+const ptCreateForm = ref(null)
+const ptAllowIncomplete = ref(false)
+const ptCreateSaving = ref(false)
+const ptCreateRow = ref({
+  type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
+  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+})
+const ptCreateRules = computed(() => {
+  const req = { required: true, message: '该字段默认必填（可勾选底部「允许不完整」放开）', trigger: 'blur' }
+  return ptAllowIncomplete.value
+    ? { type_code: [{ required: true, message: 'type_code 必填', trigger: 'blur' }] }
+    : {
+        type_code: [{ required: true, message: 'type_code 必填', trigger: 'blur' }],
+        defconfig: [req], sdk_repo_cmd: [req], build_cmd: [req],
+        image_path: [req], jenkins_url: [req],
+      }
+})
+
 const API_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
 async function api(path, opts) {
   const r = await fetch(API_BASE + path, { credentials: 'include', ...opts })
@@ -337,6 +359,63 @@ async function savePtEdit() {
 }
 
 function filterAudit(action) { auditAction.value = action || ''; loadAudit() }
+
+// ---- v0.15：图例 ----
+async function openLegend() {
+  legendVisible.value = true
+  if (!versionInfo.value) {
+    try { versionInfo.value = await api('/api/version') } catch (e) { versionInfo.value = null }
+  }
+}
+
+// ---- v0.15：新增机型（先 POST 建基础记录，再 PUT 补工程字段）----
+function resetPtCreate() {
+  ptCreateRow.value = {
+    type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
+    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+  }
+  ptAllowIncomplete.value = false
+  ptCreateForm.value?.clearValidate?.()
+}
+function openPtCreate() {
+  resetPtCreate()
+  ptCreateDialog.value = true
+}
+async function submitPtCreate() {
+  if (!ptCreateForm.value) return
+  try {
+    await ptCreateForm.value.validate()
+  } catch (e) {
+    ElMessage.warning('请先补齐必填字段，或勾选「允许不完整（仅测试）」')
+    return
+  }
+  const row = ptCreateRow.value
+  const code = row.type_code.trim()
+  ptCreateSaving.value = true
+  try {
+    await api('/api/product-types', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        type_code: code, display_name: row.display_name,
+        has_screen: row.has_screen, has_led: row.has_led, serial_count: row.serial_count,
+      }),
+    })
+    await api('/api/product-types/' + encodeURIComponent(code), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
+        image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+      }),
+    })
+    ElMessage.success('已新增机型 ' + code)
+    ptCreateDialog.value = false
+    loadProductTypes(); loadSettings()
+  } catch (e) {
+    ElMessage.error(e.message)
+  } finally {
+    ptCreateSaving.value = false
+  }
+}
 function offerCountdown(row) {
   if (row.state !== 'OFFERED' || row.offer_remaining_seconds == null) return '-'
   const s = row.offer_remaining_seconds
@@ -346,6 +425,33 @@ const statusTag = {
   available: 'success', occupied: 'warning', pending: 'info',
   pending_removal: 'warning', retired: 'info', offline: 'danger', maintenance: 'danger',
 }
+const legendHealth = [
+  { level: 'L3', meaning: '健康，默认可申请' },
+  { level: 'L2', meaning: '可疑，最近巡检有波动，默认不分配' },
+  { level: 'L1', meaning: '降级，多次探测失败' },
+  { level: 'L0', meaning: '离线 / 完全不可达' },
+]
+const legendDevice = [
+  { state: 'available', meaning: '空闲，可申请' },
+  { state: 'occupied', meaning: '已被租用' },
+  { state: 'pending', meaning: '注册中' },
+  { state: 'offline', meaning: '离线' },
+]
+const legendLease = [
+  { state: 'GRANTED', meaning: '在用' },
+  { state: 'EXPIRING', meaning: '宽限期，即将到期' },
+  { state: 'RESERVED', meaning: '排到 offer 窗口，待确认' },
+]
+const legendQueue = [
+  { state: 'QUEUED', meaning: '排队中' },
+  { state: 'OFFERED', meaning: '已发 offer，60 秒内确认' },
+  { state: 'GRANTED', meaning: '已分配' },
+  { state: 'CANCELLED', meaning: '已取消' },
+]
+const legendRole = [
+  { role: 'admin', meaning: '全量查看 + 强制回收 + 发凭据 + 机型管理' },
+  { role: 'user', meaning: '只看自己的租约与申请' },
+]
 </script>
 
 <template>
@@ -386,7 +492,10 @@ const statusTag = {
   <!-- 主界面 -->
   <el-container v-else style="height: 100vh">
     <el-aside width="200px" style="border-right: 1px solid #eee; display: flex; flex-direction: column">
-      <div style="padding: 16px; font-weight: 700">Quamm TRES</div>
+      <div style="padding: 16px; font-weight: 700; display: flex; align-items: center; justify-content: space-between">
+        <span>Quamm TRES</span>
+        <el-button size="small" text style="font-weight: 700; padding: 2px 6px" @click="openLegend" title="术语与状态说明">?</el-button>
+      </div>
       <el-menu :default-active="active" @select="switchPage" style="flex: 1">
         <el-menu-item v-for="p in pages" :key="p.key" :index="p.key">{{ p.label }}</el-menu-item>
       </el-menu>
@@ -632,8 +741,11 @@ const statusTag = {
           </el-tab-pane>
 
           <el-tab-pane label="设备类型" name="product-types">
-            <h3>设备类型元数据（defconfig / SDK 获取 / 编译 / 镜像 / Jenkins / 备注）</h3>
-            <p style="color: #909399">四列（defconfig + SDK 获取命令 + 编译命令 + 镜像路径）都填才算【完整】，缺任一即【信息不全】，允许信息不全的机型存在。</p>
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
+              <h3 style="margin: 0">设备类型元数据（defconfig / SDK 获取 / 编译 / 镜像 / Jenkins / 备注）</h3>
+              <el-button v-if="me.role === 'admin'" type="primary" @click="openPtCreate">新增机型</el-button>
+            </div>
+            <p style="color: #909399">新增机型时 5 个工程字段默认必填；勾选「允许不完整（仅测试）」可放开。机型只能启用/停用，不支持删除。</p>
             <el-table :data="enabledProductTypes" border>
               <el-table-column prop="type_code" label="type_code" width="150" />
               <el-table-column prop="display_name" label="名称" width="140" />
@@ -795,6 +907,61 @@ const statusTag = {
             <el-form-item label="备注"><el-input v-model="ptEditRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
           </el-form>
           <template #footer><el-button @click="ptEditDialog = false">取消</el-button><el-button type="primary" @click="savePtEdit">保存</el-button></template>
+        </el-dialog>
+
+        <el-dialog v-model="ptCreateDialog" title="新增机型" width="720px" :close-on-click-modal="false">
+          <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="120px">
+            <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
+            <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>
+            <el-form-item label="有屏"><el-switch v-model="ptCreateRow.has_screen" /></el-form-item>
+            <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
+            <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
+            <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
+            <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
+            <el-form-item label="编译命令" prop="build_cmd"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
+            <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
+            <el-form-item label="备注"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
+            <el-form-item>
+              <el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox>
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="ptCreateDialog = false">取消</el-button>
+            <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">新增</el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog v-model="legendVisible" title="术语与状态说明" width="680px">
+          <p v-if="versionInfo" style="margin-top: 0">
+            <strong>{{ versionInfo.name }}</strong> · 版本 {{ versionInfo.version }}
+            <span v-if="versionInfo.stage">（{{ versionInfo.stage }}）</span>
+          </p>
+          <h4>健康级别 health_level</h4>
+          <el-table :data="legendHealth" border size="small">
+            <el-table-column prop="level" label="级别" width="80" />
+            <el-table-column prop="meaning" label="含义" />
+          </el-table>
+          <h4>设备状态</h4>
+          <el-table :data="legendDevice" border size="small">
+            <el-table-column prop="state" label="状态" width="120" />
+            <el-table-column prop="meaning" label="含义" />
+          </el-table>
+          <h4>租约状态</h4>
+          <el-table :data="legendLease" border size="small">
+            <el-table-column prop="state" label="状态" width="120" />
+            <el-table-column prop="meaning" label="含义" />
+          </el-table>
+          <h4>排队状态</h4>
+          <el-table :data="legendQueue" border size="small">
+            <el-table-column prop="state" label="状态" width="120" />
+            <el-table-column prop="meaning" label="含义" />
+          </el-table>
+          <h4>角色</h4>
+          <el-table :data="legendRole" border size="small">
+            <el-table-column prop="role" label="角色" width="100" />
+            <el-table-column prop="meaning" label="含义" />
+          </el-table>
         </el-dialog>
       </div>
     </el-main>
