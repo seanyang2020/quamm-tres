@@ -29,6 +29,44 @@ const setupError = ref('')
 // ---- 数据 ----
 const dashboard = ref(null)
 const devices = ref([])
+// v0.17：设备按机型分组 + 关键字搜索 / 机型筛选
+const deviceSearch = ref('')
+const deviceTypeFilter = ref('')
+const deviceGroupNames = ref([])
+const filteredDevices = computed(() => {
+  const kw = deviceSearch.value.trim().toLowerCase()
+  const type = deviceTypeFilter.value
+  return devices.value.filter((d) => {
+    if (type && d.model_class !== type) return false
+    if (!kw) return true
+    const hay = [
+      d.device_id, d.display_name, d.model_class, d.project_name, d.position_code,
+      d.owner, d.adb_address, d.status, d.health_level, d.mac,
+    ]
+      .filter((v) => v !== null && v !== undefined)
+      .join(' ')
+      .toLowerCase()
+    return hay.includes(kw)
+  })
+})
+const deviceGroups = computed(() => {
+  const map = new Map()
+  for (const d of filteredDevices.value) {
+    const key = d.model_class || '未分类'
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(d)
+  }
+  return [...map.entries()]
+    .map(([type, list]) => ({
+      type,
+      devices: list,
+      count: list.length,
+      available: list.filter((d) => d.status === 'available').length,
+      occupied: list.filter((d) => d.status === 'occupied').length,
+      offline: list.filter((d) => d.status === 'offline' || d.status === 'pending').length,
+    }))
+    .sort((a, b) => a.type.localeCompare(b.type))
+})
 const leases = ref([])
 const credentials = ref([])
 const notices = ref([])
@@ -108,7 +146,14 @@ async function api(path, opts) {
 }
 
 async function loadDashboard() { dashboard.value = await api('/api/dashboard') }
-async function loadDevices() { devices.value = await api('/api/devices') }
+async function loadDevices() {
+  devices.value = await api('/api/devices')
+  // 默认全部机型分组展开
+  deviceGroupNames.value = [...new Set(devices.value.map((d) => d.model_class || '未分类'))]
+}
+function toggleAllDeviceGroups(expand) {
+  deviceGroupNames.value = expand ? deviceGroups.value.map((g) => g.type) : []
+}
 async function loadLeases() { leases.value = await api('/api/leases') }
 async function loadCredentials() { credentials.value = await api('/api/credentials') }
 async function loadNotices() { notices.value = await api('/api/notices') }
@@ -599,20 +644,63 @@ const legendRole = [
 
       <!-- 设备 -->
       <div v-else-if="active === 'devices'">
-        <h2>设备</h2>
-        <el-table :data="devices" border>
-          <el-table-column prop="device_id" label="ID" width="140" />
-          <el-table-column prop="display_name" label="名称" />
-          <el-table-column prop="model_class" label="机型" width="130" />
-          <el-table-column prop="project_name" label="工程配置" width="160" />
-          <el-table-column prop="position_code" label="位置" width="130" />
-          <el-table-column prop="owner" label="责任人" width="130" />
-          <el-table-column prop="health_level" label="健康" width="80" />
-          <el-table-column label="状态" width="100">
-            <template #default="{ row }"><el-tag :type="statusTag[row.status] || 'info'">{{ row.status }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="adb_address" label="ADB 地址" width="160" />
-        </el-table>
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px">
+          <h2 style="margin: 0">设备</h2>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap">
+            <el-input
+              v-model="deviceSearch"
+              placeholder="搜索 ID / 名称 / 责任人 / 位置 / ADB / 状态"
+              clearable
+              style="width: 300px"
+            />
+            <el-select v-model="deviceTypeFilter" placeholder="全部机型" clearable style="width: 160px">
+              <el-option
+                v-for="t in [...new Set(devices.map((d) => d.model_class || '未分类'))].sort()"
+                :key="t"
+                :label="t"
+                :value="t"
+              />
+            </el-select>
+            <el-button size="small" @click="toggleAllDeviceGroups(true)">全部展开</el-button>
+            <el-button size="small" @click="toggleAllDeviceGroups(false)">全部收起</el-button>
+          </div>
+        </div>
+        <p style="color: #909399; margin: 8px 0">
+          共 {{ filteredDevices.length }} 台（{{ deviceGroups.length }} 个机型分组）；点击分组标题可展开/收起。
+        </p>
+        <el-collapse v-model="deviceGroupNames">
+          <el-collapse-item
+            v-for="g in deviceGroups"
+            :key="g.type"
+            :name="g.type"
+            :title="g.type + '（' + g.count + ' 台）'"
+          >
+            <template #title>
+              <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
+                <span style="font-weight: 700">{{ g.type }}</span>
+                <el-tag size="small" type="info">共 {{ g.count }}</el-tag>
+                <el-tag size="small" type="success">可用 {{ g.available }}</el-tag>
+                <el-tag size="small" type="warning">占用 {{ g.occupied }}</el-tag>
+                <el-tag size="small" type="danger">离线/待检 {{ g.offline }}</el-tag>
+              </div>
+            </template>
+            <el-table :data="g.devices" border size="small">
+              <el-table-column prop="device_id" label="ID" width="140" />
+              <el-table-column prop="display_name" label="名称" width="130" />
+              <el-table-column prop="project_name" label="工程配置" width="150" show-overflow-tooltip />
+              <el-table-column prop="position_code" label="位置" width="120" />
+              <el-table-column prop="owner" label="责任人" width="120" />
+              <el-table-column prop="health_level" label="健康" width="70" />
+              <el-table-column label="状态" width="100">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="statusTag[row.status] || 'info'">{{ row.status }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="adb_address" label="ADB 地址" width="160" />
+            </el-table>
+          </el-collapse-item>
+        </el-collapse>
+        <el-empty v-if="!deviceGroups.length" description="没有符合条件的设备" />
       </div>
 
       <!-- 占用（申请人 email + name） -->
