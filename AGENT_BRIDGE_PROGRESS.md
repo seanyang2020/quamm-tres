@@ -1,36 +1,41 @@
-# Quamm RES 实现进度
+# Quamm TRES 实现进度
 
-> 任务：quamm-tres 接入真实 XOS 设备（real ADB 探测 + 工程配置名）（task_id: t786）
+> 任务：Quamm TRES v0.11 登录认证 + 凭据管理 + 通讯录 + SMTP 发 token + 全局改名（task_id: t787）
 
-## 状态：已完成（commit + push 待审）
+## 状态：已完成（功能 + 证据已提交，push 待审）
 
 ## 本轮进展
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| RealXosProber | `app/domain/prober_real.py`：`adb connect`(3s) → `adb -s shell` 读 `/etc/product_name`、eth0/wlan0 MAC、`/proc/cmdline`、`/proc/device-tree/compatible`、`test -d wlan0` → `adb disconnect`；固定 mac 排除 fe: 随机地址；L0/L3 判定；**不调用 getprop**（XOS 无该命令）；所有 adb 命令 GNU timeout 3s + subprocess 超时双保险 | ✅ |
-| device 表字段 | `project_name`/`board_dt`/`storage_type`/`has_wifi`/`source` 五列；`app/migrations.py` 幂等 ALTER，旧库不丢数据，既有 22 台标 `source=mock` | ✅ |
-| settings / 分流 | `probe_backend` 的 `real` 取值接 RealXosProber（替换旧 getprop 版 AdbProber 实现，保留 `AdbProber` 旧名兼容单测）；新增 `get_prober_for(source)` / `probe_device(source=)`；巡检按 `device.source` 分流，mock 永远走 HTTP /probe | ✅ |
-| 真实机队注册 | `scripts/register_real_fleet.py`：14 台全部入库；连不上/探测不完整按用户要求记 pending；position `REAL-AUTO-01..14`、owner `auto-import`；model_class 用 project_name（补 product_type 记录满足外键，不因字典拒绝） | ✅ |
-| Web / API | `web/src/App.vue` 设备表加「工程配置」列并 rebuild dist；`/api/dashboard` 增 `projects`（工程配置名分布）、`/api/devices` 增 `project_name` 等字段 | ✅ |
+| 全局改名 | 网页 title / 侧栏 / FastAPI title / MCP server name `quamm-tres` / MCP 配置 key / README / CHANGELOG / 日志前缀 `quamm-tres.worker` / demo 描述 统一 Quamm TRES；VERSION 0.10.0→0.11.0 | ✅ |
+| 登录认证 | `app/web_auth.py`：HMAC 签名 HttpOnly cookie（8h），cookie 只存 credential_id 每次复核；`/api/auth/login\|me\|logout\|setup-status\|setup`；rr_ token 与 MCP 同一套 | ✅ |
+| 首次引导 | 库中无 role=admin token 时 `needs_setup=true`，`/api/auth/setup` 凭邮箱生成第一个 admin token；已有 admin@corp.com 保留，重复调用 409 | ✅ |
+| 权限两档 | admin 看全部；user 只看自己的租约/申请/凭据，dashboard 隐藏占用详情；写/管理接口 require_admin（401/403）；MCP 仍 Authorization header 不受影响 | ✅ |
+| 凭据 + 通讯录 | `contacts` 表（17 人 @quaming.com 种子）、`settings` 表；设置页「人员通讯录」Tab（增删改查）、「发接入凭据」Tab（通讯录多选/手填 + 权限 + 备注 + SMTP 发送）；凭据台账增 name/role/note/active/created_at，续期/吊销 | ✅ |
+| SMTP 发 token | 配置存 settings 表（任务给定默认值），管理员可改 + 发测试邮件；纯文本正文 = MCP 配置 JSON + 使用说明；smtplib 全程 15s 超时 | ✅ |
+| Web lease 申请人 | `/api/leases` 增 `name`（token→联系人），占用列表显示 email + 姓名 | ✅ |
+| 前端 | `web/src/App.vue`：登录页 / 首次引导页 / 登出 / 设置 4 Tab，沿用 Element Plus，无新框架；`npm run build` 重建 dist | ✅ |
+| 兼容性 | `scripts/verify_v1.py` 未改动；`/api/version` 的 `name` 保留 `Quamm RES` 契约值；只读接口匿名 200；迁移只 ALTER ADD COLUMN 幂等；prober_real.py 未动；端口 9100 不变 | ✅ |
 
 ## 结果
 
-- 14 台真实设备入库：6 台 L3/available（moto_ld、qm10xh_full×2、qm10xv_full、framex×2），8 台 pending（含 esl2×2 因仅 fe: 随机 MAC 无主键、2 台 adb offline、4 台探测不完整）。
-- 22 台 mock 仍 `source=mock` / `available` / `L3`；新代码 scoped patrol `scanned=22 l3=22`。
-- `/api/dashboard` 与 `/api/devices` 均返回 `project_name`。
+- `verify_v1.py` 32/32 PASS（0.11.0 就绪）；`pytest tests/ -q` 30 passed；`py_compile` 与 `npm run build` 退出码均 0。
+- 重启 uvicorn + worker 后 `/api/health` 200、`/api/version` 0.11.0，启动迁移无报错。
+- 真机实测：admin token 登录拿到 HttpOnly cookie；通讯录 17 人 CRUD 正常；SMTP 测试邮件与发凭据邮件均 `sent=true`（真实发出）；user token 登录后 admin 接口 403、只看自己租约；匿名 admin 写接口 401。
+- 活跃租约显示申请人 email + 姓名；user02 看不到 user01 的租约。
 
 ## 验证
 
 - `.venv/bin/python -m pytest tests/ -q` → 30 passed（退出码 0）
-- `scripts/verify_v1.py` → 32/32 PASS（退出码 0）
-- `cd web && npm run build` → 退出码 0，dist 重建
-- RealXosProber 对 172.16.10.192 → product_name=moto_ld / mac=00:0e:c6:7b:24:ba / storage=nand / L3
-- `py_compile` 10 个改动文件 → 退出码 0
-- 证据详见 `AGENT_BRIDGE_EVIDENCE.md`（task_id: t786）
+- `timeout 180 .venv/bin/python scripts/verify_v1.py` → 32/32 PASS（退出码 0）
+- `cd web && timeout 60 npm run build` → 退出码 0，dist 重建
+- Live HTTP 冒烟：登录/通讯录/SMTP 测试邮件/发凭据/user 过滤/引导/租约申请人（脚本退出码 0）
+- 证据详见 `AGENT_BRIDGE_EVIDENCE.md`（task_id: t787）及 `.agent-bridge/evidence/t787.md`
 
-## 未做
+## 未做 / 说明
 
-- 未动 `docs/` 下已有设计文档。
-- 真实 adb 仅读文件，未 push / remount / 刷机；未调用 getprop。
-- 未改动 `scripts/verify_v1.py`；老库迁移不删记录。
+- 未 push（共享远端，停住等审）；t786 遗留的 4 个未跟踪备份未触碰、未 git add。
+- `web/dist/` 为 .gitignore 构建产物，未入库；部署时需 `npm run build` 或沿用已重建的磁盘 dist。
+- 冒烟测试生成的测试凭据与孤立 principal 已从实时库清理。
+- `/api/version` 的 `name` 保留 Quamm RES：verify_v1.py 对该字段有硬断言，属 API 契约值，产品展示名已全部改为 Quamm TRES（README/CHANGELOG 已注明）。
