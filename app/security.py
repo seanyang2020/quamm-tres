@@ -64,11 +64,16 @@ def resolve_token(session: Session, token: str) -> AuthContext:
     credential.last_used_at = now
     session.commit()
 
+    # v0.11：凭据自带 role（admin/user）；同时兼容老库的 principal.is_admin 标志，
+    # 保证 admin@corp.com 与历史行为不变。
+    is_admin = bool(
+        getattr(credential, "role", None) == "admin" or principal.is_admin
+    )
     return AuthContext(
         principal=principal,
         credential=credential,
         email=principal.email,
-        is_admin=principal.is_admin,
+        is_admin=is_admin,
     )
 
 

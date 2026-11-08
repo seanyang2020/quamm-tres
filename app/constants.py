@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-# 应用名（版本号不在此硬编码，唯一真源是根目录 VERSION 文件）
+# /api/version 的 name 契约值：scripts/verify_v1.py 断言此字符串，保持不变以不破坏验收。
+# 产品「展示名」统一为 Quamm TRES（网页 title / MCP server name / README / 邮件 / 日志前缀）。
 APP_NAME = "Quamm RES"
 
 # VERSION 文件相对 app 包的位置（仓库根）

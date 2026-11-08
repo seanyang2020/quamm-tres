@@ -19,7 +19,7 @@ from app.db import SessionLocal, init_db
 from app.domain.probe import setup_prober_from_settings
 from app.mcp.server import build_mcp_app
 from app.migrations import migrate
-from app.seed import seed_admin, seed_product_types
+from app.seed import seed_admin, seed_contacts, seed_product_types
 
 mcp_app = build_mcp_app()
 
@@ -31,26 +31,27 @@ async def lifespan(app: FastAPI):
     # 注册（MCP）与巡检（worker）共用同一实现。
     setup_prober_from_settings()
     with SessionLocal() as session:
-        migrate(session)          # 补 is_admin 列 + 修正管理员标志（老库不丢数据）
+        migrate(session)          # 补 device/credential 新列 + 修正管理员标志（老库不丢数据）
         seed_product_types(session)
         seed_admin(session)       # 确保 admin@corp.com 存在
+        seed_contacts(session)    # /tmp/contacts_seed.json 17 人（幂等）
     # 挂载 FastMCP 的 lifespan（初始化 streamable HTTP 会话管理）
     async with mcp_app.lifespan(app):
         yield
 
 
-app = FastAPI(title="Quamm RES", lifespan=lifespan)
+app = FastAPI(title="Quamm TRES", lifespan=lifespan)
 app.include_router(api_router)
 app.mount("/mcp", mcp_app)
 
 # 静态看板：优先 web/dist（Vue 构建产物），否则退化为内联看板
 _WEB_DIST = os.path.join(os.path.dirname(__file__), "..", "web", "dist")
 _FALLBACK_HTML = """<!doctype html>
-<html lang="zh"><head><meta charset="utf-8"><title>Quamm RES 看板</title>
+<html lang="zh"><head><meta charset="utf-8"><title>Quamm TRES 看板</title>
 <style>body{font-family:system-ui,sans-serif;margin:2rem;color:#222}
 .card{display:inline-block;border:1px solid #ddd;border-radius:8px;padding:1rem;margin:.5rem;min-width:160px}
 .num{font-size:2rem;font-weight:600}</style></head><body>
-<h1>Quamm RES 看板</h1><p id="hint">加载中…</p><div id="cards"></div>
+<h1>Quamm TRES 看板</h1><p id="hint">加载中…</p><div id="cards"></div>
 <script>
 fetch('/api/dashboard').then(r=>r.json()).then(d=>{
   const cards=document.getElementById('cards');

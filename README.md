@@ -1,9 +1,9 @@
-# Quamm RES
+# Quamm TRES
 
 Quamm XOS 的测试资源分配中心：把公司所有 ADB 设备（网络 ADB，tcp 5555）与串口变成**可申请、可排队、可回收、可审计**的资源。
 
-- 面向 **Agent**：只有一个入口 —— MCP Server（`quamm-res`），凭 token 接入
-- 面向 **人**：只有管理员登录 Web 控制台；普通使用者零界面
+- 面向 **Agent**：只有一个入口 —— MCP Server（`quamm-tres`），凭 token 接入
+- 面向 **人**：管理员 / 普通成员凭 rr_ token 登录 Web 控制台（普通成员只看自己的数据）
 
 ## 当前状态
 
@@ -68,7 +68,7 @@ tests/           # 端到端测试（含模拟设备）
 | 租约 | TTL 30min · 宽限 10min · 单人并发 2 台 |
 | 巡检 | 15/30 分钟可配（默认 30）；单轮失败标 suspect，连续 2 轮判 offline |
 | 凭据 | `rr_` 前缀 · 一人一条 · 90 天 · 续期不换 token |
-| MCP | `quamm-res`，团队共享单实例，streamable HTTP |
+| MCP | `quamm-tres`，团队共享单实例，streamable HTTP |
 
 ## 版本管理
 
@@ -76,10 +76,18 @@ tests/           # 端到端测试（含模拟设备）
 - **`1.0` 的门槛** = 真实 ADB 探测接入 + 串口资源纳入 + 至少一条真实通知渠道（企微或邮件）打通。
 - **版本号只在三个地方出现**：根目录 `VERSION` 文件、`CHANGELOG.md` 标题、git tag；代码里不许硬编码版本字符串。
   `/api/version` 返回 `{"version": "<读 VERSION>", "name": "Quamm RES", "stage": "pre-release"}`。
+  其中 `name` 为兼容历史验收脚本（`scripts/verify_v1.py`）保留的 API 契约值，产品展示名统一为 **Quamm TRES**。
+
+## Release 0.11.0
+
+Quamm TRES 0.11.0 预发布（`/api/version` 返回 `{"version":"0.11.0","name":"Quamm RES","stage":"pre-release"}`，`git tag v0.11.0`）。变更明细见 `CHANGELOG.md`。
+
+本版新增：Web 登录（rr_ token 换 8h HttpOnly cookie，admin/user 两档权限）、首次管理员引导、
+人员通讯录、发接入凭据（SMTP 邮件发 MCP 配置 token）、凭据续期/吊销台账、租约显示申请人姓名、全局改名 Quamm TRES。
 
 ## Release 0.10.0
 
-Quamm RES 0.10.0 预发布（`/api/version` 返回 `{"version":"0.10.0","name":"Quamm RES","stage":"pre-release"}`，`git tag v0.10.0`）。变更明细见 `CHANGELOG.md`。
+Quamm TRES 0.10.0 预发布（`git tag v0.10.0`）。变更明细见 `CHANGELOG.md`。
 
 ### 能力清单（三域）
 
@@ -192,7 +200,7 @@ pytest tests/ -q
 ```json
 {
   "mcpServers": {
-    "quamm-res": {
+    "quamm-tres": {
       "url": "http://localhost:8765/mcp/",
       "headers": {
         "Authorization": "Bearer rr_xxxxxxxx_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"

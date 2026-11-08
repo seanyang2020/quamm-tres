@@ -134,6 +134,9 @@ class Credential(Base):
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     agent_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    # v0.11：凭据自带权限档位（admin/user）与备注，签发时确定，一人可有多条。
+    role: Mapped[str] = mapped_column(String(16), default="user", server_default="user", nullable=False)
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
 
     principal: Mapped["Principal"] = relationship(back_populates="credentials")
@@ -141,6 +144,12 @@ class Credential(Base):
     @property
     def revoked(self) -> bool:
         return self.revoked_at is not None
+
+    @property
+    def active(self) -> bool:
+        from app.utils import utcnow
+
+        return not self.revoked and (self.expires_at is None or self.expires_at > utcnow())
 
 
 class Lease(Base):
@@ -255,3 +264,24 @@ class PatrolRun(Base):
     offline_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failures: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class Contact(Base):
+    """人员通讯录（v0.11）：email 主键，name / note 供凭据与租约展示。"""
+
+    __tablename__ = "contacts"
+
+    email: Mapped[str] = mapped_column(String(256), primary_key=True)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    note: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class Setting(Base):
+    """系统配置 KV 表（v0.11）：SMTP 等可在线修改的配置。"""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime())

@@ -1,19 +1,22 @@
-"""预置数据：机型字典（5 类）+ 管理员 + 20 个 token（20 邮箱，每人 1 条）。
+"""预置数据：机型字典（5 类）+ 管理员 + 20 个 token + 人员通讯录种子。
 
 用法：python -m app.seed
 输出：可复制的 MCP 客户端配置（含管理员 admin@corp.com 的 token）。
 """
 from __future__ import annotations
 
+import json
 from datetime import timedelta
+from pathlib import Path
 
 from app.config import settings
 from app.constants import get_version
 from app.db import SessionLocal, init_db
-from app.models import Credential, Principal, ProductType
+from app.models import Contact, Credential, Principal, ProductType
 from app.utils import hash_token, new_token, token_prefix, utcnow
 
 ADMIN_EMAIL = "admin@corp.com"
+CONTACTS_SEED_PATH = "/tmp/contacts_seed.json"
 
 PRODUCT_TYPES = [
     # type_code, display_name, has_screen, has_led, serial_count, adb_port, model_pattern
@@ -62,6 +65,7 @@ def _ensure_credential(session, principal: Principal, now, rotate: bool) -> str 
                 token_hash=hash_token(token),
                 token_prefix=token_prefix(token),
                 expires_at=now + timedelta(days=settings.credential_valid_days),
+                role="admin" if principal.is_admin else "user",
                 created_at=now,
             )
         )
@@ -137,6 +141,37 @@ def seed_admin(session, rotate: bool = False) -> tuple[str, str] | None:
     return None
 
 
+def seed_contacts(session, path: str = CONTACTS_SEED_PATH) -> int:
+    """从 JSON 导入人员通讯录（{email: name}），幂等：已存在不覆盖、不报错。"""
+    p = Path(path)
+    if not p.exists():
+        return 0
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    now = utcnow()
+    added = 0
+    for raw_email, name in data.items():
+        email = str(raw_email or "").strip().lower()
+        if not email or session.get(Contact, email) is not None:
+            continue
+        session.add(
+            Contact(
+                email=email,
+                name=str(name) if name else None,
+                note=None,
+                created_at=now,
+            )
+        )
+        added += 1
+    if added:
+        session.commit()
+    return added
+
+
 def main() -> None:
     import argparse
 
@@ -178,7 +213,7 @@ def main() -> None:
     print("=== MCP 客户端配置示例（可直接粘贴）===")
     print('{')
     print('  "mcpServers": {')
-    print('    "quamm-res": {')
+    print('    "quamm-tres": {')
     print(f'      "url": "{mcp_url}",')
     print('      "headers": {')
     if admin_pair:

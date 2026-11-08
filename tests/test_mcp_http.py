@@ -71,7 +71,7 @@ def test_mcp_http_full_flow(db):
                 {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                  "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}},
             )
-            assert init["result"]["serverInfo"]["name"] == "quamm-res"
+            assert init["result"]["serverInfo"]["name"] == "quamm-tres"
 
             # 查机型 -> 查设备 -> 申请 -> 拿到 adb 地址 -> 续约 -> 释放
             products = _call_tool(client, token, "res_list_products")

@@ -1,4 +1,4 @@
-"""MCP Server：quamm-res（17 个工具，streamable HTTP，单实例）。
+"""MCP Server：quamm-tres（17 个工具，streamable HTTP，单实例）。
 
 鉴权由 McpAuthMiddleware 完成；工具内 require_auth() 取当前身份。
 res_admin 仅管理员可用（运行时校验），普通 token 调用返回 FORBIDDEN。
@@ -17,7 +17,7 @@ from app.security import AuthError, require_auth
 from app.utils import utcnow
 
 mcp = FastMCP(
-    "quamm-res",
+    "quamm-tres",
     instructions=(
         "测试设备资源分配中心。先 res_apply 拿租约和 adb_address，再 adb connect，"
         "用完 res_release。长任务到期前调 res_renew 续约。"

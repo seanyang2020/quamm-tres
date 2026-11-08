@@ -1,15 +1,20 @@
 """Web 管理 API（:9100，供 Vue 看板调用）。
 
-一期不接管理员登录（权限系统不在范围），接口按管理员视角返回全量数据。
+v0.11 起接入登录：rr_ token 可在 /api/auth/login 换 HttpOnly 会话 cookie。
+- 只读展示接口：optional_identity，可匿名（历史验收脚本直接打真服务，保持 200）；
+  登录后 user 只看自己的租约/申请/凭据，admin 看全部。
+- 写操作 / 通讯录 / SMTP / 发凭据 / 引导：require_admin（未登录 401，user 403）。
+- MCP 端仍走 Authorization header，完全不受 cookie 影响。
 """
 from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app import mailer, web_auth
 from app.config import settings
 from app.constants import (
     PENDING_CLEANUP_DAYS,
@@ -26,6 +31,7 @@ from app.domain import catalog, leasing, patrol
 from app.domain.queueing import position as queue_position
 from app.models import (
     AuditEvent,
+    Contact,
     Credential,
     Device,
     Lease,
@@ -36,7 +42,8 @@ from app.models import (
     ProductType,
     QueueEntry,
 )
-from app.utils import utcnow
+from app.security import AuthError, resolve_token
+from app.utils import hash_token, new_token, token_prefix, utcnow
 
 router = APIRouter(prefix="/api")
 
@@ -45,13 +52,133 @@ def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def _contact_name(session: Session, email: str | None) -> str | None:
+    if not email:
+        return None
+    c = session.get(Contact, email)
+    return c.name if c and c.name else None
+
+
+def _admin_token_count(session: Session) -> int:
+    """当前是否存在可用的 role=admin 凭据（引导只在 0 条时触发）。"""
+    return (
+        session.query(func.count(Credential.id))
+        .filter(Credential.role == "admin", Credential.revoked_at.is_(None))
+        .scalar()
+        or 0
+    )
+
+
+def _is_user_view(identity) -> bool:
+    """是否为普通用户视角。直接调用路由函数（pytest 等）时 identity 是 Depends 对象，按全量处理。"""
+    return isinstance(identity, web_auth.WebIdentity) and identity.role != "admin"
+
+
+# ---------- 登录认证（v0.11） ----------
+
 @router.get("/version")
 def version():
+    # 版本号与 name 是稳定 API 契约（历史验收脚本断言该值），保持公开且不变。
     return version_info()
 
 
+@router.get("/auth/setup-status")
+def auth_setup_status(session: Session = Depends(get_session)):
+    """公开：Web 打开时先判断要不要走首次引导。已有 admin token 时为 False。"""
+    return {"needs_setup": _admin_token_count(session) == 0}
+
+
+@router.post("/auth/setup")
+def auth_setup(payload: dict = Body(...), session: Session = Depends(get_session)):
+    """首次引导：库里没有任何 role=admin 的 token 时，凭邮箱生成第一个 admin token。"""
+    if _admin_token_count(session) > 0:
+        raise HTTPException(status_code=409, detail="已存在管理员，引导不可用")
+    email = str(payload.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="邮箱不合法")
+    name = str(payload.get("name") or email).strip()
+    now = utcnow()
+
+    principal = session.query(Principal).filter(Principal.email == email).first()
+    if principal is None:
+        principal = Principal(
+            email=email,
+            name=name,
+            employee_no=None,
+            quota=settings.holder_concurrency_limit,
+            is_admin=True,
+            status="active",
+            created_at=now,
+        )
+        session.add(principal)
+        session.flush()
+    else:
+        principal.is_admin = True
+        principal.status = "active"
+
+    if session.get(Contact, email) is None:
+        session.add(Contact(email=email, name=name, note="首次引导创建", created_at=now))
+
+    token = new_token()
+    session.add(
+        Credential(
+            principal_id=principal.id,
+            token_hash=hash_token(token),
+            token_prefix=token_prefix(token),
+            expires_at=now + timedelta(days=settings.credential_valid_days),
+            role="admin",
+            note="首次引导创建",
+            created_at=now,
+        )
+    )
+    session.commit()
+    return {"email": email, "name": name, "role": "admin", "token": token}
+
+
+@router.post("/auth/login")
+def auth_login(
+    response: Response,
+    payload: dict = Body(...),
+    session: Session = Depends(get_session),
+):
+    """用 rr_ token 换 8 小时 HttpOnly 会话 cookie；token 校验复用 MCP 同一套逻辑。"""
+    token = str(payload.get("token") or "").strip()
+    if not token.startswith(settings.token_prefix):
+        raise HTTPException(status_code=401, detail="无效的 rr_ token")
+    try:
+        auth = resolve_token(session, token)
+    except AuthError as e:
+        raise HTTPException(status_code=401, detail=e.message)
+
+    role = "admin" if (auth.credential.role == "admin" or auth.principal.is_admin) else "user"
+    name = auth.principal.name or _contact_name(session, auth.principal.email)
+    response.set_cookie(
+        web_auth.SESSION_COOKIE,
+        web_auth.make_session(auth.credential.id),
+        max_age=settings.web_session_hours * 3600,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"email": auth.principal.email, "name": name, "role": role}
+
+
+@router.get("/auth/me")
+def auth_me(identity: web_auth.WebIdentity = Depends(web_auth.require_login)):
+    return {"email": identity.email, "name": identity.name, "role": identity.role}
+
+
+@router.post("/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(web_auth.SESSION_COOKIE, path="/")
+    return {"ok": True}
+
+
 @router.get("/dashboard")
-def dashboard(session: Session = Depends(get_session)):
+def dashboard(
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
+    session: Session = Depends(get_session),
+):
     total = session.query(func.count(Device.device_id)).scalar() or 0
     by_status = dict(
         session.query(Device.status, func.count(Device.device_id)).group_by(Device.status).all()
@@ -85,7 +212,7 @@ def dashboard(session: Session = Depends(get_session)):
         {"project_name": pn or "-", "count": cnt} for pn, cnt in project_rows
     ]
     last_patrol = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
-    return {
+    result = {
         "total_devices": total,
         "available": available,
         "suspect": suspect,
@@ -106,6 +233,12 @@ def dashboard(session: Session = Depends(get_session)):
         if last_patrol
         else None,
     }
+    # 普通用户看得到可用池，但看不到「谁在用 / 占用与排队详情」。
+    if _is_user_view(identity):
+        result["by_status"] = {"available": available}
+        result["active_leases"] = None
+        result["queued"] = None
+    return result
 
 
 @router.get("/products")
@@ -132,13 +265,18 @@ def device_detail(device_id: str, session: Session = Depends(get_session)):
 
 
 @router.get("/leases")
-def leases(session: Session = Depends(get_session)):
-    rows = (
+def leases(
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
+    session: Session = Depends(get_session),
+):
+    q = (
         session.query(Lease)
         .filter(Lease.state.in_(LeaseState.ACTIVE))
         .order_by(Lease.created_at.desc())
-        .all()
     )
+    if _is_user_view(identity):
+        q = q.filter(Lease.principal_id == identity.principal_id)
+    rows = q.all()
     return [
         {
             "lease_id": l.lease_id,
@@ -146,6 +284,11 @@ def leases(session: Session = Depends(get_session)):
             "display_name": l.device.display_name if l.device else None,
             "state": l.state,
             "email": l.principal.email if l.principal else None,
+            # v0.11：从 token 关联到联系人，显示申请人姓名而非仅 token 前缀。
+            "name": (
+                _contact_name(session, l.principal.email)
+                or (l.principal.name if l.principal else None)
+            ),
             "purpose": l.purpose,
             "expires_at": _iso(l.expires_at),
             "adb_address": l.adb_address,
@@ -155,7 +298,12 @@ def leases(session: Session = Depends(get_session)):
 
 
 @router.post("/leases/{lease_id}/force-release")
-def force_release(lease_id: str, reason: str, session: Session = Depends(get_session)):
+def force_release(
+    lease_id: str,
+    reason: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
     from app.security import AuthContext
 
     admin_principal = (
@@ -171,12 +319,26 @@ def force_release(lease_id: str, reason: str, session: Session = Depends(get_ses
 
 
 @router.get("/credentials")
-def credentials(session: Session = Depends(get_session)):
-    rows = session.query(Credential).order_by(Credential.id).all()
+def credentials(
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
+    session: Session = Depends(get_session),
+):
+    q = session.query(Credential).order_by(Credential.id)
+    if _is_user_view(identity):
+        q = q.filter(Credential.principal_id == identity.principal_id)
+    rows = q.all()
     return [
         {
             "id": c.id,
             "email": c.principal.email if c.principal else None,
+            "name": (
+                _contact_name(session, c.principal.email)
+                or (c.principal.name if c.principal else None)
+            ),
+            "role": c.role,
+            "note": c.note,
+            "active": c.active,
+            "created_at": _iso(c.created_at),
             "token_prefix": c.token_prefix,
             "expires_at": _iso(c.expires_at),
             "revoked": c.revoked,
@@ -195,7 +357,11 @@ def credentials(session: Session = Depends(get_session)):
 
 
 @router.post("/credentials/{credential_id}/revoke")
-def revoke_credential(credential_id: int, session: Session = Depends(get_session)):
+def revoke_credential(
+    credential_id: int,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
     c = session.get(Credential, credential_id)
     if c is None:
         raise HTTPException(status_code=404, detail="credential not found")
@@ -205,7 +371,12 @@ def revoke_credential(credential_id: int, session: Session = Depends(get_session
 
 
 @router.post("/credentials/renew")
-def renew_credential(credential_id: int | None = None, days: int = 90, session: Session = Depends(get_session)):
+def renew_credential(
+    credential_id: int | None = None,
+    days: int = 90,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
     """续期不换 token（09 §3）。credential_id 为空则批量续期所有未吊销凭据。"""
     q = session.query(Credential)
     if credential_id is not None:
@@ -278,14 +449,16 @@ def health(session: Session = Depends(get_session)):
 # ---------- 排队（Web「排队」页） ----------
 
 @router.get("/queue")
-def queue_snapshot(session: Session = Depends(get_session)):
+def queue_snapshot(
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
+    session: Session = Depends(get_session),
+):
     """当前队列：按机型组 + 按设备 + 全量条目（队位 / priority / offer 倒计时）。"""
     now = utcnow()
-    entries = (
-        session.query(QueueEntry)
-        .order_by(QueueEntry.priority.desc(), QueueEntry.joined_at.asc())
-        .all()
-    )
+    q = session.query(QueueEntry).order_by(QueueEntry.priority.desc(), QueueEntry.joined_at.asc())
+    if _is_user_view(identity):
+        q = q.filter(QueueEntry.principal_id == identity.principal_id)
+    entries = q.all()
     items = []
     for e in entries:
         remaining = None
@@ -379,9 +552,16 @@ def anomalies(session: Session = Depends(get_session)):
 # ---------- 审计（Web「审计」页） ----------
 
 @router.get("/audit")
-def audit(action: str | None = None, limit: int = 200, session: Session = Depends(get_session)):
+def audit(
+    action: str | None = None,
+    limit: int = 200,
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
+    session: Session = Depends(get_session),
+):
     """审计流水：时间 / 主体 / 动作 / 对象，可按动作类型筛选。"""
     q = session.query(AuditEvent).order_by(AuditEvent.created_at.desc())
+    if _is_user_view(identity):
+        q = q.filter(AuditEvent.actor == identity.email)
     if action:
         q = q.filter(AuditEvent.action == action)
     rows = q.limit(limit).all()
@@ -427,7 +607,11 @@ def settings_view(session: Session = Depends(get_session)):
 
 
 @router.post("/product-types")
-def add_product_type(payload: dict = Body(...), session: Session = Depends(get_session)):
+def add_product_type(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
     code = (payload.get("type_code") or "").strip()
     if not code:
         raise HTTPException(status_code=400, detail="type_code 必填")
@@ -450,10 +634,208 @@ def add_product_type(payload: dict = Body(...), session: Session = Depends(get_s
 
 
 @router.post("/product-types/{type_code}/disable")
-def disable_product_type(type_code: str, session: Session = Depends(get_session)):
+def disable_product_type(
+    type_code: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
     pt = session.get(ProductType, type_code)
     if pt is None:
         raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
     pt.enabled = False
     session.commit()
     return {"type_code": type_code, "enabled": False}
+
+
+# ---------- 人员通讯录（v0.11，管理员） ----------
+
+def _contact_row(c: Contact) -> dict:
+    return {
+        "email": c.email,
+        "name": c.name,
+        "note": c.note,
+        "created_at": _iso(c.created_at),
+    }
+
+
+@router.get("/contacts")
+def list_contacts(
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    rows = session.query(Contact).order_by(Contact.email).all()
+    return [_contact_row(c) for c in rows]
+
+
+@router.post("/contacts")
+def add_contact(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    email = str(payload.get("email") or "").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="邮箱不合法")
+    if session.get(Contact, email) is not None:
+        raise HTTPException(status_code=409, detail="联系人已存在")
+    c = Contact(
+        email=email,
+        name=str(payload.get("name") or "").strip() or None,
+        note=str(payload.get("note") or "").strip() or None,
+        created_at=utcnow(),
+    )
+    session.add(c)
+    session.commit()
+    return _contact_row(c)
+
+
+@router.put("/contacts/{email}")
+def update_contact(
+    email: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    c = session.get(Contact, email)
+    if c is None:
+        raise HTTPException(status_code=404, detail="联系人不存在")
+    if "name" in payload:
+        c.name = str(payload["name"]).strip() or None
+    if "note" in payload:
+        c.note = str(payload["note"]).strip() or None
+    session.commit()
+    return _contact_row(c)
+
+
+@router.delete("/contacts/{email}")
+def delete_contact(
+    email: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    c = session.get(Contact, email)
+    if c is None:
+        raise HTTPException(status_code=404, detail="联系人不存在")
+    session.delete(c)
+    session.commit()
+    return {"email": email, "deleted": True}
+
+
+# ---------- SMTP 配置与测试邮件（v0.11，管理员） ----------
+
+@router.get("/settings/smtp")
+def get_smtp_config(
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    return mailer.get_smtp_config(session)
+
+
+@router.put("/settings/smtp")
+def put_smtp_config(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    return mailer.save_smtp_config(session, payload)
+
+
+@router.post("/settings/smtp/test")
+def smtp_test(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    to = str(payload.get("to") or "").strip()
+    if not to or "@" not in to:
+        raise HTTPException(status_code=400, detail="收件人邮箱不合法")
+    try:
+        mailer.send_mail(
+            session,
+            to,
+            "【Quamm TRES】SMTP 测试邮件",
+            "这是一封 Quamm TRES 的 SMTP 配置测试邮件，收到即表示配置正确。",
+        )
+    except Exception as e:  # noqa: BLE001 - 网络/认证错误统一透给前端
+        raise HTTPException(status_code=502, detail=f"发送失败：{e}")
+    return {"sent": True, "to": to}
+
+
+# ---------- 发接入凭据（v0.11，管理员） ----------
+
+@router.post("/credentials/send")
+def send_credentials(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """为每人生成一条 rr_ token（带 role/note），逐人调 SMTP 发送 MCP 配置邮件。"""
+    emails = [str(e).strip().lower() for e in (payload.get("emails") or []) if str(e).strip()]
+    manual = str(payload.get("manual_emails") or "")
+    for part in manual.replace(",", "\n").replace(";", "\n").splitlines():
+        if part.strip():
+            emails.append(part.strip().lower())
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for email in emails:
+        if "@" in email and email not in seen:
+            seen.add(email)
+            ordered.append(email)
+    if not ordered:
+        raise HTTPException(status_code=400, detail="请至少选择联系人或填写邮箱")
+
+    role = payload.get("role") if payload.get("role") in ("admin", "user") else "user"
+    note = str(payload.get("note") or "").strip() or None
+    now = utcnow()
+    created: list[tuple[str, str]] = []
+    for email in ordered:
+        contact = session.get(Contact, email)
+        name = (contact.name if contact and contact.name else None) or email
+        principal = session.query(Principal).filter(Principal.email == email).first()
+        if principal is None:
+            principal = Principal(
+                email=email,
+                name=name,
+                employee_no=None,
+                quota=settings.holder_concurrency_limit,
+                is_admin=False,
+                status="active",
+                created_at=now,
+            )
+            session.add(principal)
+            session.flush()
+        if contact is None:
+            session.add(Contact(email=email, name=name, note=note, created_at=now))
+        token = new_token()
+        session.add(
+            Credential(
+                principal_id=principal.id,
+                token_hash=hash_token(token),
+                token_prefix=token_prefix(token),
+                expires_at=now + timedelta(days=settings.credential_valid_days),
+                role=role,
+                note=note,
+                created_at=now,
+            )
+        )
+        created.append((email, token))
+    session.commit()
+
+    cfg = mailer.get_smtp_config(session)
+    results = []
+    for email, token in created:
+        item = {"email": email, "token": token, "role": role, "sent": False, "error": None}
+        try:
+            mailer.send_mail(
+                session,
+                email,
+                mailer.CREDENTIAL_SUBJECT,
+                mailer.build_credential_body(token, note),
+                cfg=cfg,
+            )
+            item["sent"] = True
+        except Exception as e:  # noqa: BLE001 - 单人失败不影响其他人，token 仍可用
+            item["error"] = str(e)
+        results.append(item)
+    return {"count": len(results), "results": results}

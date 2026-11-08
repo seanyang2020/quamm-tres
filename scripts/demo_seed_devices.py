@@ -105,7 +105,7 @@ def _ensure_tokens(rotate: bool) -> dict[str, str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="注册 20 台 mock 设备到 Quamm RES")
+    parser = argparse.ArgumentParser(description="注册 20 台 mock 设备到 Quamm TRES")
     parser.add_argument("--rotate", action="store_true", help="强制吊销旧凭据并重签 20 条 token")
     args = parser.parse_args()
 

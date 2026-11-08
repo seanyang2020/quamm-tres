@@ -6,6 +6,10 @@
 
 接入真实 XOS 设备时：device 表补 project_name / board_dt / storage_type /
 has_wifi / source 五列，并把既有行（全部是 mock 设备）统一标 source='mock'。
+
+0.11.0 引入：credential 表补 role / note 两列（凭据自带权限档位），并把
+admin@corp.com 的既有凭据回填为 role='admin'，保证「已有管理员」不被首次引导误判。
+contacts / settings 为全新表，由 init_db() 的 create_all 负责建表。
 只用 ALTER TABLE ADD COLUMN，不重建表、不丢任何已有记录。
 """
 from __future__ import annotations
@@ -24,12 +28,45 @@ _DEVICE_COLUMNS = {
     "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
 }
 
+# credential 表新增列（v0.11）-> DDL 片段
+_CREDENTIAL_COLUMNS = {
+    "role": "VARCHAR(16) NOT NULL DEFAULT 'user'",
+    "note": "VARCHAR(256)",
+}
+
 
 def migrate(session: Session) -> None:
-    """幂等迁移：补 device 新列 + 补 is_admin 列 + 修正管理员标志。"""
+    """幂等迁移：补 device/credential 新列 + 补 is_admin 列 + 修正管理员标志 + 回填管理员 role。"""
     _ensure_device_columns(session)
+    _ensure_columns(session, "credential", _CREDENTIAL_COLUMNS)
     _ensure_is_admin_column(session)
     _fix_admin_flags(session)
+    _backfill_admin_role(session)
+
+
+def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:
+    """通用幂等 ALTER：逐列检查，缺哪列补哪列，已存在不报错。"""
+    engine = session.get_bind()
+    columns = {c["name"] for c in inspect(engine).get_columns(table)}
+    added = []
+    for name, ddl in ddl_map.items():
+        if name not in columns:
+            session.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+            added.append(name)
+    if added:
+        session.commit()
+
+
+def _backfill_admin_role(session: Session) -> None:
+    """把已有管理员的凭据标成 role='admin'（引导只在「无任何 admin token」时触发）。"""
+    session.execute(
+        text(
+            "UPDATE credential SET role = 'admin' "
+            "WHERE principal_id IN (SELECT id FROM principal WHERE email = :admin OR is_admin = 1)"
+        ),
+        {"admin": ADMIN_EMAIL},
+    )
+    session.commit()
 
 
 def _ensure_device_columns(session: Session) -> None:

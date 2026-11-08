@@ -19,7 +19,7 @@ from app.domain.probe import setup_prober_from_settings
 from app.seed import seed_product_types
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-logger = logging.getLogger("quamm-res.worker")
+logger = logging.getLogger("quamm-tres.worker")
 
 
 def _lease_scan_job() -> None:

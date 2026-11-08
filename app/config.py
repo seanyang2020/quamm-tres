@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     # 是否自动建表 / 是否加载 seed
     auto_create_tables: bool = True
 
+    # Web 会话 cookie（HttpOnly，8 小时）签名密钥；生产可用环境变量覆盖
+    session_secret: str = "quamm-tres-local-session-secret"
+    web_session_hours: int = 8
+    # 发凭据邮件里 MCP 配置对外暴露的地址
+    mcp_public_url: str = "http://172.16.10.25:9100/mcp/"
+
 
 @lru_cache
 def get_settings() -> Settings:
