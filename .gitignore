@@ -10,3 +10,4 @@ __pycache__/
 dist/
 scripts/.demo_tokens.json
 scripts/.demo_admin_token.json
+*.bak-caddyadd/
