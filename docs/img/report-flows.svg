@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="896" viewBox="0 0 1280 896" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <style>
+      .t-title{font-size:30px;font-weight:700;fill:#0f2740}
+      .t-sub{font-size:14px;fill:#5b7185}
+      .lane{font-size:13px;font-weight:700;fill:#ffffff}
+      .nt{font-size:12.5px;font-weight:700;fill:#1b3a55}
+      .nd{font-size:10.8px;fill:#5b7185}
+    </style>
+  </defs>
+  <rect width="1280" height="896" fill="#f6f9fc"/>
+
+  <text x="52" y="54" class="t-title">Quamm RES 三条主链路</text>
+  <text x="52" y="78" class="t-sub">系统真正在跑的只有三条链：Agent 拿资源 · 设备进池 · 设备掉线被发现</text>
+  <line x1="52" y1="96" x2="1228" y2="96" stroke="#dbe7f1" stroke-width="1"/>
+
+  <!-- ===== 链 1 ===== -->
+  <rect x="52" y="120" width="86" height="112" fill="#2f6fa8" rx="6"/>
+  <text x="70" y="152" class="lane">链 1</text>
+  <text x="70" y="172" font-size="11" fill="#d6e8f7">Agent</text>
+  <text x="70" y="190" font-size="11" fill="#d6e8f7">拿资源</text>
+  <text x="70" y="214" font-size="10.5" fill="#a9cbe8">A 域</text>
+
+  <g>
+    <rect x="150" y="120" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="162" y="148" class="nt">① 取到配置</text>
+    <text x="162" y="168" class="nd">邮件里就是</text>
+    <text x="162" y="184" class="nd">token + 可用 URL</text>
+    <text x="162" y="204" class="nd">粘进客户端即可</text>
+
+    <rect x="302" y="120" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="314" y="148" class="nt">② 查余量</text>
+    <text x="314" y="168" class="nd">list_products</text>
+    <text x="314" y="184" class="nd">机型 / 可用 / 占用</text>
+    <text x="314" y="204" class="nd">list_devices 看具体台</text>
+
+    <rect x="454" y="120" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="466" y="148" class="nt">③ 申请</text>
+    <text x="466" y="168" class="nd">res_apply</text>
+    <text x="466" y="184" class="nd">按机型或指定台</text>
+    <text x="466" y="204" class="nd">配额 2 台 / 人</text>
+
+    <rect x="606" y="120" width="150" height="112" fill="#eef7f2" stroke="#2a7f62" stroke-width="1.5" rx="7"/>
+    <text x="618" y="148" class="nt">④ 立刻授予</text>
+    <text x="618" y="168" class="nd">GRANTED + adb 地址</text>
+    <text x="618" y="184" class="nd">或 QUEUED + ticket</text>
+    <text x="618" y="204" class="nd">两种结果都明确</text>
+
+    <rect x="768" y="120" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="780" y="148" class="nt">⑤ 使用中续约</text>
+    <text x="780" y="168" class="nd">res_renew</text>
+    <text x="780" y="184" class="nd">TTL 30min</text>
+    <text x="780" y="204" class="nd">宽限 10min</text>
+
+    <rect x="920" y="120" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="932" y="148" class="nt">⑥ 释放 / 回收</text>
+    <text x="932" y="168" class="nd">主动 res_release</text>
+    <text x="932" y="184" class="nd">或 worker 每 10s</text>
+    <text x="932" y="204" class="nd">扫到期自动回收</text>
+
+    <rect x="1072" y="120" width="156" height="112" fill="#f2f8fd" stroke="#2f6fa8" stroke-width="1.4" rx="7"/>
+    <text x="1084" y="148" class="nt">⑦ 交给下一位</text>
+    <text x="1084" y="168" class="nd">只给队首发 offer</text>
+    <text x="1084" y="184" class="nd">60s 确认窗口</text>
+    <text x="1084" y="204" class="nd">超时顺延，不广播</text>
+  </g>
+
+  <line x1="290" y1="176" x2="300" y2="176" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="442" y1="176" x2="452" y2="176" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="594" y1="176" x2="604" y2="176" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="756" y1="176" x2="766" y2="176" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="908" y1="176" x2="918" y2="176" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="1060" y1="176" x2="1070" y2="176" stroke="#8aa8c0" stroke-width="1.5"/>
+
+  <!-- ===== 链 2 ===== -->
+  <rect x="52" y="268" width="86" height="112" fill="#2a7f62" rx="6"/>
+  <text x="70" y="300" class="lane">链 2</text>
+  <text x="70" y="320" font-size="11" fill="#d5efe4">设备</text>
+  <text x="70" y="338" font-size="11" fill="#d5efe4">进池</text>
+  <text x="70" y="362" font-size="10.5" fill="#9fd4c0">B 域</text>
+
+  <g>
+    <rect x="150" y="268" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="162" y="296" class="nt">① 两个入口</text>
+    <text x="162" y="316" class="nd">管理员 Web 批量</text>
+    <text x="162" y="332" class="nd">Agent 走 MCP</text>
+    <text x="162" y="352" class="nd">同一套判定</text>
+
+    <rect x="302" y="268" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="314" y="296" class="nt">② 探测</text>
+    <text x="314" y="316" class="nd">res_device_probe</text>
+    <text x="314" y="332" class="nd">L0 / L1 / L2 / L3</text>
+    <text x="314" y="352" class="nd">只有 L3 能进池</text>
+
+    <rect x="454" y="268" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="466" y="296" class="nt">③ 出表核对</text>
+    <text x="466" y="316" class="nd">型号 / MAC / SN</text>
+    <text x="466" y="332" class="nd">由人补齐位置与 owner</text>
+    <text x="466" y="352" class="nd">可选点亮核对</text>
+
+    <rect x="606" y="268" width="150" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="618" y="296" class="nt">④ 提交注册</text>
+    <text x="618" y="316" class="nd">res_device_register</text>
+    <text x="618" y="332" class="nd">记录 registered_by</text>
+    <text x="618" y="352" class="nd">与 register_channel</text>
+
+    <rect x="768" y="268" width="140" height="112" fill="#eef7f2" stroke="#2a7f62" stroke-width="1.5" rx="7"/>
+    <text x="780" y="296" class="nt">⑤ 三种结果</text>
+    <text x="780" y="316" class="nd">A 认定已有</text>
+    <text x="780" y="332" class="nd">B 新建 / D 登记不可用</text>
+    <text x="780" y="352" class="nd">C 拒绝（冲突）</text>
+
+    <rect x="920" y="268" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="932" y="296" class="nt">⑥ 等它可用</text>
+    <text x="932" y="316" class="nd">pending 也能登记</text>
+    <text x="932" y="332" class="nd">连续 1 轮 L3</text>
+    <text x="932" y="352" class="nd">自动转 available</text>
+
+    <rect x="1072" y="268" width="156" height="112" fill="#f2f8fd" stroke="#2f6fa8" stroke-width="1.4" rx="7"/>
+    <text x="1084" y="296" class="nt">⑦ 进公共池</text>
+    <text x="1084" y="316" class="nd">任何 Agent 可申请</text>
+    <text x="1084" y="332" class="nd">注册人不改变共享属性</text>
+    <text x="1084" y="352" class="nd">owner 只负责维护</text>
+  </g>
+
+  <line x1="290" y1="324" x2="300" y2="324" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="442" y1="324" x2="452" y2="324" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="594" y1="324" x2="604" y2="324" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="756" y1="324" x2="766" y2="324" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="908" y1="324" x2="918" y2="324" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="1060" y1="324" x2="1070" y2="324" stroke="#8aa8c0" stroke-width="1.5"/>
+
+  <!-- ===== 链 3 ===== -->
+  <rect x="52" y="416" width="86" height="112" fill="#b5791f" rx="6"/>
+  <text x="70" y="448" class="lane">链 3</text>
+  <text x="70" y="468" font-size="11" fill="#f7e6c8">掉线</text>
+  <text x="70" y="486" font-size="11" fill="#f7e6c8">被发现</text>
+  <text x="70" y="510" font-size="10.5" fill="#e3c690">C 域</text>
+
+  <g>
+    <rect x="150" y="416" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="162" y="444" class="nt">① 起一轮</text>
+    <text x="162" y="464" class="nd">worker 每 30min</text>
+    <text x="162" y="480" class="nd">可配 15min</text>
+    <text x="162" y="500" class="nd">一轮 = 一条 run 记录</text>
+
+    <rect x="302" y="416" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="314" y="444" class="nt">② 逐台探测</text>
+    <text x="314" y="464" class="nd">与注册同一套</text>
+    <text x="314" y="480" class="nd">L0 → L3</text>
+    <text x="314" y="500" class="nd">结果落 run</text>
+
+    <rect x="454" y="416" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="466" y="444" class="nt">③ 判状态</text>
+    <text x="466" y="464" class="nd">单轮失败 → suspect</text>
+    <text x="466" y="480" class="nd">连续 2 轮 → offline</text>
+    <text x="466" y="500" class="nd">恢复 1 轮即上线</text>
+
+    <rect x="606" y="416" width="150" height="112" fill="#fff8ec" stroke="#b5791f" stroke-width="1.5" rx="7"/>
+    <text x="618" y="444" class="nt">④ 通知</text>
+    <text x="618" y="464" class="nd">记在接收人身上</text>
+    <text x="618" y="480" class="nd">sent/delivered</text>
+    <text x="618" y="500" class="nd">failed/timeout/acked</text>
+
+    <rect x="768" y="416" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="780" y="444" class="nt">⑤ 降级链</text>
+    <text x="780" y="464" class="nd">企微优先</text>
+    <text x="780" y="480" class="nd">发不出转邮件</text>
+    <text x="780" y="500" class="nd">按位置前缀聚合</text>
+
+    <rect x="920" y="416" width="140" height="112" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.3" rx="7"/>
+    <text x="932" y="444" class="nt">⑥ 人去确认</text>
+    <text x="932" y="464" class="nd">acked 才算闭环</text>
+    <text x="932" y="480" class="nd">24h 未 acked 升级</text>
+    <text x="932" y="500" class="nd">恢复记响应时长</text>
+
+    <rect x="1072" y="416" width="156" height="112" fill="#f2f8fd" stroke="#2f6fa8" stroke-width="1.4" rx="7"/>
+    <text x="1084" y="444" class="nt">⑦ 看板兜底</text>
+    <text x="1084" y="464" class="nd">连续 2 周期无新 run</text>
+    <text x="1084" y="480" class="nd">→ 高优告警 + 红条</text>
+    <text x="1084" y="500" class="nd">「数据可能过期」</text>
+  </g>
+
+  <line x1="290" y1="472" x2="300" y2="472" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="442" y1="472" x2="452" y2="472" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="594" y1="472" x2="604" y2="472" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="756" y1="472" x2="766" y2="472" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="908" y1="472" x2="918" y2="472" stroke="#8aa8c0" stroke-width="1.5"/>
+  <line x1="1060" y1="472" x2="1070" y2="472" stroke="#8aa8c0" stroke-width="1.5"/>
+
+  <!-- 共用 -->
+  <rect x="52" y="570" width="1176" height="150" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.5" rx="10"/>
+  <text x="72" y="596" font-size="14" font-weight="700" fill="#13324d">三条链共用的四件事</text>
+  <text x="72" y="622" font-size="12" fill="#28425c">· 同一套领域服务：链 1 判断「能不能给」，链 2 判断「能不能进池」，链 3 判断「还活着吗」—— 三个判断都走 probe，口径一致</text>
+  <text x="72" y="644" font-size="12" fill="#28425c">· 同一份数据：Web 与 MCP 读同一张表，不会出现「网页说 3 台可用、Agent 说 1 台」</text>
+  <text x="72" y="666" font-size="12" fill="#28425c">· 同一套身份：链 1 与链 2 都用 rr_ token 鉴权，registered_by / holder 都是邮箱，能追到人</text>
+  <text x="72" y="688" font-size="12" fill="#28425c">· 同一份留痕：申请、注册、注销、巡检通知全部落 audit_event，事后能复盘「这台为什么被人占了」</text>
+
+  <rect x="52" y="742" width="1176" height="112" fill="#0f2740" rx="10"/>
+  <text x="76" y="770" font-size="13" font-weight="700" fill="#9fc6e8">汇报时可以只讲这三句</text>
+  <text x="76" y="794" font-size="12.5" fill="#e8f1f8">① Agent 只需要一个门（MCP）：拿到 token 就能查余量、申请、续约、释放，中间不需要人参与</text>
+  <text x="76" y="816" font-size="12.5" fill="#e8f1f8">② 设备注册两条路、一个标准：人是批量录入，Agent 是探测注册，最终都按 L3 才进池这条路走</text>
+  <text x="76" y="836" font-size="12.5" fill="#e8f1f8">③ 掉线不靠人发现：巡检自动判 suspect/offline，通知到人并要求确认，没人确认就升级</text>
+</svg>

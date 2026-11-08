@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="980" viewBox="0 0 1280 980" font-family="Microsoft YaHei, Segoe UI, sans-serif">
+  <defs>
+    <style>
+      .t-title{font-size:30px;font-weight:700;fill:#0f2740}
+      .t-sub{font-size:14px;fill:#5b7185}
+      .lan{font-size:12.5px;font-weight:700;fill:#ffffff}
+      .box{fill:#ffffff;stroke:#c9d8e5;stroke-width:1.4;rx:8}
+      .bt{font-size:15px;font-weight:700;fill:#13324d}
+      .bs{font-size:12px;fill:#5b7185}
+      .tag{font-size:11.5px;fill:#7b8fa2}
+      .note{font-size:12.5px;fill:#28425c}
+    </style>
+  </defs>
+
+  <rect width="1280" height="980" fill="#f6f9fc"/>
+  <text x="52" y="58" class="t-title">Quamm RES 系统架构</text>
+  <text x="52" y="82" class="t-sub">Quamm XOS 测试资源分配中心 · 设计基线 · Agent 走 MCP，人走 Web，领域服务只有一套</text>
+  <line x1="52" y1="100" x2="1228" y2="100" stroke="#dbe7f1" stroke-width="1"/>
+
+  <!-- L1 调用方 -->
+  <rect x="52" y="120" width="150" height="26" fill="#2f6fa8" rx="4"/>
+  <text x="64" y="138" class="lan">① 调用方</text>
+
+  <rect x="220" y="120" width="420" height="80" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.5" rx="8"/>
+  <text x="240" y="149" class="bt">AI Agent / MCP 客户端</text>
+  <text x="240" y="171" class="bs">Kasper · CodeBuddy · ChatGPT …  团队共享一个 MCP 实例</text>
+  <text x="240" y="189" class="tag">Authorization: Bearer rr_…（一人一条，90 天）</text>
+
+  <rect x="700" y="120" width="330" height="80" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.5" rx="8"/>
+  <text x="720" y="149" class="bt">管理员浏览器</text>
+  <text x="720" y="171" class="bs">Web 控制台：看板 / 设备 / 占用 / 排队</text>
+  <text x="720" y="189" class="tag">异常 / 凭据 / 审计 / 设置</text>
+
+  <text x="1060" y="152" class="note">普通使用者</text>
+  <text x="1060" y="172" class="note">不登录、无界面</text>
+  <text x="1060" y="192" class="tag">只用 MCP</text>
+
+  <!-- 箭头 L1->L2 -->
+  <line x1="430" y1="200" x2="430" y2="238" stroke="#8aa8c0" stroke-width="1.6"/>
+  <polygon points="430,244 425,234 435,234" fill="#8aa8c0"/>
+  <line x1="865" y1="200" x2="865" y2="238" stroke="#8aa8c0" stroke-width="1.6"/>
+  <polygon points="865,244 860,234 870,234" fill="#8aa8c0"/>
+
+  <!-- L2 接入层：同进程 -->
+  <rect x="52" y="250" width="150" height="26" fill="#2f6fa8" rx="4"/>
+  <text x="64" y="268" class="lan">② 接入层</text>
+
+  <rect x="206" y="250" width="838" height="106" fill="#eaf3fb" stroke="#2f6fa8" stroke-width="1.8" stroke-dasharray="7 4" rx="10"/>
+  <text x="222" y="270" class="tag">单进程（同进程 = 事件天然同步，无需跨进程同步状态）</text>
+
+  <rect x="222" y="280" width="240" height="52" fill="#ffffff" stroke="#7ea9c9" stroke-width="1.4" rx="6"/>
+  <text x="238" y="300" class="bt">Web API  :8080</text>
+  <text x="238" y="320" class="bs">REST /api/*（管理员视角）</text>
+
+  <rect x="482" y="280" width="240" height="52" fill="#ffffff" stroke="#7ea9c9" stroke-width="1.4" rx="6"/>
+  <text x="498" y="300" class="bt">MCP Server  :8765</text>
+  <text x="498" y="320" class="bs">streamable HTTP · 17 个工具</text>
+
+  <rect x="742" y="280" width="286" height="52" fill="#fff8ec" stroke="#d9a441" stroke-width="1.4" rx="6"/>
+  <text x="758" y="300" class="bt">巡检 Worker（独立进程）</text>
+  <text x="758" y="320" class="bs">15/30min 可配 · 租约扫描 10s</text>
+
+  <text x="222" y="346" class="tag">鉴权：token → 校验存在未吊销 / 未过期 / 人的配额 / 设备可用（每次只校验这四件）</text>
+
+  <!-- 箭头 -->
+  <line x1="640" y1="356" x2="640" y2="384" stroke="#8aa8c0" stroke-width="1.6"/>
+  <polygon points="640,390 635,380 645,380" fill="#8aa8c0"/>
+
+  <!-- L3 领域服务 -->
+  <rect x="52" y="392" width="150" height="26" fill="#2f6fa8" rx="4"/>
+  <text x="64" y="410" class="lan">③ 领域服务层</text>
+
+  <rect x="52" y="428" width="1176" height="188" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.5" rx="10"/>
+  <text x="72" y="452" class="tag">Web 与 MCP 调同一套 service 方法；可用性服务端算一次，两个入口看到的数字必然一致</text>
+
+  <rect x="72" y="466" width="272" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="86" y="487" class="bt">catalog 机型与设备档案</text>
+  <text x="86" y="507" class="bs">机型字典 / 注册 / 注销 / 复活</text>
+  <text x="86" y="523" class="tag">双入口同一判定</text>
+
+  <rect x="358" y="466" width="272" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="372" y="487" class="bt">probe 四级探测</text>
+  <text x="372" y="507" class="bs">L0 ICMP · L1 端口 · L2 未授权</text>
+  <text x="372" y="523" class="tag">L3 shell 可用才入池</text>
+
+  <rect x="644" y="466" width="272" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="658" y="487" class="bt">leasing 租约</text>
+  <text x="658" y="507" class="bs">TTL 30min + 续约 + 宽限 10min</text>
+  <text x="658" y="523" class="tag">AP 崩溃也会被回收</text>
+
+  <rect x="930" y="466" width="278" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="944" y="487" class="bt">queueing 排队与 offer</text>
+  <text x="944" y="507" class="bs">组队列 + 设备队列 · priority 降序</text>
+  <text x="944" y="523" class="tag">只给队首，60s 确认窗口</text>
+
+  <rect x="72" y="540" width="272" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="86" y="561" class="bt">patrol 巡检</text>
+  <text x="86" y="581" class="bs">单轮失败 suspect · 2 轮 offline</text>
+  <text x="86" y="597" class="tag">掉线不改租约，只标 degraded</text>
+
+  <rect x="358" y="540" width="272" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="372" y="561" class="bt">notices 通知与闭环</text>
+  <text x="372" y="581" class="bs">企微 → 邮件 降级链</text>
+  <text x="372" y="597" class="tag">记在接收人身上：sent/acked</text>
+
+  <rect x="644" y="540" width="272" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="658" y="561" class="bt">audit 审计</text>
+  <text x="658" y="581" class="bs">谁、何时、对哪台、做了什么</text>
+  <text x="658" y="597" class="tag">对 Agent 不开放</text>
+
+  <rect x="930" y="540" width="278" height="62" fill="#f2f8fd" stroke="#c9d8e5" rx="6"/>
+  <text x="944" y="561" class="bt">security 凭据</text>
+  <text x="944" y="581" class="bs">rr_ 前缀 · SHA-256 哈希存储</text>
+  <text x="944" y="597" class="tag">一人一条 · 续期不换 token</text>
+
+  <!-- 箭头 -->
+  <line x1="640" y1="616" x2="640" y2="652" stroke="#8aa8c0" stroke-width="1.6"/>
+  <polygon points="640,658 635,648 645,648" fill="#8aa8c0"/>
+
+  <!-- L4 数据 -->
+  <rect x="52" y="660" width="150" height="26" fill="#2f6fa8" rx="4"/>
+  <text x="64" y="678" class="lan">④ 数据层</text>
+
+  <rect x="206" y="660" width="430" height="76" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.5" rx="8"/>
+  <text x="224" y="683" class="bt">PostgreSQL 16</text>
+  <text x="224" y="705" class="bs">product_type · device · principal · credential</text>
+  <text x="224" y="724" class="bs">lease · queue_entry · audit_event · notice · notice_receipt · patrol_run</text>
+
+  <rect x="660" y="660" width="300" height="76" fill="#ffffff" stroke="#bcd3e6" stroke-width="1.5" rx="8"/>
+  <text x="678" y="683" class="bt">身份唯一索引</text>
+  <text x="678" y="705" class="bs">MAC / SN / asset_tag / position_code</text>
+  <text x="678" y="724" class="bs">主键用内部 device_id（擦 data 换 MAC 不断史）</text>
+
+  <!-- L5 外部 -->
+  <rect x="52" y="760" width="150" height="26" fill="#2f6fa8" rx="4"/>
+  <text x="64" y="778" class="lan">⑤ 资源与外部</text>
+
+  <rect x="206" y="760" width="330" height="70" fill="#fff8ec" stroke="#d9a441" stroke-width="1.4" rx="8"/>
+  <text x="224" y="783" class="bt">设备池（15 类 · 500–750 台）</text>
+  <text x="224" y="804" class="bs">全部网络 ADB tcp 5555，无 USB 直连</text>
+  <text x="224" y="822" class="tag">Data 区预留钩子，启动自动拉起 adbd</text>
+
+  <rect x="552" y="760" width="240" height="70" fill="#fff8ec" stroke="#d9a441" stroke-width="1.4" rx="8"/>
+  <text x="570" y="783" class="bt">SerialBridge</text>
+  <text x="570" y="804" class="bs">串口按租约绑定 device_id</text>
+
+  <rect x="808" y="760" width="240" height="70" fill="#fff8ec" stroke="#d9a441" stroke-width="1.4" rx="8"/>
+  <text x="826" y="783" class="bt">企微 / 邮件</text>
+  <text x="826" y="804" class="bs">通知降级链：企微 → 邮件</text>
+
+  <!-- 底部三条 -->
+  <rect x="52" y="852" width="1176" height="106" fill="#0f2740" rx="10"/>
+  <text x="76" y="878" font-size="13" font-weight="700" fill="#9fc6e8">三条贯穿判断</text>
+  <text x="76" y="901" font-size="12.5" fill="#e8f1f8">① 租约而非借还登记 —— 申请方是 AI，崩溃不会记得还，系统必须自己回收（TTL 30min + 续约 + 宽限 10min）</text>
+  <text x="76" y="924" font-size="12.5" fill="#e8f1f8">② 单一事实来源 + 双入口共用 —— Web 与 MCP 调同一套 service 方法，可用性服务端只算一次，两边数字必然一致</text>
+  <text x="76" y="947" font-size="12.5" fill="#e8f1f8">③ 这是服务，不是门禁 —— 技术上拦不住绕过（5555 局域网开放），目标是让「按规矩来」足够省事</text>
+</svg>
