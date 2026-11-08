@@ -16,6 +16,7 @@ from app.domain import audit
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
 from app.models import Device, Lease, ProductType, QueueEntry
+from app.runtime_config import get_runtime_value
 from app.utils import new_device_id, new_flash_id, new_form_id, utcnow
 
 FORM_TTL_MINUTES = 30
@@ -113,7 +114,9 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
             stats[d.model_class] = {"total": 0, "available": 0, "occupied": 0, "leased": 0, "queued": 0}
         st = stats[d.model_class]
         st["total"] += 1
-        if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect):
+        if is_claimable(
+            d.status, d.health_level, get_runtime_value(session, "allow_apply_when_suspect")
+        ):
             st["available"] += 1
         if d.status == DeviceStatus.OCCUPIED:
             st["occupied"] += 1
@@ -165,15 +168,16 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
     return result
 
 
-def _public_device(d: Device, for_agent: bool = True) -> dict:
+def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
     """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。"""
+    allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     data = {
         "device_id": d.device_id,
         "display_name": d.display_name,
         "model_class": d.model_class,
         "status": d.status,
         "health_level": d.health_level,
-        "claimable": is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect),
+        "claimable": is_claimable(d.status, d.health_level, allow_suspect),
         "adb_address": d.adb_address,
         "position_code": d.position_code,
         "project_name": d.project_name,
@@ -215,19 +219,20 @@ def list_devices(
     devices = q.order_by(Device.device_id).all()
     if claimable_only:
         # 只把"当前真正可申请"的设备返回给 Agent，避免拿到连不上的机器。
+        allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
         devices = [
             d for d in devices
-            if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect)
+            if is_claimable(d.status, d.health_level, allow_suspect)
         ]
     devices = devices[:limit]
-    return [_public_device(d, for_agent=for_agent) for d in devices]
+    return [_public_device(d, session, for_agent=for_agent) for d in devices]
 
 
 def device_info(session: Session, device_id: str, for_agent: bool = True) -> dict:
     d = session.get(Device, device_id)
     if d is None:
         raise DomainError("NOT_FOUND", f"device {device_id} not found")
-    return _public_device(d, for_agent=for_agent)
+    return _public_device(d, session, for_agent=for_agent)
 
 
 # ---------- 注册 ----------

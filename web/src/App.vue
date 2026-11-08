@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const pages = [
   { key: 'dashboard', label: '看板' },
@@ -38,6 +38,18 @@ const anomalies = ref(null)
 const audit = ref(null)
 const auditAction = ref('')
 const settings = ref(null)
+const settingsForm = ref({
+  patrol_interval_minutes: 30,
+  patrol_fail_threshold: 2,
+  holder_concurrency_limit: 2,
+  allow_apply_when_suspect: false,
+  lease_ttl_minutes: 30,
+  lease_grace_minutes: 10,
+  lease_max_minutes: 240,
+  offer_window_seconds: 60,
+  credential_valid_days: 90,
+})
+const settingsSaving = ref(false)
 
 const contacts = ref([])
 const contactForm = ref({ email: '', name: '', note: '' })
@@ -45,20 +57,19 @@ const editDialog = ref(false)
 const editRow = ref({ email: '', name: '', note: '' })
 const smtp = ref(null)
 const smtpTestTo = ref('')
-const sendForm = ref({ emails: [], manual_emails: '', role: 'user', note: '', valid_days: 90 })
+const sendForm = ref({ emails: [], manual_emails: '', manual_holders: [], role: 'user', note: '', valid_days: 90 })
+const holderDraft = ref({ name: '', note: '' })
 const previewVisible = ref(false)
 const preview = ref(null)          // batch-generate 返回的完整响应
 const generating = ref(false)
 const sending = ref(false)
 const sendResults = ref([])
 
-const newProduct = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1 })
 const productTypes = ref([])
 const ptEditDialog = ref(false)
 const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '' })
 
-// v0.15：图例 + 新增机型
-const legendVisible = ref(false)
+// v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
 const ptCreateDialog = ref(false)
 const ptCreateForm = ref(null)
@@ -84,7 +95,12 @@ async function api(path, opts) {
   const r = await fetch(API_BASE + path, { credentials: 'include', ...opts })
   if (!r.ok) {
     let detail = String(r.status)
-    try { const j = await r.json(); if (j.detail) detail = j.detail } catch (e) { /* ignore */ }
+    try {
+      const j = await r.json()
+      if (j.detail != null) {
+        detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+      }
+    } catch (e) { /* ignore */ }
     if (r.status === 401 && me.value && !path.startsWith('/api/auth/')) me.value = null
     throw new Error(path + ' -> ' + detail)
   }
@@ -99,7 +115,36 @@ async function loadNotices() { notices.value = await api('/api/notices') }
 async function loadPatrol() { patrolRuns.value = await api('/api/patrol/runs') }
 async function loadQueue() { queueData.value = await api('/api/queue') }
 async function loadAnomalies() { anomalies.value = await api('/api/anomalies') }
-async function loadSettings() { settings.value = await api('/api/settings') }
+function syncSettingsForm(data) {
+  if (!data) return
+  settingsForm.value = {
+    patrol_interval_minutes: data.patrol_interval_minutes,
+    patrol_fail_threshold: data.patrol_fail_threshold,
+    holder_concurrency_limit: data.holder_concurrency_limit,
+    allow_apply_when_suspect: !!data.allow_apply_when_suspect,
+    lease_ttl_minutes: data.lease_ttl_minutes,
+    lease_grace_minutes: data.lease_grace_minutes,
+    lease_max_minutes: data.lease_max_minutes,
+    offer_window_seconds: data.offer_window_seconds,
+    credential_valid_days: data.credential_valid_days,
+  }
+}
+async function loadSettings() {
+  settings.value = await api('/api/settings')
+  syncSettingsForm(settings.value)
+}
+async function saveSettings() {
+  if (settingsSaving.value) return
+  settingsSaving.value = true
+  try {
+    settings.value = await api('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settingsForm.value),
+    })
+    syncSettingsForm(settings.value)
+    ElMessage.success('系统设置已保存')
+  } catch (e) { ElMessage.error(e.message) } finally { settingsSaving.value = false }
+}
 async function loadProductTypes() { productTypes.value = await api('/api/product-types') }
 async function loadContacts() { contacts.value = await api('/api/contacts') }
 async function loadSmtp() { smtp.value = await api('/api/settings/smtp') }
@@ -135,7 +180,10 @@ async function boot() {
     } catch (e) { me.value = null }
   }
   booting.value = false
-  if (me.value) loadDashboard()
+  if (me.value) {
+    loadDashboard()
+    loadVersionInfo()
+  }
 }
 onMounted(boot)
 
@@ -232,6 +280,16 @@ async function testSmtp() {
 }
 
 // ---- 发接入凭据（两步式：生成预览 -> 确认发送） ----
+function addManualHolder() {
+  const name = (holderDraft.value.name || '').trim()
+  if (!name) { ElMessage.warning('请填写姓名'); return }
+  const note = (holderDraft.value.note || '').trim()
+  sendForm.value.manual_holders.push(note ? { name, note } : { name })
+  holderDraft.value = { name: '', note: '' }
+}
+function removeManualHolder(idx) {
+  sendForm.value.manual_holders.splice(idx, 1)
+}
 async function generateCredentials() {
   if (generating.value) return
   generating.value = true
@@ -305,21 +363,30 @@ async function renewCredential(id) {
   })
   ElMessage.success('已续期 90 天'); loadCredentials()
 }
-async function addProductType() {
-  await api('/api/product-types', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(newProduct.value),
-  })
-  ElMessage.success('已新增机型')
-  newProduct.value = { type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1 }
-  loadSettings()
-}
 async function disableProductType(code) {
   try {
     await api('/api/product-types/' + encodeURIComponent(code) + '/disable', { method: 'POST' })
     ElMessage.success('已停用 ' + code)
     loadProductTypes(); loadSettings()
   } catch (e) { ElMessage.error(e.message) }
+}
+async function deleteProductType(code) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除机型「${code}」？此操作不可恢复。若仍有设备/活动租约/排队引用将拒绝删除。`,
+      '删除设备类型',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
+    )
+  } catch (e) { return }
+  try {
+    await api('/api/product-types/' + encodeURIComponent(code), { method: 'DELETE' })
+    ElMessage.success('已删除 ' + code)
+    loadProductTypes(); loadSettings()
+  } catch (e) {
+    const msg = e.message || String(e)
+    // 409 时把后端 detail 原样提示（api() 已拼进 Error.message）
+    ElMessageBox.alert(msg.replace(/^.* -> /, ''), '无法删除', { type: 'error' })
+  }
 }
 async function enableProductType(code) {
   try {
@@ -360,12 +427,9 @@ async function savePtEdit() {
 
 function filterAudit(action) { auditAction.value = action || ''; loadAudit() }
 
-// ---- v0.15：图例 ----
-async function openLegend() {
-  legendVisible.value = true
-  if (!versionInfo.value) {
-    try { versionInfo.value = await api('/api/version') } catch (e) { versionInfo.value = null }
-  }
+// ---- v0.16：版本信息在挂载时加载，供设置页「关于」展示 ----
+async function loadVersionInfo() {
+  try { versionInfo.value = await api('/api/version') } catch (e) { versionInfo.value = null }
 }
 
 // ---- v0.15：新增机型（先 POST 建基础记录，再 PUT 补工程字段）----
@@ -492,9 +556,8 @@ const legendRole = [
   <!-- 主界面 -->
   <el-container v-else style="height: 100vh">
     <el-aside width="200px" style="border-right: 1px solid #eee; display: flex; flex-direction: column">
-      <div style="padding: 16px; font-weight: 700; display: flex; align-items: center; justify-content: space-between">
+      <div style="padding: 16px; font-weight: 700">
         <span>Quamm TRES</span>
-        <el-button size="small" text style="font-weight: 700; padding: 2px 6px" @click="openLegend" title="术语与状态说明">?</el-button>
       </div>
       <el-menu :default-active="active" @select="switchPage" style="flex: 1">
         <el-menu-item v-for="p in pages" :key="p.key" :index="p.key">{{ p.label }}</el-menu-item>
@@ -703,41 +766,76 @@ const legendRole = [
         <h2>设置</h2>
         <el-tabs v-model="settingsTab">
           <el-tab-pane label="系统设置" name="system">
-            <el-descriptions v-if="settings" :column="2" border style="margin-bottom: 16px">
-              <el-descriptions-item label="位置规则">{{ settings.location_rule.format }}（{{ settings.location_rule.description }}）</el-descriptions-item>
-              <el-descriptions-item label="探测后端">{{ settings.probe_backend }}</el-descriptions-item>
-              <el-descriptions-item label="巡检间隔">{{ settings.patrol_interval_minutes }} 分钟</el-descriptions-item>
-              <el-descriptions-item label="巡检失败阈值">{{ settings.patrol_fail_threshold }} 轮</el-descriptions-item>
-              <el-descriptions-item label="单人并发上限">{{ settings.holder_concurrency_limit }} 台</el-descriptions-item>
-              <el-descriptions-item label="租约 TTL">{{ settings.lease_ttl_minutes }} 分钟</el-descriptions-item>
-              <el-descriptions-item label="宽限期">{{ settings.lease_grace_minutes }} 分钟</el-descriptions-item>
-              <el-descriptions-item label="offer 窗口">{{ settings.offer_window_seconds }} 秒</el-descriptions-item>
-              <el-descriptions-item label="凭据有效期">{{ settings.credential_valid_days }} 天</el-descriptions-item>
-              <el-descriptions-item label="allow_apply_when_suspect"><el-switch :model-value="settings.allow_apply_when_suspect" disabled /></el-descriptions-item>
-            </el-descriptions>
-            <h3>机型字典</h3>
-            <el-table :data="settings ? settings.product_types : []" border>
-              <el-table-column prop="type_code" label="type_code" width="150" />
-              <el-table-column prop="display_name" label="名称" />
-              <el-table-column prop="has_screen" label="有屏" width="70" />
-              <el-table-column prop="has_led" label="有灯" width="70" />
-              <el-table-column prop="serial_count" label="串口数" width="90" />
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }"><el-tag :type="row.enabled ? 'success' : 'info'">{{ row.enabled ? '启用' : '停用' }}</el-tag></template>
-              </el-table-column>
-              <el-table-column label="操作" width="100">
-                <template #default="{ row }"><el-button size="small" type="danger" :disabled="!row.enabled" @click="disableProductType(row.type_code)">停用</el-button></template>
-              </el-table-column>
-            </el-table>
-            <h3>新增机型</h3>
-            <el-form inline>
-              <el-form-item label="type_code"><el-input v-model="newProduct.type_code" placeholder="QM200X" /></el-form-item>
-              <el-form-item label="名称"><el-input v-model="newProduct.display_name" placeholder="QM200X" /></el-form-item>
-              <el-form-item label="有屏"><el-switch v-model="newProduct.has_screen" /></el-form-item>
-              <el-form-item label="有灯"><el-switch v-model="newProduct.has_led" /></el-form-item>
-              <el-form-item label="串口数"><el-input-number v-model="newProduct.serial_count" :min="0" /></el-form-item>
-              <el-form-item><el-button type="primary" @click="addProductType">新增</el-button></el-form-item>
+            <el-form v-if="settings" :model="settingsForm" label-width="200px" style="max-width: 640px; margin-bottom: 16px">
+              <el-form-item label="位置规则">
+                <span>{{ settings.location_rule.format }}（{{ settings.location_rule.description }}）</span>
+              </el-form-item>
+              <el-form-item label="探测后端"><span>{{ settings.probe_backend }}</span></el-form-item>
+              <el-form-item label="巡检间隔（分钟）">
+                <el-input-number v-model="settingsForm.patrol_interval_minutes" :min="1" :max="1440" />
+              </el-form-item>
+              <el-form-item label="巡检失败阈值（轮）">
+                <el-input-number v-model="settingsForm.patrol_fail_threshold" :min="1" :max="100" />
+              </el-form-item>
+              <el-form-item label="单人并发上限（台）">
+                <el-input-number v-model="settingsForm.holder_concurrency_limit" :min="1" :max="20" />
+              </el-form-item>
+              <el-form-item label="租约 TTL（分钟）">
+                <el-input-number v-model="settingsForm.lease_ttl_minutes" :min="1" :max="1440" />
+              </el-form-item>
+              <el-form-item label="宽限期（分钟）">
+                <el-input-number v-model="settingsForm.lease_grace_minutes" :min="0" :max="1440" />
+              </el-form-item>
+              <el-form-item label="租约上限（分钟）">
+                <el-input-number v-model="settingsForm.lease_max_minutes" :min="1" :max="10080" />
+              </el-form-item>
+              <el-form-item label="offer 窗口（秒）">
+                <el-input-number v-model="settingsForm.offer_window_seconds" :min="5" :max="3600" />
+              </el-form-item>
+              <el-form-item label="凭据有效期（天）">
+                <el-input-number v-model="settingsForm.credential_valid_days" :min="1" :max="3650" />
+              </el-form-item>
+              <el-form-item label="allow_apply_when_suspect">
+                <el-switch v-model="settingsForm.allow_apply_when_suspect" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
+              </el-form-item>
             </el-form>
+            <h3>关于 Quamm TRES</h3>
+            <p v-if="versionInfo" style="margin: 0 0 12px">
+              <strong>{{ versionInfo.name }}</strong> · 版本 {{ versionInfo.version }}
+              <span v-if="versionInfo.stage">（{{ versionInfo.stage }}）</span>
+            </p>
+            <p style="color: #909399; margin: 0 0 12px">
+              测试资源分配管理系统：Agent 经 MCP 申请/释放 ADB 测试设备，管理员在此维护系统参数与设备类型。
+              机型的新增、编辑、停用与删除统一在「设备类型」页操作，本页不再重复入口。
+            </p>
+            <h4>健康级别 health_level</h4>
+            <el-table :data="legendHealth" border size="small">
+              <el-table-column prop="level" label="级别" width="80" />
+              <el-table-column prop="meaning" label="含义" />
+            </el-table>
+            <h4>设备状态</h4>
+            <el-table :data="legendDevice" border size="small">
+              <el-table-column prop="state" label="状态" width="120" />
+              <el-table-column prop="meaning" label="含义" />
+            </el-table>
+            <h4>租约状态</h4>
+            <el-table :data="legendLease" border size="small">
+              <el-table-column prop="state" label="状态" width="120" />
+              <el-table-column prop="meaning" label="含义" />
+            </el-table>
+            <h4>排队状态</h4>
+            <el-table :data="legendQueue" border size="small">
+              <el-table-column prop="state" label="状态" width="120" />
+              <el-table-column prop="meaning" label="含义" />
+            </el-table>
+            <h4>角色</h4>
+            <el-table :data="legendRole" border size="small">
+              <el-table-column prop="role" label="角色" width="100" />
+              <el-table-column prop="meaning" label="含义" />
+            </el-table>
           </el-tab-pane>
 
           <el-tab-pane label="设备类型" name="product-types">
@@ -745,7 +843,7 @@ const legendRole = [
               <h3 style="margin: 0">设备类型元数据（defconfig / SDK 获取 / 编译 / 镜像 / Jenkins / 备注）</h3>
               <el-button v-if="me.role === 'admin'" type="primary" @click="openPtCreate">新增机型</el-button>
             </div>
-            <p style="color: #909399">新增机型时 5 个工程字段默认必填；勾选「允许不完整（仅测试）」可放开。机型只能启用/停用，不支持删除。</p>
+            <p style="color: #909399">新增机型时 5 个工程字段默认必填；勾选「允许不完整（仅测试）」可放开。无引用时可物理删除（需二次确认）。</p>
             <el-table :data="enabledProductTypes" border>
               <el-table-column prop="type_code" label="type_code" width="150" />
               <el-table-column prop="display_name" label="名称" width="140" />
@@ -753,11 +851,12 @@ const legendRole = [
               <el-table-column label="完整度" width="110">
                 <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'warning'">{{ row.complete_label }}</el-tag></template>
               </el-table-column>
-              <el-table-column label="操作" width="180">
+              <el-table-column label="操作" width="260">
                 <template #default="{ row }">
                   <template v-if="me.role === 'admin'">
                     <el-button size="small" @click="openPtEdit(row)">编辑</el-button>
                     <el-button size="small" type="danger" @click="disableProductType(row.type_code)">停用</el-button>
+                    <el-button size="small" type="danger" plain @click="deleteProductType(row.type_code)">删除</el-button>
                   </template>
                   <span v-else style="color: #c0c4cc; font-size: 12px">仅 admin 可改</span>
                 </template>
@@ -774,9 +873,12 @@ const legendRole = [
                   <el-table-column label="状态" width="90">
                     <template #default><el-tag type="info">停用</el-tag></template>
                   </el-table-column>
-                  <el-table-column label="操作" width="120">
+                  <el-table-column label="操作" width="200">
                     <template #default="{ row }">
-                      <el-button v-if="me.role === 'admin'" size="small" type="success" @click="enableProductType(row.type_code)">启用</el-button>
+                      <template v-if="me.role === 'admin'">
+                        <el-button size="small" type="success" @click="enableProductType(row.type_code)">启用</el-button>
+                        <el-button size="small" type="danger" plain @click="deleteProductType(row.type_code)">删除</el-button>
+                      </template>
                       <span v-else style="color: #c0c4cc; font-size: 12px">仅 admin 可改</span>
                     </template>
                   </el-table-column>
@@ -819,6 +921,23 @@ const legendRole = [
               </el-form-item>
               <el-form-item label="或手填邮箱">
                 <el-input v-model="sendForm.manual_emails" type="textarea" :rows="2" placeholder="多个邮箱用逗号 / 换行分隔" />
+              </el-form-item>
+              <el-form-item label="仅姓名（不发邮件）">
+                <div style="width: 100%">
+                  <div style="display: flex; gap: 8px; margin-bottom: 8px">
+                    <el-input v-model="holderDraft.name" placeholder="姓名" style="width: 160px" />
+                    <el-input v-model="holderDraft.note" placeholder="备注（可选）" style="flex: 1" />
+                    <el-button @click="addManualHolder">添加</el-button>
+                  </div>
+                  <el-tag
+                    v-for="(h, idx) in sendForm.manual_holders"
+                    :key="idx"
+                    closable
+                    style="margin: 0 6px 6px 0"
+                    @close="removeManualHolder(idx)"
+                  >{{ h.name }}{{ h.note ? '（' + h.note + '）' : '' }}</el-tag>
+                  <div v-if="!sendForm.manual_holders.length" style="color: #909399; font-size: 12px">可添加无邮箱条目：只生成 token，确认发送时跳过发信</div>
+                </div>
               </el-form-item>
               <el-form-item label="权限">
                 <el-select v-model="sendForm.role" style="width: 160px">
@@ -868,7 +987,12 @@ const legendRole = [
             </div>
             <el-table :data="preview.results" border max-height="320">
               <el-table-column prop="name" label="姓名" width="120" />
-              <el-table-column prop="email" label="邮箱" width="200" />
+              <el-table-column label="邮箱" width="220">
+                <template #default="{ row }">
+                  <span v-if="row.has_email !== false && row.email">{{ row.email }}</span>
+                  <el-tag v-else type="info" size="small">仅生成，不发邮件</el-tag>
+                </template>
+              </el-table-column>
               <el-table-column prop="role" label="权限" width="80" />
               <el-table-column label="token">
                 <template #default="{ row }"><span class="mono">{{ row.token }}</span></template>
@@ -930,38 +1054,6 @@ const legendRole = [
             <el-button @click="ptCreateDialog = false">取消</el-button>
             <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">新增</el-button>
           </template>
-        </el-dialog>
-
-        <el-dialog v-model="legendVisible" title="术语与状态说明" width="680px">
-          <p v-if="versionInfo" style="margin-top: 0">
-            <strong>{{ versionInfo.name }}</strong> · 版本 {{ versionInfo.version }}
-            <span v-if="versionInfo.stage">（{{ versionInfo.stage }}）</span>
-          </p>
-          <h4>健康级别 health_level</h4>
-          <el-table :data="legendHealth" border size="small">
-            <el-table-column prop="level" label="级别" width="80" />
-            <el-table-column prop="meaning" label="含义" />
-          </el-table>
-          <h4>设备状态</h4>
-          <el-table :data="legendDevice" border size="small">
-            <el-table-column prop="state" label="状态" width="120" />
-            <el-table-column prop="meaning" label="含义" />
-          </el-table>
-          <h4>租约状态</h4>
-          <el-table :data="legendLease" border size="small">
-            <el-table-column prop="state" label="状态" width="120" />
-            <el-table-column prop="meaning" label="含义" />
-          </el-table>
-          <h4>排队状态</h4>
-          <el-table :data="legendQueue" border size="small">
-            <el-table-column prop="state" label="状态" width="120" />
-            <el-table-column prop="meaning" label="含义" />
-          </el-table>
-          <h4>角色</h4>
-          <el-table :data="legendRole" border size="small">
-            <el-table-column prop="role" label="角色" width="100" />
-            <el-table-column prop="meaning" label="含义" />
-          </el-table>
         </el-dialog>
       </div>
     </el-main>

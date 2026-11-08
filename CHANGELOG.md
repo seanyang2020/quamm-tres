@@ -3,6 +3,18 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.16.0] - 2026-11-08
+
+### 新增
+- 运行时配置助手 `app/runtime_config.py` + `PUT /api/settings`（白名单键，DB KV 覆盖 pydantic 默认，立即生效）
+- `DELETE /api/product-types/{type_code}`：无引用才物理删除；有设备/活动租约/排队引用返回 409
+- 凭据 `manual_holders`：无邮箱也可生成 token（占位 `manual-<id>@local`，界面不暴露）；batch-send 跳过无邮箱条目
+
+### 变更
+- 设置页系统参数改为可编辑表单；设备类型 Tab 增加删除（二次确认）；发凭据支持「仅姓名」条目
+- leasing / catalog / patrol / 凭据签发读取运行时配置
+- 版本号 0.16.0
+
 ## [0.14.0] - 2026-11-08
 
 ### 新增

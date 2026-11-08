@@ -16,6 +16,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.runtime_config import get_runtime_value
 from app.constants import DeviceStatus, HealthLevel, LeaseState
 from app.domain import audit
 from app.domain.notices import notify_device_offline, notify_device_recovered
@@ -83,7 +84,7 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
                 # 仍探不到，保持 pending，不重复计 suspect
                 pass
             elif d.status in (DeviceStatus.AVAILABLE, DeviceStatus.OFFLINE):
-                if d.consecutive_failures < settings.patrol_fail_threshold:
+                if d.consecutive_failures < int(get_runtime_value(session, "patrol_fail_threshold")):
                     suspect += 1
                 else:
                     if d.status != DeviceStatus.OFFLINE:

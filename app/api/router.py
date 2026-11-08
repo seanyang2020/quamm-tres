@@ -43,6 +43,13 @@ from app.models import (
     ProductType,
     QueueEntry,
 )
+from app.runtime_config import (
+    RUNTIME_KEYS,
+    get_runtime_value,
+    runtime_public_view,
+    set_runtime_value,
+    validate_runtime_value,
+)
 from app.security import AuthError, resolve_token
 from app.utils import hash_token, new_id, new_token, token_prefix, utcnow
 
@@ -106,7 +113,7 @@ def auth_setup(payload: dict = Body(...), session: Session = Depends(get_session
             email=email,
             name=name,
             employee_no=None,
-            quota=settings.holder_concurrency_limit,
+            quota=int(get_runtime_value(session, "holder_concurrency_limit")),
             is_admin=True,
             status="active",
             created_at=now,
@@ -121,12 +128,13 @@ def auth_setup(payload: dict = Body(...), session: Session = Depends(get_session
         session.add(Contact(email=email, name=name, note="首次引导创建", created_at=now))
 
     token = new_token()
+    valid_days = int(get_runtime_value(session, "credential_valid_days"))
     session.add(
         Credential(
             principal_id=principal.id,
             token_hash=hash_token(token),
             token_prefix=token_prefix(token),
-            expires_at=now + timedelta(days=settings.credential_valid_days),
+            expires_at=now + timedelta(days=valid_days),
             role="admin",
             note="首次引导创建",
             created_at=now,
@@ -187,9 +195,10 @@ def dashboard(
     # 可用池口径：available 且探测健康（默认仅 L3）。suspect 仍显示 available 状态，
     # 但不可申请，因此 dashboard 的 available 必须按"真实可申请数"回落。
     device_rows = session.query(Device).all()
+    allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     available = sum(
         1 for d in device_rows
-        if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect)
+        if is_claimable(d.status, d.health_level, allow_suspect)
     )
     suspect = sum(1 for d in device_rows if d.status == DeviceStatus.AVAILABLE) - available
     by_status["available"] = available
@@ -219,7 +228,7 @@ def dashboard(
         "suspect": suspect,
         "by_status": by_status,
         "projects": projects,
-        "allow_apply_when_suspect": settings.allow_apply_when_suspect,
+        "allow_apply_when_suspect": allow_suspect,
         "active_leases": active_leases,
         "queued": queued,
         "products": products,
@@ -613,23 +622,49 @@ def audit(
 @router.get("/settings")
 def settings_view(session: Session = Depends(get_session)):
     """系统配置 + 机型字典（供维护）。位置规则为只读展示。"""
-    return {
+    view = {
         "product_types": catalog.list_products(session),
         "location_rule": {
             "format": "302-R2-05",
             "description": "楼栋-机架-机位（302 楼栋 / R 机架 / 05 机位）",
         },
-        "patrol_interval_minutes": settings.patrol_interval_minutes,
-        "patrol_fail_threshold": settings.patrol_fail_threshold,
-        "holder_concurrency_limit": settings.holder_concurrency_limit,
-        "allow_apply_when_suspect": settings.allow_apply_when_suspect,
-        "lease_ttl_minutes": settings.lease_ttl_minutes,
-        "lease_grace_minutes": settings.lease_grace_minutes,
-        "lease_max_minutes": settings.lease_max_minutes,
-        "offer_window_seconds": settings.offer_window_seconds,
-        "credential_valid_days": settings.credential_valid_days,
         "probe_backend": settings.probe_backend,
     }
+    view.update(runtime_public_view(session))
+    return view
+
+
+@router.put("/settings")
+def update_settings(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """在线修改运行时配置（白名单键，持久化到 settings KV，立即生效）。"""
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Body 须为 JSON 对象")
+    unknown = [k for k in payload.keys() if k not in RUNTIME_KEYS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不支持的配置键：{', '.join(sorted(unknown))}；仅接受 {', '.join(sorted(RUNTIME_KEYS))}",
+        )
+    if not payload:
+        raise HTTPException(status_code=400, detail="未提供任何可更新字段")
+    errors: dict[str, str] = {}
+    normalized: dict[str, object] = {}
+    for key, value in payload.items():
+        nv, err = validate_runtime_value(key, value)
+        if err:
+            errors[key] = err
+        else:
+            normalized[key] = nv
+    if errors:
+        raise HTTPException(status_code=400, detail={"message": "配置校验失败", "fields": errors})
+    for key, value in normalized.items():
+        set_runtime_value(session, key, value)
+    session.commit()
+    return settings_view(session=session)
 
 
 @router.get("/product-types")
@@ -705,6 +740,67 @@ def disable_product_type(
     pt.enabled = False
     session.commit()
     return {"type_code": type_code, "enabled": False}
+
+
+@router.delete("/product-types/{type_code}")
+def delete_product_type(
+    type_code: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """物理删除机型；存在设备或活动租约/排队引用时返回 409。"""
+    pt = session.get(ProductType, type_code)
+    if pt is None:
+        raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
+
+    devices = session.query(Device).filter(Device.model_class == type_code).all()
+    device_count = len(devices)
+    device_ids = [d.device_id for d in devices]
+    lease_count = 0
+    if device_ids:
+        lease_count = (
+            session.query(func.count(Lease.lease_id))
+            .filter(Lease.device_id.in_(device_ids), Lease.state.in_(LeaseState.ACTIVE))
+            .scalar()
+            or 0
+        )
+    active_queue_states = (QueueState.QUEUED, QueueState.OFFERED)
+    product_queue = (
+        session.query(func.count(QueueEntry.entry_id))
+        .filter(
+            QueueEntry.target_type == "product",
+            QueueEntry.target_code == type_code,
+            QueueEntry.state.in_(active_queue_states),
+        )
+        .scalar()
+        or 0
+    )
+    device_queue = 0
+    if device_ids:
+        device_queue = (
+            session.query(func.count(QueueEntry.entry_id))
+            .filter(
+                QueueEntry.target_type == "device",
+                QueueEntry.target_code.in_(device_ids),
+                QueueEntry.state.in_(active_queue_states),
+            )
+            .scalar()
+            or 0
+        )
+    queue_count = product_queue + device_queue
+
+    if device_count or lease_count or queue_count:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"机型 {type_code} 仍有引用：设备 {device_count}、"
+                f"活动租约 {lease_count}、活动排队 {queue_count}；"
+                f"请先迁移/停用设备并释放租约/取消排队后再删除"
+            ),
+        )
+    session.delete(pt)
+    session.commit()
+    return {"type_code": type_code, "deleted": True}
 
 
 # ---------- 人员通讯录（v0.11，管理员） ----------
@@ -868,10 +964,14 @@ def _collect_recipients(payload: dict) -> list[str]:
 
 def _create_credentials(
     session: Session, ordered: list[str], role: str, note: str | None, valid_days: int
-) -> list[tuple[str, str, str]]:
-    """为每人建 principal/contact + 一条 rr_ 凭据（库里只存 hash），返回 (email, name, token)。"""
+) -> list[tuple[str, str, str, bool]]:
+    """为每人建 principal/contact + 一条 rr_ 凭据（库里只存 hash）。
+
+    返回 (display_email, name, token, has_email)。display_email 为对外展示邮箱。
+    """
     now = utcnow()
-    created: list[tuple[str, str, str]] = []
+    quota = int(get_runtime_value(session, "holder_concurrency_limit"))
+    created: list[tuple[str, str, str, bool]] = []
     for email in ordered:
         contact = session.get(Contact, email)
         name = (contact.name if contact and contact.name else None) or email
@@ -881,7 +981,7 @@ def _create_credentials(
                 email=email,
                 name=name,
                 employee_no=None,
-                quota=settings.holder_concurrency_limit,
+                quota=quota,
                 is_admin=False,
                 status="active",
                 created_at=now,
@@ -902,16 +1002,81 @@ def _create_credentials(
                 created_at=now,
             )
         )
-        created.append((email, name, token))
-    session.commit()
+        created.append((email, name, token, True))
     return created
 
 
-def _valid_days(payload: dict) -> int:
+def _create_manual_holder_credentials(
+    session: Session,
+    holders: list[dict],
+    role: str,
+    batch_note: str | None,
+    valid_days: int,
+) -> list[tuple[str, str, str, bool]]:
+    """无邮箱条目：用 manual-<短id>@local 占位建 Principal，返回中不暴露占位邮箱。"""
+    now = utcnow()
+    quota = int(get_runtime_value(session, "holder_concurrency_limit"))
+    created: list[tuple[str, str, str, bool]] = []
+    for item in holders:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        note = str(item.get("note") or "").strip() or batch_note
+        placeholder = f"manual-{new_id('', 4)}@local"
+        principal = session.query(Principal).filter(Principal.email == placeholder).first()
+        if principal is None:
+            principal = Principal(
+                email=placeholder,
+                name=name,
+                employee_no=None,
+                quota=quota,
+                is_admin=False,
+                status="active",
+                created_at=now,
+            )
+            session.add(principal)
+            session.flush()
+        else:
+            principal.name = name
+        token = new_token()
+        session.add(
+            Credential(
+                principal_id=principal.id,
+                token_hash=hash_token(token),
+                token_prefix=token_prefix(token),
+                expires_at=now + timedelta(days=valid_days),
+                role=role,
+                note=note,
+                created_at=now,
+            )
+        )
+        # 对外不暴露占位 key：email 置空，仅展示姓名
+        created.append(("", name, token, False))
+    return created
+
+
+def _collect_manual_holders(payload: dict) -> list[dict]:
+    raw = payload.get("manual_holders") or []
+    if not isinstance(raw, list):
+        return []
+    holders: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        note = str(item.get("note") or "").strip() or None
+        holders.append({"name": name, "note": note})
+    return holders
+
+
+def _valid_days(payload: dict, session: Session) -> int:
+    default_days = int(get_runtime_value(session, "credential_valid_days"))
     try:
-        days = int(payload.get("valid_days") or settings.credential_valid_days)
+        days = int(payload.get("valid_days") or default_days)
     except (TypeError, ValueError):
-        days = settings.credential_valid_days
+        days = default_days
     return max(1, min(days, 3650))
 
 
@@ -924,25 +1089,33 @@ def batch_generate_credentials(
     """只生成 token 入库 + 渲染邮件主题/正文（真实 token），明文暂存 30 分钟；不发信。
 
     返回 token 明文（仅此一次）、渲染好的邮件主题/正文、含首个 token 的 mcpServers 配置。
+    支持 emails / manual_emails，以及无邮箱的 manual_holders（仅姓名）。
     """
     ordered = _collect_recipients(payload)
-    if not ordered:
-        raise HTTPException(status_code=400, detail="请至少选择联系人或填写邮箱")
+    holders = _collect_manual_holders(payload)
+    if not ordered and not holders:
+        raise HTTPException(status_code=400, detail="请至少选择联系人或填写邮箱，或添加仅姓名条目")
     role = payload.get("role") if payload.get("role") in ("admin", "user") else "user"
     note = str(payload.get("note") or "").strip() or None
-    valid_days = _valid_days(payload)
+    valid_days = _valid_days(payload, session)
 
     created = _create_credentials(session, ordered, role, note, valid_days)
+    created.extend(_create_manual_holder_credentials(session, holders, role, note, valid_days))
+    if not created:
+        raise HTTPException(status_code=400, detail="请至少选择联系人或填写邮箱，或添加仅姓名条目")
+    session.commit()
+
     results = [
         {
-            "email": email,
+            "email": email or None,
             "name": name,
             "role": role,
             "token": token,
+            "has_email": has_email,
             "subject": mailer.CREDENTIAL_SUBJECT,
             "body": mailer.build_credential_body(token, note),
         }
-        for email, name, token in created
+        for email, name, token, has_email in created
     ]
     batch_id = new_id("batch_", 6)
     expires_at = utcnow() + _CREDENTIAL_BATCH_TTL
@@ -967,7 +1140,10 @@ def batch_send_credentials(
     identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
     session: Session = Depends(get_session),
 ):
-    """按 batch_id 取回 30 分钟内生成的明文，逐人真正 SMTP 发信；发完立即清除 pending。"""
+    """按 batch_id 取回 30 分钟内生成的明文，逐人真正 SMTP 发信；发完立即清除 pending。
+
+    无邮箱（has_email=False）条目跳过发信，token 仍有效。
+    """
     batch_id = str(payload.get("batch_id") or "").strip()
     if not batch_id:
         raise HTTPException(status_code=400, detail="缺少 batch_id")
@@ -978,7 +1154,19 @@ def batch_send_credentials(
     cfg = mailer.get_smtp_config(session)
     results = []
     for item in batch["results"]:
-        r = {"email": item["email"], "token": item["token"], "role": item["role"], "sent": False, "error": None}
+        r = {
+            "email": item.get("email"),
+            "name": item.get("name"),
+            "token": item["token"],
+            "role": item["role"],
+            "sent": False,
+            "skipped": False,
+            "error": None,
+        }
+        if not item.get("has_email", True) or not item.get("email"):
+            r["skipped"] = True
+            results.append(r)
+            continue
         try:
             mailer.send_mail(session, item["email"], item["subject"], item["body"], cfg=cfg)
             r["sent"] = True
@@ -1024,7 +1212,7 @@ def send_credentials(
                 email=email,
                 name=name,
                 employee_no=None,
-                quota=settings.holder_concurrency_limit,
+                quota=int(get_runtime_value(session, "holder_concurrency_limit")),
                 is_admin=False,
                 status="active",
                 created_at=now,
@@ -1039,7 +1227,7 @@ def send_credentials(
                 principal_id=principal.id,
                 token_hash=hash_token(token),
                 token_prefix=token_prefix(token),
-                expires_at=now + timedelta(days=settings.credential_valid_days),
+                expires_at=now + timedelta(days=int(get_runtime_value(session, "credential_valid_days"))),
                 role=role,
                 note=note,
                 created_at=now,

@@ -12,21 +12,23 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState
 from app.domain import audit, flash
 from app.domain.catalog import DomainError
 from app.domain.queueing import cancel, enqueue, find_head, position
 from app.domain.notices import create_notice
 from app.models import Device, Lease, Principal, ProductType, QueueEntry
+from app.runtime_config import get_runtime_value
 from app.security import AuthContext
 from app.utils import new_lease_id, utcnow
 
 
-def _ttl_minutes(expected_minutes: int | None) -> int:
+def _ttl_minutes(session: Session, expected_minutes: int | None) -> int:
+    lease_max = int(get_runtime_value(session, "lease_max_minutes"))
+    lease_ttl = int(get_runtime_value(session, "lease_ttl_minutes"))
     if expected_minutes:
-        return int(min(expected_minutes * 1.5, settings.lease_max_minutes))
-    return settings.lease_ttl_minutes
+        return int(min(expected_minutes * 1.5, lease_max))
+    return lease_ttl
 
 
 def count_active_leases(session: Session, principal_id: int) -> int:
@@ -112,7 +114,7 @@ def _find_available(
     # suspect（L1/L2）默认不可申请，只有 allow_apply_when_suspect=True 才放行；
     # L0 无论开关如何都不进候选。
     claimable_levels = [HealthLevel.L3]
-    if settings.allow_apply_when_suspect:
+    if get_runtime_value(session, "allow_apply_when_suspect"):
         claimable_levels += [HealthLevel.L1, HealthLevel.L2]
     q = session.query(Device).filter(
         Device.status == DeviceStatus.AVAILABLE,
@@ -149,15 +151,17 @@ def _find_available(
 
 def _offer_to(session: Session, device: Device, entry: QueueEntry) -> Lease:
     now = utcnow()
+    ttl = int(get_runtime_value(session, "lease_ttl_minutes"))
+    offer_window = int(get_runtime_value(session, "offer_window_seconds"))
     lease = Lease(
         lease_id=new_lease_id(),
         device_id=device.device_id,
         principal_id=entry.principal_id,
         credential_id=entry.credential_id,
         purpose=entry.purpose,
-        ttl_minutes=settings.lease_ttl_minutes,
+        ttl_minutes=ttl,
         state=LeaseState.RESERVED,
-        expires_at=now + timedelta(seconds=settings.offer_window_seconds),
+        expires_at=now + timedelta(seconds=offer_window),
         adb_address=device.adb_address,
         created_at=now,
     )
@@ -165,7 +169,7 @@ def _offer_to(session: Session, device: Device, entry: QueueEntry) -> Lease:
     session.flush()
     entry.state = QueueState.OFFERED
     entry.offered_at = now
-    entry.offer_expires_at = now + timedelta(seconds=settings.offer_window_seconds)
+    entry.offer_expires_at = now + timedelta(seconds=offer_window)
     entry.lease_id = lease.lease_id
     device.status = DeviceStatus.OCCUPIED
     audit.record(
@@ -262,7 +266,7 @@ def apply(
             },
         )
     if device is not None:
-        ttl = _ttl_minutes(expected_minutes)
+        ttl = _ttl_minutes(session, expected_minutes)
         now = utcnow()
         lease = Lease(
             lease_id=new_lease_id(),
@@ -330,7 +334,8 @@ def renew(session: Session, auth: AuthContext, lease_id: str, extra_minutes: int
 
     now = utcnow()
     base = max(lease.expires_at, now) if lease.expires_at else now
-    new_expiry = min(base + timedelta(minutes=extra_minutes), now + timedelta(minutes=settings.lease_max_minutes))
+    lease_max = int(get_runtime_value(session, "lease_max_minutes"))
+    new_expiry = min(base + timedelta(minutes=extra_minutes), now + timedelta(minutes=lease_max))
     lease.expires_at = new_expiry
     lease.state = LeaseState.GRANTED  # 宽限期内续约恢复 ACTIVE
     audit.record(session, actor=auth.email, action="renew", device_id=lease.device_id, lease_id=lease_id)
@@ -460,7 +465,8 @@ def expire_scan(session: Session) -> dict:
         l.state = LeaseState.EXPIRING
         audit.record(session, actor="system", action="expiring", device_id=l.device_id, lease_id=l.lease_id)
 
-    grace_cutoff = now - timedelta(minutes=settings.lease_grace_minutes)
+    grace_minutes = int(get_runtime_value(session, "lease_grace_minutes"))
+    grace_cutoff = now - timedelta(minutes=grace_minutes)
     expired = (
         session.query(Lease)
         .filter(Lease.state == LeaseState.EXPIRING, Lease.expires_at.isnot(None), Lease.expires_at <= grace_cutoff)
