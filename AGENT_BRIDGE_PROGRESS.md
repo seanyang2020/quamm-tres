@@ -38,5 +38,7 @@
 
 ## 未做 / 说明
 
-- 未 push origin；本地 commit `e127831`。
+- 未 push origin；本地 commit `e127831`（代码）+ `509f8a9`/`ade131a`（进度与证据）。
 - t789 遗留的 `web/*.bak-caddyadd` 未跟踪文件未触碰、未 git add。
+- 会话期间 `web/vite.config.js` 被外部改为 `base: '/quamm/'`（含 `#` 注释，语法可疑），
+  非本任务改动，未触碰、未提交；如属 t789 后续请由前端同学确认。

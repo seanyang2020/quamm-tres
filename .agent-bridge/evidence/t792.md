@@ -36,9 +36,10 @@ $ git log -1 --oneline
 e127831 feat(v0.14): MCP firmware download/flash + semver policy + preserve data (t792)
 
 $ git status --short
+ M web/vite.config.js              ← 非本任务改动（23:24 外部写入，疑似 t789 后续），未触碰
 ?? web/src/App.vue.bak-caddyadd
 ?? web/vite.config.js.bak-caddyadd
-（仅 t789 遗留未跟踪备份；工作树代码已全部提交）
+（仅上述前端遗留；本任务代码/测试/文档均已提交）
 
 $ git diff --stat HEAD~1 HEAD
  .gitignore                |   3 +
@@ -57,7 +58,7 @@ $ git diff --stat HEAD~1 HEAD
 ```
 
 - Gerrit change：无/不适用（远端为 GitHub SSH，无 Gerrit）。
-- 基线：`65b11e8`（v0.13.0 t791）；本轮本地 commit `e127831`，未 push。
+- 基线：`65b11e8`（v0.13.0 t791）；本任务本地提交 `e127831`（代码/测试）+ `509f8a9`、`ade131a`（进度与证据），未 push。
 
 ## d. 验证/自测
 
