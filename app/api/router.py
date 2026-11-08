@@ -6,15 +6,26 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.constants import DeviceStatus, LeaseState, QueueState, is_claimable
+from app.constants import (
+    APP_NAME,
+    APP_VERSION,
+    PENDING_CLEANUP_DAYS,
+    DeviceStatus,
+    HealthLevel,
+    LeaseState,
+    QueueState,
+    is_claimable,
+)
 from app.db import get_session
 from app.domain import catalog, leasing, patrol
+from app.domain.queueing import position as queue_position
 from app.models import (
+    AuditEvent,
     Credential,
     Device,
     Lease,
@@ -32,6 +43,11 @@ router = APIRouter(prefix="/api")
 
 def _iso(dt) -> str | None:
     return dt.isoformat() if dt else None
+
+
+@router.get("/version")
+def version():
+    return {"version": APP_VERSION, "name": APP_NAME}
 
 
 @router.get("/dashboard")
@@ -244,5 +260,190 @@ def health(session: Session = Depends(get_session)):
     last = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
     return {
         "status": "ok",
+        "version": APP_VERSION,
         "last_patrol_at": _iso(last.ended_at) if last else None,
     }
+
+
+# ---------- 排队（Web「排队」页） ----------
+
+@router.get("/queue")
+def queue_snapshot(session: Session = Depends(get_session)):
+    """当前队列：按机型组 + 按设备 + 全量条目（队位 / priority / offer 倒计时）。"""
+    now = utcnow()
+    entries = (
+        session.query(QueueEntry)
+        .order_by(QueueEntry.priority.desc(), QueueEntry.joined_at.asc())
+        .all()
+    )
+    items = []
+    for e in entries:
+        remaining = None
+        if e.offer_expires_at:
+            remaining = int((e.offer_expires_at - now).total_seconds())
+        items.append(
+            {
+                "entry_id": e.entry_id,
+                "target_type": e.target_type,
+                "target_code": e.target_code,
+                "email": e.principal.email if e.principal else None,
+                "purpose": e.purpose,
+                "priority": e.priority,
+                "state": e.state,
+                "position": queue_position(session, e) if e.state == QueueState.QUEUED else None,
+                "joined_at": _iso(e.joined_at),
+                "offered_at": _iso(e.offered_at),
+                "offer_expires_at": _iso(e.offer_expires_at),
+                "offer_remaining_seconds": remaining,
+                "lease_id": e.lease_id,
+            }
+        )
+
+    def _group(target_type: str) -> list[dict]:
+        buckets: dict[str, dict] = {}
+        for it in items:
+            if it["target_type"] != target_type:
+                continue
+            g = buckets.setdefault(
+                it["target_code"],
+                {"target_code": it["target_code"], "queued": 0, "offered": 0, "waiters": []},
+            )
+            if it["state"] == QueueState.QUEUED:
+                g["queued"] += 1
+            elif it["state"] == QueueState.OFFERED:
+                g["offered"] += 1
+            g["waiters"].append(it)
+        return list(buckets.values())
+
+    return {
+        "entries": items,
+        "by_model": _group("product"),
+        "by_device": _group("device"),
+    }
+
+
+# ---------- 异常 / 待修复（Web「异常/待修复」页） ----------
+
+def _anomaly_device_row(d: Device, now) -> dict:
+    return {
+        "device_id": d.device_id,
+        "display_name": d.display_name,
+        "model_class": d.model_class,
+        "owner": d.owner,
+        "position_code": d.position_code,
+        "health_level": d.health_level,
+        "consecutive_failures": d.consecutive_failures,
+        "last_seen_at": _iso(d.last_seen_at),
+        "created_at": _iso(d.created_at),
+        "days_pending": (now - d.created_at).days if d.created_at else None,
+    }
+
+
+@router.get("/anomalies")
+def anomalies(session: Session = Depends(get_session)):
+    """异常台：offline 列表（含连续失败轮次）、suspect、pending 超 30 天待清理。"""
+    now = utcnow()
+    cutoff = now - timedelta(days=PENDING_CLEANUP_DAYS)
+    offline = (
+        session.query(Device).filter(Device.status == DeviceStatus.OFFLINE)
+        .order_by(Device.device_id).all()
+    )
+    suspect = (
+        session.query(Device)
+        .filter(Device.status == DeviceStatus.AVAILABLE, Device.health_level != HealthLevel.L3)
+        .order_by(Device.device_id).all()
+    )
+    cleanup = (
+        session.query(Device)
+        .filter(Device.status == DeviceStatus.PENDING, Device.created_at <= cutoff)
+        .order_by(Device.created_at).all()
+    )
+    return {
+        "offline": [_anomaly_device_row(d, now) for d in offline],
+        "suspect": [_anomaly_device_row(d, now) for d in suspect],
+        "cleanup": [_anomaly_device_row(d, now) for d in cleanup],
+        "pending_cleanup_days": PENDING_CLEANUP_DAYS,
+    }
+
+
+# ---------- 审计（Web「审计」页） ----------
+
+@router.get("/audit")
+def audit(action: str | None = None, limit: int = 200, session: Session = Depends(get_session)):
+    """审计流水：时间 / 主体 / 动作 / 对象，可按动作类型筛选。"""
+    q = session.query(AuditEvent).order_by(AuditEvent.created_at.desc())
+    if action:
+        q = q.filter(AuditEvent.action == action)
+    rows = q.limit(limit).all()
+    events = [
+        {
+            "event_id": e.event_id,
+            "actor": e.actor,
+            "action": e.action,
+            "device_id": e.device_id,
+            "lease_id": e.lease_id,
+            "object": e.device_id or e.lease_id,
+            "detail": e.detail,
+            "created_at": _iso(e.created_at),
+        }
+        for e in rows
+    ]
+    actions = sorted({a for (a,) in session.query(AuditEvent.action).distinct().all()})
+    return {"events": events, "actions": actions}
+
+
+# ---------- 设置（Web「设置」页） ----------
+
+@router.get("/settings")
+def settings_view(session: Session = Depends(get_session)):
+    """系统配置 + 机型字典（供维护）。位置规则为只读展示。"""
+    return {
+        "product_types": catalog.list_products(session),
+        "location_rule": {
+            "format": "302-R2-05",
+            "description": "楼栋-机架-机位（302 楼栋 / R 机架 / 05 机位）",
+        },
+        "patrol_interval_minutes": settings.patrol_interval_minutes,
+        "patrol_fail_threshold": settings.patrol_fail_threshold,
+        "holder_concurrency_limit": settings.holder_concurrency_limit,
+        "allow_apply_when_suspect": settings.allow_apply_when_suspect,
+        "lease_ttl_minutes": settings.lease_ttl_minutes,
+        "lease_grace_minutes": settings.lease_grace_minutes,
+        "lease_max_minutes": settings.lease_max_minutes,
+        "offer_window_seconds": settings.offer_window_seconds,
+        "credential_valid_days": settings.credential_valid_days,
+        "probe_backend": settings.probe_backend,
+    }
+
+
+@router.post("/product-types")
+def add_product_type(payload: dict = Body(...), session: Session = Depends(get_session)):
+    code = (payload.get("type_code") or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="type_code 必填")
+    if session.get(ProductType, code) is not None:
+        raise HTTPException(status_code=409, detail=f"机型 {code} 已存在")
+    pt = ProductType(
+        type_code=code,
+        display_name=payload.get("display_name") or code,
+        has_screen=bool(payload.get("has_screen")),
+        has_led=bool(payload.get("has_led")),
+        serial_count=int(payload.get("serial_count") or 0),
+        adb_port=int(payload.get("adb_port") or 5555),
+        enabled=True,
+        model_pattern=payload.get("model_pattern"),
+        created_at=utcnow(),
+    )
+    session.add(pt)
+    session.commit()
+    return {"type_code": code, "display_name": pt.display_name, "enabled": True}
+
+
+@router.post("/product-types/{type_code}/disable")
+def disable_product_type(type_code: str, session: Session = Depends(get_session)):
+    pt = session.get(ProductType, type_code)
+    if pt is None:
+        raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
+    pt.enabled = False
+    session.commit()
+    return {"type_code": type_code, "enabled": False}

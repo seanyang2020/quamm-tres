@@ -8,10 +8,11 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from app.config import settings
+from app.constants import APP_VERSION
 from app.db import SessionLocal
 from app.domain import catalog, leasing
 from app.domain.catalog import DomainError
-from app.models import Credential, Device, Lease, PatrolRun, Principal
+from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
 from app.utils import utcnow
 
@@ -169,7 +170,7 @@ def res_whoami() -> dict:
 
 @mcp.tool()
 def res_health() -> dict:
-    """服务健康：MCP 状态、最近一轮巡检时间、数据新鲜度。"""
+    """服务健康：MCP 状态、版本、最近一轮巡检时间、数据新鲜度。"""
     session = SessionLocal()
     try:
         last = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
@@ -179,6 +180,7 @@ def res_health() -> dict:
             fresh = int((now - last.ended_at).total_seconds())
         return {
             "status": "ok",
+            "version": APP_VERSION,
             "last_patrol_at": last.ended_at.isoformat() if last and last.ended_at else None,
             "data_age_seconds": fresh,
         }
@@ -259,7 +261,14 @@ def res_device_unregister(device_id: str) -> dict:
 
 @mcp.tool()
 def res_admin(action: str, lease_id: str | None = None, reason: str | None = None, device_id: str | None = None) -> dict:
-    """管理员工具（普通 token 不可用）。action: force_release / overview / list_credentials。"""
+    """管理员工具（普通 token 不可用）。
+
+    action 枚举：
+    - force_release：强制回收租约（需 lease_id，reason 必填）
+    - overview：设备池概览（total/available/suspect/occupied/offline/active_leases）
+    - stats：汇总统计（设备/租约/队列/通知四组计数）
+    - list_credentials：列出全部凭据（token 尾号/有效期/是否吊销）
+    """
     auth = require_auth()
     if not auth.is_admin:
         return {"error": "FORBIDDEN", "message": "仅管理员可用"}
@@ -290,6 +299,46 @@ def res_admin(action: str, lease_id: str | None = None, reason: str | None = Non
                 "occupied": occupied,
                 "offline": offline,
                 "active_leases": active_leases,
+            }
+        if action == "stats":
+            from app.constants import QueueState, is_claimable
+
+            rows = session.query(Device).all()
+            available = sum(
+                1 for d in rows
+                if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect)
+            )
+            suspect = sum(1 for d in rows if d.status == "available") - available
+            occupied = sum(1 for d in rows if d.status == "occupied")
+            offline = sum(1 for d in rows if d.status == "offline")
+            pending = sum(1 for d in rows if d.status == "pending")
+            active_leases = session.query(Lease).filter(Lease.state.in_(["GRANTED", "EXPIRING", "RESERVED"])).count()
+            expiring = session.query(Lease).filter(Lease.state == "EXPIRING").count()
+            reserved = session.query(Lease).filter(Lease.state == "RESERVED").count()
+            queued = session.query(QueueEntry).filter(QueueEntry.state == QueueState.QUEUED).count()
+            offered = session.query(QueueEntry).filter(QueueEntry.state == QueueState.OFFERED).count()
+            granted_q = session.query(QueueEntry).filter(QueueEntry.state == QueueState.GRANTED).count()
+            notices = session.query(Notice).count()
+            return {
+                "devices": {
+                    "total": len(rows),
+                    "available": available,
+                    "suspect": suspect,
+                    "occupied": occupied,
+                    "offline": offline,
+                    "pending": pending,
+                },
+                "leases": {
+                    "active": active_leases,
+                    "expiring": expiring,
+                    "reserved": reserved,
+                },
+                "queue": {
+                    "queued": queued,
+                    "offered": offered,
+                    "granted": granted_q,
+                },
+                "notices": {"total": notices},
             }
         if action == "list_credentials":
             creds = session.query(Credential).order_by(Credential.id).all()

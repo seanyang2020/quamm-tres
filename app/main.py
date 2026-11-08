@@ -18,7 +18,8 @@ from app.config import settings
 from app.db import SessionLocal, init_db
 from app.domain.probe import setup_prober_from_settings
 from app.mcp.server import build_mcp_app
-from app.seed import seed_product_types
+from app.migrations import migrate
+from app.seed import seed_admin, seed_product_types
 
 mcp_app = build_mcp_app()
 
@@ -30,7 +31,9 @@ async def lifespan(app: FastAPI):
     # 注册（MCP）与巡检（worker）共用同一实现。
     setup_prober_from_settings()
     with SessionLocal() as session:
+        migrate(session)          # 补 is_admin 列 + 修正管理员标志（老库不丢数据）
         seed_product_types(session)
+        seed_admin(session)       # 确保 admin@corp.com 存在
     # 挂载 FastMCP 的 lifespan（初始化 streamable HTTP 会话管理）
     async with mcp_app.lifespan(app):
         yield

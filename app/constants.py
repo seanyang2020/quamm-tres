@@ -1,5 +1,12 @@
 """状态与枚举常量。"""
 
+# 版本（/api/version 与 res_health 共用）
+APP_NAME = "Quamm RES"
+APP_VERSION = "1.0.0"
+
+# 异常/待修复：pending 超过该天数未转正，列为「待清理」
+PENDING_CLEANUP_DAYS = 30
+
 
 class DeviceStatus:
     AVAILABLE = "available"

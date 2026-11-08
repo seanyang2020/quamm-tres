@@ -7,7 +7,7 @@ from app import models  # noqa: F401
 from app.db import configure, get_session_factory, init_db
 from app.domain.probe import MockProber, set_prober
 from app.models import Credential, Principal
-from app.seed import seed_product_types, seed_tokens
+from app.seed import seed_admin, seed_product_types, seed_tokens
 from app.security import AuthContext
 
 
@@ -20,6 +20,9 @@ class Db:
         try:
             seed_product_types(s)
             self.tokens = seed_tokens(s, count=20)
+            admin_pair = seed_admin(s)
+            if admin_pair is not None:
+                self.tokens.append(admin_pair)
         finally:
             s.close()
 

@@ -70,6 +70,63 @@ tests/           # 端到端测试（含模拟设备）
 | 凭据 | `rr_` 前缀 · 一人一条 · 90 天 · 续期不换 token |
 | MCP | `quamm-res`，团队共享单实例，streamable HTTP |
 
+## Release 1.0
+
+Quamm RES 1.0 收口版本（`/api/version` 返回 `{"version":"1.0.0","name":"Quamm RES"}`，`git tag v1.0.0`）。
+
+### 能力清单（三域）
+
+- **A 域 · 申请**：`res_whoami` / `res_list_products` / `res_list_devices` / `res_device_info` / `res_apply` / `res_my_leases` / `res_renew` / `res_release` / `res_ticket` / `res_ticket_cancel` / `res_health`
+- **B 域 · 注册**：`res_device_probe` / `res_device_register` / `res_device_flash` / `res_device_confirm` / `res_device_unregister`
+- **C 域 · 管理**：Web 八页（看板 · 设备 · 占用 · 排队 · 异常/待修复 · 凭据 · 审计 · 设置）+ `res_admin`
+
+### 管理员与 res_admin
+
+仅 `admin@corp.com` 是管理员（`principal.is_admin=True`），其余账号（含 user01~user20）一律 `is_admin=False`。
+`res_whoami` 与 `res_admin` 都读这个字段：普通 token 调 `res_admin` 返回 `FORBIDDEN`，且不留任何管理员操作记录。
+
+`res_admin` 的 `action` 枚举：
+
+| action | 说明 | 必填参数 |
+|---|---|---|
+| `force_release` | 强制回收租约（通知占用人 + 落审计） | `lease_id`、`reason` |
+| `overview` | 设备池概览（total / available / suspect / occupied / offline / active_leases） | — |
+| `stats` | 汇总统计（devices / leases / queue / notices 四组计数） | — |
+| `list_credentials` | 列出全部凭据（token 尾号 / 有效期 / 是否吊销） | — |
+
+### 已知限制
+
+- **真实 ADB 未接**：探测默认 `mock`（`GET /probe` 模拟设备）。`settings.probe_backend=real` 已实现 L0–L3 四级判定，真实板子的 getprop / MAC 键名留 TODO。
+- **串口未接**：机型字典保留 `serial_count` 字段，串口注册 / 占用链路未实现。
+- **通知渠道仅落库未发信**：`notice` / `notice_receipt` 只写库，SMTP 配置预留、未真正投递。
+
+### 一键验收
+
+```bash
+.venv/bin/python scripts/verify_v1.py
+```
+
+不依赖 pytest，直接打真服务（MCP + REST），输出一张表
+`| # | 检查项 | 期望 | 实际 | PASS/FAIL |`，覆盖身份 / 健康 / 目录 / 申请 / 续约 / 释放 /
+管理员 / 排队 offer / 巡检 run / 八页接口；**全部 PASS 且退出码 0 才算 1.0 就绪**。
+
+排队 offer 链路真服务实测（confirm 分支 + 超时顺延分支）：
+
+```bash
+.venv/bin/python scripts/demo_queue_offer.py
+```
+
+### 迁移到别的 Ubuntu
+
+只改 `deploy/.env` 里的库地址、设备网段、SMTP 与域名，三个容器整体搬迁。首次启动后：
+
+```bash
+python -m app.seed                         # 生成管理员 + 20 个 token，并做 is_admin 轻量迁移
+.venv/bin/python scripts/verify_v1.py      # 一键验收
+```
+
+老库升级到 1.0 无需清库：启动时 `app.migrations.migrate()` 幂等补 `principal.is_admin` 列并修正管理员标志（仅 `admin@corp.com` 为管理员），现有记录不丢。
+
 ## 如何运行
 
 ### 0. 环境
@@ -85,11 +142,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. 预置数据（机型字典 + 20 个 token）
+### 2. 预置数据（机型字典 + 管理员 + 20 个 token）
 
 ```bash
 python -m app.seed
-# 输出 5 类机型 + 20 个 token（每人 1 条，90 天），并打印可复制的 MCP 配置
+# 输出 5 类机型 + 管理员 admin@corp.com + 20 个普通 token（每人 1 条，90 天，is_admin=False）
+# 并打印可复制的 MCP 配置（含管理员 token）
 ```
 
 ### 3. 构建前端看板（可选；不构建则退化为内联看板）

@@ -33,8 +33,27 @@ def _call_tool(client, token, name, args=None):
         {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": args or {}}},
     )
     assert "error" not in resp, resp
-    # FastMCP 把结构化结果放在 content[0].text（JSON 字符串），structuredContent 对 list 返回不可靠
-    return json.loads(resp["result"]["content"][0]["text"])
+    # FastMCP 对 list 返回类型包 structuredContent={"result": [...]}，
+    # 空 list 时 content 为空数组，必须走 structuredContent 解包，否则 content[0] 越界。
+    return _extract(resp["result"])
+
+
+def _extract(result):
+    meta = result.get("_meta") or {}
+    wrap = bool(meta.get("fastmcp", {}).get("wrap_result"))
+    sc = result.get("structuredContent")
+    if wrap and isinstance(sc, dict) and "result" in sc:
+        return sc["result"]
+    if isinstance(sc, dict) and sc:
+        return sc
+    content = result.get("content") or []
+    if content:
+        first = content[0]
+        if isinstance(first, dict) and first.get("type") == "text":
+            text = first.get("text") or ""
+            if text:
+                return json.loads(text)
+    return sc
 
 
 def test_mcp_http_full_flow(db):
@@ -91,3 +110,26 @@ def test_mcp_http_res_admin_forbidden_for_normal(db):
     with TestClient(app) as client:
         r = _call_tool(client, token, "res_admin", {"action": "overview"})
         assert r.get("error") == "FORBIDDEN"
+
+
+def test_mcp_http_my_leases_empty_does_not_crash(db):
+    """无租约用户调 res_my_leases 必须返回空列表而非 content[0] 越界。"""
+    token = db.token("user03@corp.com")
+    with TestClient(app) as client:
+        mine = _call_tool(client, token, "res_my_leases")
+        assert mine == []
+
+
+def test_mcp_http_list_devices_empty_does_not_crash(db):
+    """无可用设备时 res_list_devices(claimable_only) 返回空列表不崩。"""
+    token = db.token("user03@corp.com")
+    with TestClient(app) as client:
+        devs = _call_tool(client, token, "res_list_devices", {"claimable_only": True})
+        assert devs == []
+
+
+def test_mcp_http_list_products_never_empty(db):
+    token = db.token("user03@corp.com")
+    with TestClient(app) as client:
+        products = _call_tool(client, token, "res_list_products")
+        assert len(products) == 5

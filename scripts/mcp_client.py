@@ -14,6 +14,9 @@ import httpx
 
 ROOT = Path(__file__).resolve().parent.parent
 TOKEN_CACHE = Path(__file__).resolve().parent / ".demo_tokens.json"
+ADMIN_TOKEN_CACHE = Path(__file__).resolve().parent / ".demo_admin_token.json"
+
+ADMIN_EMAIL = "admin@corp.com"
 
 MCP_URL = os.environ.get("RES_DEMO_MCP_URL", "http://127.0.0.1:8080/mcp/")
 API_BASE = os.environ.get("RES_DEMO_API_BASE", "http://127.0.0.1:8080")
@@ -74,9 +77,7 @@ class McpClient:
         if "error" in body:
             err = body["error"]
             raise McpError(err.get("message", str(err)), code="RPC")
-        result = body["result"]
-        text = result["content"][0]["text"]
-        data = json.loads(text)
+        data = extract_result(body["result"])
         if isinstance(data, dict) and "error" in data:
             raise McpError(data.get("message", data["error"]), code=data["error"])
         return data
@@ -90,6 +91,30 @@ def _parse_body(resp: httpx.Response) -> dict:
                 return json.loads(line[len("data:"):].strip())
         raise McpError("SSE 响应中没有 data 行")
     return resp.json()
+
+
+def extract_result(result: dict):
+    """从 tools/call 的 result 里取回工具返回值。
+
+    FastMCP 对 list 返回类型会包一层 ``structuredContent={"result": [...]}``，
+    且空 list 时 ``content`` 为空数组（直接 ``content[0]`` 会 IndexError）。
+    这里优先读 structuredContent（按 wrap_result 解包），回退到 content[0].text。
+    """
+    meta = result.get("_meta") or {}
+    wrap = bool(meta.get("fastmcp", {}).get("wrap_result"))
+    sc = result.get("structuredContent")
+    if wrap and isinstance(sc, dict) and "result" in sc:
+        return sc["result"]
+    if isinstance(sc, dict) and sc:
+        return sc
+    content = result.get("content") or []
+    if content:
+        first = content[0]
+        if isinstance(first, dict) and first.get("type") == "text":
+            text = first.get("text") or ""
+            if text:
+                return json.loads(text)
+    return sc
 
 
 # ---------- token 供应 ----------
@@ -136,3 +161,46 @@ def load_tokens(count: int = 20) -> dict[str, str]:
     if cached is not None:
         return cached
     return refresh_tokens(count)
+
+
+def _read_admin_cache() -> str | None:
+    if not ADMIN_TOKEN_CACHE.exists():
+        return None
+    try:
+        token = ADMIN_TOKEN_CACHE.read_text(encoding="utf-8").strip()
+        return token or None
+    except OSError:
+        return None
+
+
+def _write_admin_cache(token: str) -> None:
+    ADMIN_TOKEN_CACHE.write_text(token, encoding="utf-8")
+    ADMIN_TOKEN_CACHE.chmod(0o600)
+
+
+def load_admin_token() -> str:
+    """取管理员（admin@corp.com）token：优先缓存并验证，失效则轮换重签。"""
+    cached = _read_admin_cache()
+    if cached:
+        try:
+            with McpClient(cached) as client:
+                who = client.call("res_whoami")
+                if who.get("is_admin"):
+                    return cached
+        except McpError:
+            pass
+
+    from app.db import SessionLocal, init_db
+    from app.seed import seed_admin, seed_product_types
+
+    init_db()
+    session = SessionLocal()
+    try:
+        seed_product_types(session)
+        pair = seed_admin(session, rotate=True)
+    finally:
+        session.close()
+    if pair is None:
+        raise McpError("管理员凭据已存在但无法取回明文", code="ADMIN_TOKEN")
+    _write_admin_cache(pair[1])
+    return pair[1]

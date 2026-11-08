@@ -9,3 +9,4 @@ __pycache__/
 *.db-wal
 dist/
 scripts/.demo_tokens.json
+scripts/.demo_admin_token.json

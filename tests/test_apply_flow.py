@@ -48,4 +48,12 @@ def test_list_products_and_whoami(db):
     who = db.call("user01@corp.com", res_whoami)
     assert who["email"] == "user01@corp.com"
     assert who["quota"] == 2
-    assert who["is_admin"] is True  # user01 为管理员
+    assert who["is_admin"] is False  # 普通账号不是管理员
+
+
+def test_whoami_admin_flag(db):
+    from app.mcp.server import res_whoami
+
+    admin = db.call("admin@corp.com", res_whoami)
+    assert admin["email"] == "admin@corp.com"
+    assert admin["is_admin"] is True  # 仅 admin@corp.com 是管理员
