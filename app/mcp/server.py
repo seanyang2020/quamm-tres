@@ -64,9 +64,25 @@ def res_list_products(keyword: str | None = None, only_available: bool = False) 
 
 
 @mcp.tool()
-def res_list_devices(model_class: str | None = None, status: str | None = None, limit: int = 100) -> list[dict]:
-    """列出设备（脱敏：不含占用人身份）。可按机型/状态过滤。"""
-    return _guard_ro(catalog.list_devices, model_class=model_class, status=status, limit=limit, for_agent=True)
+def res_list_devices(
+    model_class: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+    claimable_only: bool = True,
+) -> list[dict]:
+    """列出设备（脱敏：不含占用人身份）。可按机型/状态过滤。
+
+    默认只返回当前真正可申请的设备（available 且探测健康），
+    suspect/offline 设备不会出现在结果里；排查时可传 claimable_only=false。
+    """
+    return _guard_ro(
+        catalog.list_devices,
+        model_class=model_class,
+        status=status,
+        limit=limit,
+        for_agent=True,
+        claimable_only=claimable_only,
+    )
 
 
 @mcp.tool()
@@ -255,12 +271,26 @@ def res_admin(action: str, lease_id: str | None = None, reason: str | None = Non
                 return {"error": "MISSING_FIELD", "message": "force_release 需要 lease_id"}
             return leasing.force_release(session, auth, lease_id, reason or "管理员强制回收")
         if action == "overview":
+            from app.constants import is_claimable
+
             total = session.query(Device).count()
-            available = session.query(Device).filter(Device.status == "available").count()
+            rows = session.query(Device).all()
+            available = sum(
+                1 for d in rows
+                if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect)
+            )
+            suspect = sum(1 for d in rows if d.status == "available") - available
             occupied = session.query(Device).filter(Device.status == "occupied").count()
             offline = session.query(Device).filter(Device.status == "offline").count()
             active_leases = session.query(Lease).filter(Lease.state.in_(["GRANTED", "EXPIRING", "RESERVED"])).count()
-            return {"total_devices": total, "available": available, "occupied": occupied, "offline": offline, "active_leases": active_leases}
+            return {
+                "total_devices": total,
+                "available": available,
+                "suspect": suspect,
+                "occupied": occupied,
+                "offline": offline,
+                "active_leases": active_leases,
+            }
         if action == "list_credentials":
             creds = session.query(Credential).order_by(Credential.id).all()
             return [

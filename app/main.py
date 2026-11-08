@@ -26,8 +26,8 @@ mcp_app = build_mcp_app()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    # 关键：进程启动时按配置选定探测后端。此前只有 worker 调用，
-    # MCP/Web 进程会一直用默认的 AdbProber 桩（返回 L0），导致注册全部 pending。
+    # 进程启动时按 settings.probe_backend 选定探测后端（默认 mock）。
+    # 注册（MCP）与巡检（worker）共用同一实现。
     setup_prober_from_settings()
     with SessionLocal() as session:
         seed_product_types(session)

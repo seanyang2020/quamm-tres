@@ -1,9 +1,14 @@
 """巡检与健康（见 02 I 域、11 §2、06 链路 C）。
 
-- 单轮失败标 suspect（health 降级，不通知）
+- 单轮失败标 suspect（health 降级为 L1/L2/L0，status 仍 available，但不再可申请）
 - 连续 N 轮失败判 offline，发通知给维护责任人
-- 恢复 L3 自动转 available，并发"已恢复"通知
+- 恢复 L3 自动转 available（health 回到 L3/ok），并发"已恢复"通知
 - 掉线不改租约（巡检只改健康状态，见 11 §5 边界 2）
+
+探测与注册共用 app.domain.probe.get_prober()，不存在第二套判定。
+可用池口径由 constants.is_claimable 统一：默认只有 status=available 且
+health_level=L3 的设备可申请；settings.allow_apply_when_suspect=True 时
+额外放行 L1/L2，但 L0 永不进池。
 """
 from __future__ import annotations
 
@@ -40,7 +45,8 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
     for d in devices:
         if not d.ip:
             continue
-        result = probe_device(d.ip, d.adb_port, timeout=settings.probe_timeout_seconds)
+        # device 表的 ip/adb_port 即探测地址；端口缺失时按 ip:5555 组。
+        result = probe_device(d.ip, d.adb_port or 5555, timeout=settings.probe_timeout_seconds)
         d.last_probe_at = utcnow()
 
         if result.reachable_l3:

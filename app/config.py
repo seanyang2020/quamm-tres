@@ -36,9 +36,13 @@ class Settings(BaseSettings):
     patrol_interval_minutes: int = 30
     patrol_fail_threshold: int = 2       # 连续 N 轮失败判 offline
     probe_timeout_seconds: int = 5
-    # 一期只走 mock：默认 http（模拟设备端点）。二期接真实 ADB 时改为 adb 即可，
-    # 领域层只认 ProbeResult，不受影响。
-    prober_backend: str = "http"         # http=模拟设备 / adb=真实 ADB(二期)
+    # 探测后端：mock=模拟设备 HTTP /probe（默认，本地演示）；real=真实 ADB。
+    # 注册与巡检共用同一 Prober，领域层只认 ProbeResult。
+    probe_backend: str = "mock"          # mock | real
+
+    # 可用池口径：suspect（单轮失败、降级未掉线）默认不可被申请，
+    # 避免 Agent 拿到一台连不上的设备；需要"降级仍可用"时置 True。
+    allow_apply_when_suspect: bool = False
 
     # 设备网络（worker 网段发现用，一期预留）
     device_network: str = ""

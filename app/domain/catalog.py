@@ -10,7 +10,8 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
-from app.constants import DeviceStatus, HealthLevel, RegisterChannel
+from app.config import settings
+from app.constants import DeviceStatus, HealthLevel, RegisterChannel, is_claimable
 from app.domain import audit
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
@@ -97,7 +98,7 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
             stats[d.model_class] = {"total": 0, "available": 0, "occupied": 0}
         st = stats[d.model_class]
         st["total"] += 1
-        if d.status == DeviceStatus.AVAILABLE and d.health_level == HealthLevel.L3:
+        if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect):
             st["available"] += 1
         if d.status == DeviceStatus.OCCUPIED:
             st["occupied"] += 1
@@ -132,6 +133,7 @@ def _public_device(d: Device, for_agent: bool = True) -> dict:
         "model_class": d.model_class,
         "status": d.status,
         "health_level": d.health_level,
+        "claimable": is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect),
         "adb_address": d.adb_address,
         "position_code": d.position_code,
         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
@@ -158,13 +160,21 @@ def list_devices(
     status: str | None = None,
     limit: int = 100,
     for_agent: bool = True,
+    claimable_only: bool = False,
 ) -> list[dict]:
     q = session.query(Device)
     if model_class:
         q = q.filter(Device.model_class == model_class)
     if status:
         q = q.filter(Device.status == status)
-    devices = q.order_by(Device.device_id).limit(limit).all()
+    devices = q.order_by(Device.device_id).all()
+    if claimable_only:
+        # 只把"当前真正可申请"的设备返回给 Agent，避免拿到连不上的机器。
+        devices = [
+            d for d in devices
+            if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect)
+        ]
+    devices = devices[:limit]
     return [_public_device(d, for_agent=for_agent) for d in devices]
 
 
@@ -195,7 +205,7 @@ def device_probe(
     hint_model: str | None = None,
     hint_position: str | None = None,
 ) -> dict:
-    result = probe_device(ip, port)
+    result = probe_device(ip, port or 5555, timeout=settings.probe_timeout_seconds)
     probe = {
         "ip": ip,
         "adb_port": port,

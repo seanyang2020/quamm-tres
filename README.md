@@ -174,8 +174,35 @@ docker compose -f deploy/docker-compose.yml up -d --build
 
 依次演示 `res_whoami → res_list_products → res_list_devices(QM102V) → res_apply → res_my_leases → res_renew → res_release`，并确认设备回到可用池。
 
+### 巡检闭环演示（掉线 → 摘出可用池 → 恢复 → 回池）
+
+注册完成后跑巡检闭环（无需先启动服务，脚本在临时 SQLite 上自建 20 台 mock）：
+
+```bash
+.venv/bin/python scripts/demo_patrol_cycle.py
+```
+
+脚本分四个阶段，并逐轮打印 `scanned / l3 / suspect / offline` 与 dashboard 的
+`available / suspect / by_status` 对照：
+
+1. 起 20 台 mock → 巡检一轮 → `l3=20`、`available=20`；
+2. 关掉 5 台 → 巡检一轮 → 5 台 `suspect`、`available=15`；
+3. 仍关着 → 再巡检一轮 → 5 台 `offline`，产生 `device_offline` 通知；
+4. 重新起这 5 台 → 巡检一轮 → 恢复 `l3=20`、`available=20`。
+
+任一项断言失败脚本以退出码 1 结束。需要对着正在运行的服务核对
+`/api/patrol/runs` 与 `/api/notices` 时，追加 `--db-url sqlite:///./quamm_res.db`
+（脚本仍直接调用领域层，因为巡检当前没有对外触发接口）。
+
+巡检与注册共用同一套探测实现：`settings.probe_backend` 选择 `mock`（默认，GET `/probe`）
+或 `real`（`adb connect` + `adb shell getprop`，按 L0/L1/L2/L3 判定）。可用池统一按
+`status=available` 且探测健康的口径计算；`suspect` 默认不可申请，可用
+`settings.allow_apply_when_suspect=True` 打开"降级仍可用"。
+
 说明：
 
-- 这 20 台是 **mock 设备**，不是真实 ADB。二期接真实 ADB 时只替换 `app/domain/probe.py` 的探测实现（`HttpProber` → `AdbProber`），领域层、MCP 工具契约与注册/租约链路都不变。
+- 这 20 台是 **mock 设备**，不是真实 ADB。接真实 ADB 时把 `settings.probe_backend`
+  改为 `real` 即可，领域层、MCP 工具契约与注册/租约链路都不变（real 后端已实现，
+  真实板子的 getprop/MAC 键名留有 TODO）。
 - 脚本幂等：mock 设备的 MAC/SN/asset_tag 按序号固定，重复运行会命中已有设备（`matched_as=existing`），不新增记录；位置编号不会重复。
 - token 明文只缓存在 `scripts/.demo_tokens.json`（0600，已 gitignore），避免反复吊销；需要重新签发时加 `--rotate`。

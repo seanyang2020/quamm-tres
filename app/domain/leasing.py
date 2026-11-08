@@ -65,9 +65,15 @@ def _classify_target(session: Session, target: str) -> tuple[str, str]:
 
 
 def _find_available(session: Session, target_type: str, target_code: str) -> Device | None:
+    # 与 res_list_devices / dashboard 同一口径：available 且可申请。
+    # suspect（L1/L2）默认不可申请，只有 allow_apply_when_suspect=True 才放行；
+    # L0 无论开关如何都不进候选。
+    claimable_levels = [HealthLevel.L3]
+    if settings.allow_apply_when_suspect:
+        claimable_levels += [HealthLevel.L1, HealthLevel.L2]
     q = session.query(Device).filter(
         Device.status == DeviceStatus.AVAILABLE,
-        Device.health_level == HealthLevel.L3,
+        Device.health_level.in_(claimable_levels),
     )
     if target_type == "device":
         q = q.filter(Device.device_id == target_code)

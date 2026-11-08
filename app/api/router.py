@@ -11,7 +11,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.constants import LeaseState, QueueState
+from app.constants import DeviceStatus, LeaseState, QueueState, is_claimable
 from app.db import get_session
 from app.domain import catalog, leasing, patrol
 from app.models import (
@@ -40,6 +40,15 @@ def dashboard(session: Session = Depends(get_session)):
     by_status = dict(
         session.query(Device.status, func.count(Device.device_id)).group_by(Device.status).all()
     )
+    # 可用池口径：available 且探测健康（默认仅 L3）。suspect 仍显示 available 状态，
+    # 但不可申请，因此 dashboard 的 available 必须按"真实可申请数"回落。
+    device_rows = session.query(Device).all()
+    available = sum(
+        1 for d in device_rows
+        if is_claimable(d.status, d.health_level, settings.allow_apply_when_suspect)
+    )
+    suspect = sum(1 for d in device_rows if d.status == DeviceStatus.AVAILABLE) - available
+    by_status["available"] = available
     active_leases = (
         session.query(func.count(Lease.lease_id)).filter(Lease.state.in_(LeaseState.ACTIVE)).scalar() or 0
     )
@@ -53,7 +62,10 @@ def dashboard(session: Session = Depends(get_session)):
     last_patrol = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
     return {
         "total_devices": total,
+        "available": available,
+        "suspect": suspect,
         "by_status": by_status,
+        "allow_apply_when_suspect": settings.allow_apply_when_suspect,
         "active_leases": active_leases,
         "queued": queued,
         "products": products,
