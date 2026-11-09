@@ -46,12 +46,28 @@
   .er .ent{border:1.5px solid #64748b;background:#f8fafc;border-radius:10px;padding:10px 12px;font-size:13px;min-width:120px;}
   .er .ent b{color:var(--accent2);}
   .er .rel{align-self:center;color:#64748b;font-weight:700;}
+  /* 分层架构图（subgraph 风格） */
+  .layer{border:1.5px solid #94a3b8;border-radius:12px;padding:12px 14px 14px;margin:0;position:relative;background:#fbfdff;}
+  .layer .layer-title{position:absolute;top:-10px;left:14px;background:#fff;padding:0 8px;font-size:12.5px;font-weight:700;color:var(--accent2);letter-spacing:.5px;}
+  .layer.l-entry{border-color:var(--accent);background:#f5f9ff;}
+  .layer.l-app{border-color:var(--accent);background:#f5f9ff;}
+  .layer.l-dev{border-color:var(--ok);background:#f6fef9;}
+  .layer.l-db{border-color:#7c3aed;background:#faf5ff;}
+  .layer .inner{display:flex;gap:10px;flex-wrap:wrap;}
+  .layer .node{flex:1;min-width:120px;}
+  .vsep{display:flex;justify-content:center;color:var(--accent);font-size:22px;font-weight:700;margin:6px 0;}
+  /* 模块详图：网格卡片 */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;}
+  .mod{border:1px solid var(--line);border-radius:10px;padding:12px 14px;background:#fbfdff;}
+  .mod b{color:var(--accent2);display:block;margin-bottom:5px;font-size:14px;}
+  .mod p{margin:0;font-size:12.5px;color:#475569;}
+  .mod .file{font-family:ui-monospace,monospace;font-size:11px;color:#7c3aed;margin-top:6px;display:block;}
 </style>
 </head>
 <body>
 <header>
   <h1>Quamm TRES · 测试资源分配管理系统</h1>
-  <p>版本 0.19.0（pre-release）｜FastAPI + SQLite + Vue3 + MCP｜14 台真实设备已接入</p>
+  <p>版本 0.19.1（pre-release）｜FastAPI + SQLite + Vue3 + MCP｜14 台真实设备已接入</p>
   <a class="back" href="./index.html">← 返回 TRES 控制台</a>
 </header>
 <main>
@@ -71,30 +87,63 @@
 
   <section>
     <h2>2. 总体架构</h2>
-    <div class="flow">
-      <div class="node grp">接入方<small>AI Agent / 浏览器</small></div>
-      <div class="arrow">→</div>
-      <div class="node">接入层 :9100<small>MCP /mcp/ · Web API</small></div>
-      <div class="arrow">→</div>
-      <div class="node">应用层<small>领域模块 + Worker + runtime_config</small></div>
-      <div class="arrow">→</div>
-      <div class="node">SQLite<small>13 张表</small></div>
-    </div>
-    <div class="row">
-      <div class="col"><h4>领域模块</h4>
-        <span class="pill">leasing 租约</span><span class="pill">catalog 设备注册</span>
-        <span class="pill">devicelock 物理锁</span><span class="pill">credentials 凭据</span>
-        <span class="pill">flash 刷机</span>
+    <div class="layer">
+      <span class="layer-title">接入方 CLIENTS</span>
+      <div class="inner">
+        <div class="node grp">AI Agent<small>WorkBuddy / 豆包<br/>经 MCP 调用</small></div>
+        <div class="node grp">管理员 / 用户<small>浏览器<br/>经 Web 访问</small></div>
       </div>
-      <div class="col"><h4>后台 Worker</h4>
-        <span class="pill">租约/心跳对账（10s）</span><span class="pill">巡检（30min）</span>
-        <span class="pill">凭据到期提醒（每日）</span><span class="pill">offer 超时回收</span>
+    </div>
+    <div class="vsep">↓</div>
+    <div class="layer l-entry">
+      <span class="layer-title">接入层 · 端口 9100</span>
+      <div class="inner">
+        <div class="node">MCP 端点<small>/mcp/（尾斜杠）<br/>Bearer 鉴权</small></div>
+        <div class="node">Web API + 静态资源<small>REST + 会话 Cookie<br/>StaticFiles 托管 dist</small></div>
+      </div>
+    </div>
+    <div class="vsep">↓</div>
+    <div class="layer l-app">
+      <span class="layer-title">应用层</span>
+      <div class="inner">
+        <div class="node">领域模块<small>leasing / catalog<br/>devicelock / credentials / flash</small></div>
+        <div class="node">后台 Worker<small>租约/心跳/巡检<br/>到期提醒（服务器时钟）</small></div>
+        <div class="node">runtime_config<small>12 项在线设置<br/>无需改代码重启</small></div>
+      </div>
+    </div>
+    <div class="vsep">↓</div>
+    <div class="row">
+      <div class="layer l-db" style="flex:1">
+        <span class="layer-title">持久化</span>
+        <div class="node">SQLite<small>13 张表 · 唯一事实源<br/>重启不丢租约</small></div>
+      </div>
+      <div class="layer l-dev" style="flex:1">
+        <span class="layer-title">真实设备</span>
+        <div class="inner">
+          <div class="node dev">RAMFS 锁<small>/tmp/quamm_tres.lock</small></div>
+          <div class="node dev">ADB<small>connect / disconnect</small></div>
+        </div>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>3. 部署拓扑与入口</h2>
+    <h2>3. 模块详图与职责</h2>
+    <div class="grid">
+      <div class="mod"><b>API 路由层</b><p>HTTP 入口、鉴权依赖、参数校验、DomainError 转 HTTP 状态码；挂载 MCP 与静态资源。</p><span class="file">app/api/router.py · app/main.py</span></div>
+      <div class="mod"><b>MCP 工具层</b><p>暴露 Agent 工具面，把领域异常包装为返回 dict（键 error）；agent_info 为 schema 级必填。</p><span class="file">app/mcp/server.py</span></div>
+      <div class="mod"><b>租约 leasing</b><p>申请/续约/心跳/释放/强制回收/级联回收/到期与心跳扫描；TTL 与 24h 上限。</p><span class="file">app/domain/leasing.py</span></div>
+      <div class="mod"><b>设备注册 catalog</b><p>probe 探测、两段式注册、机型字典、位置规则、register_agent 回写。</p><span class="file">app/domain/catalog.py</span></div>
+      <div class="mod"><b>物理锁 devicelock</b><p>主机时钟生成锁 payload、锁校验、foreign lock 裁决、回收删锁；模块开关。</p><span class="file">app/domain/devicelock.py</span></div>
+      <div class="mod"><b>凭据 credentials</b><p>发放/吊销（级联）/恢复/普通删除/强制删除、到期提醒；agent_label 回写。</p><span class="file">app/domain/credentials.py</span></div>
+      <div class="mod"><b>刷机 flash</b><p>异步 flash_job、固件版本门禁、保留/清除 data 确认、对接 dbxostest 工具链。</p><span class="file">app/domain/flash.py</span></div>
+      <div class="mod"><b>后台 Worker</b><p>租约/心跳对账、巡检、offer 超时、凭据到期提醒；启动即对账。</p><span class="file">app/workers/main.py</span></div>
+      <div class="mod"><b>迁移 migrations</b><p>轻量幂等 ALTER ADD，inspect 判列后补列，不重建表、不丢数据。</p><span class="file">app/migrations.py</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. 部署拓扑与入口</h2>
     <div class="flow">
       <div class="node">WSL Ubuntu<small>uvicorn + worker</small></div>
       <div class="arrow">→</div>
@@ -116,7 +165,7 @@
   </section>
 
   <section>
-    <h2>4. 申请 → 心跳 → 锁 → 回收</h2>
+    <h2>5. 申请 → 心跳 → 锁 → 回收</h2>
     <div class="flow">
       <div class="node">res_apply<small>必带 agent_info</small></div>
       <div class="arrow">→</div>
@@ -132,7 +181,7 @@
   </section>
 
   <section>
-    <h2>5. 租约状态机</h2>
+    <h2>6. 租约状态机</h2>
     <div class="state">
       <div class="node">OFFERED</div><div class="arrow">→</div>
       <div class="node">GRANTED</div><div class="arrow">→</div>
@@ -149,7 +198,7 @@
   </section>
 
   <section>
-    <h2>6. 防闲置两道闸门</h2>
+    <h2>7. 防闲置两道闸门</h2>
     <p><span class="tag">逻辑闸门</span>Worker 每 10 秒用服务器时钟比对：TTL 到期或心跳超时即强制回收，不依赖 Agent 自觉。</p>
     <p><span class="tag danger">物理闸门</span>回收时校验锁 holder/lease 匹配后删除 RAMFS 锁并 adb disconnect，旧 Agent 物理上无法继续操作。</p>
     <table>
@@ -161,7 +210,7 @@
   </section>
 
   <section>
-    <h2>7. 凭据生命周期（v0.19 重点）</h2>
+    <h2>8. 凭据生命周期（v0.19 重点）</h2>
     <div class="flow">
       <div class="node">发放 issue<small>有效期 90 天</small></div>
       <div class="arrow">→</div>
@@ -181,7 +230,7 @@
   </section>
 
   <section>
-    <h2>8. 数据模型（核心实体）</h2>
+    <h2>9. 数据模型（核心实体）</h2>
     <div class="er">
       <div class="ent"><b>product_type</b><br/>机型字典/元数据</div><span class="rel">1—N</span>
       <div class="ent"><b>device</b><br/>设备/指纹/register_agent</div><span class="rel">1—N</span>
@@ -202,7 +251,7 @@
   </section>
 
   <section>
-    <h2>9. 当前试用状态</h2>
+    <h2>10. 当前试用状态</h2>
     <ul>
       <li>5 个真实机型、14 台真机（全 real），无 mock 残留。</li>
       <li>申请/注册的 agent_info 为 MCP schema 级必填，凭据与设备均可显示 Agent 名。</li>

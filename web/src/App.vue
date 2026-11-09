@@ -11,7 +11,6 @@ const pages = [
   { key: 'credentials', label: '凭据' },
   { key: 'audit', label: '审计' },
   { key: 'settings', label: '设置' },
-  { key: 'intro', label: '系统介绍' },
 ]
 const active = ref('dashboard')
 const settingsTab = ref('system')
@@ -217,7 +216,6 @@ async function loadAudit() {
 }
 
 function switchPage(key) {
-  if (key === 'intro') { window.open('intro.html', '_blank'); return }
   active.value = key
   if (key === 'dashboard') loadDashboard()
   else if (key === 'devices') loadDevices()
@@ -1185,6 +1183,10 @@ const legendRole = [
               <el-form-item label="收件人"><el-input v-model="smtpTestTo" placeholder="name@quaming.com" style="width: 260px" /></el-form-item>
               <el-form-item><el-button @click="testSmtp">发测试邮件</el-button></el-form-item>
             </el-form>
+          </el-tab-pane>
+          <el-tab-pane label="系统介绍" name="intro">
+            <iframe src="intro.html" title="系统介绍"
+              style="width:100%;height:78vh;border:1px solid var(--el-border-color);border-radius:10px;"></iframe>
           </el-tab-pane>
         </el-tabs>
 
