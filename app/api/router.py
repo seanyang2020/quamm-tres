@@ -282,6 +282,23 @@ def device_detail(device_id: str, session: Session = Depends(get_session)):
         raise HTTPException(status_code=404, detail=e.message)
 
 
+@router.delete("/devices/{device_id}")
+def delete_device_route(
+    device_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    try:
+        return catalog.device_unregister(
+            session,
+            device_id,
+            actor_email=identity.email,
+            is_admin=(identity.role == "admin"),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
 @router.post("/devices/probe")
 def web_device_probe(
     payload: dict = Body(...),
@@ -1567,10 +1584,13 @@ def _domain_http(exc: DomainError) -> HTTPException:
     code = getattr(exc, "code", "")
     if code == "FORBIDDEN":
         status = 403
+    elif code == "NOT_FOUND":
+        status = 404
     elif code in (
         "BUILD_SERVER_NAME_TAKEN",
         "BUILD_SERVER_IN_USE",
         "BUILD_SERVER_ALREADY_EXISTS",
+        "HAS_ACTIVE_LEASE",
     ):
         status = 409
     else:

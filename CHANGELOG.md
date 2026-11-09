@@ -5,6 +5,15 @@
 
 ## [0.25.0] - 2026-11-09
 
+### 新增：Web 端设备移除（注销）入口
+- 此前只有 MCP 提供 `res_device_unregister`，Web 无对应入口。新增管理员路由
+  `DELETE /devices/{device_id}`，复用领域 `catalog.device_unregister`（软注销：状态置 retired、
+  取消该设备排队、通知等待者并写审计；有活动租约时标 pending_removal，租约结束后自动摘除）。
+- 设备表操作列新增「移除」按钮，二次确认后调用并刷新；`list_devices` 默认隐藏 retired 设备
+  （显式传 status 仍可查询），看板统计本就不计 retired。
+- 权限沿用领域规则：注册人或管理员；错误码映射 NOT_FOUND→404、FORBIDDEN→403、
+  HAS_ACTIVE_LEASE→409。
+
 ### 优化：登录 token 输入框密码化并支持浏览器保存
 - 登录页 token 输入框改为 `type="password"`（带 show-password 可切换明文），并包一层原生
   `<form>`、加 `autocomplete="current-password"`，便于密码管理器识别与回填。

@@ -264,6 +264,9 @@ def list_devices(
         q = q.filter(Device.model_class == model_class)
     if status:
         q = q.filter(Device.status == status)
+    else:
+        # 默认不展示已注销（retired）设备；显式传 status 仍可查询
+        q = q.filter(Device.status != DeviceStatus.RETIRED)
     devices = q.order_by(Device.device_id).all()
     if claimable_only:
         # 只把"当前真正可申请"的设备返回给 Agent，避免拿到连不上的机器。

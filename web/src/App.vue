@@ -327,6 +327,22 @@ async function takeScreenshot(row) {
   }
 }
 
+async function removeDevice(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定移除设备「${row.device_id}」（${row.ip || ''}）？将注销并从设备列表隐藏；`
+      + '若该设备仍有活动租约，会先标记待下架、租约结束后自动摘除。',
+      '移除设备',
+      { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' },
+    )
+    await api('/api/devices/' + encodeURIComponent(row.device_id), { method: 'DELETE' })
+    ElMessage.success('设备已移除')
+    await loadDevices()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e.message || '移除失败')
+  }
+}
+
 // 重新截图：按当前所选 rotate 调用 POST，刷新 el-image 与元数据
 async function retakeScreenshot() {
   if (!screenshotDeviceId.value) { ElMessage.error('缺少设备 ID，无法重新截图'); return }
@@ -1165,10 +1181,11 @@ const legendRole = [
               </template>
             </el-table-column>
             <el-table-column prop="adb_address" label="ADB 地址" width="160" />
-            <el-table-column v-if="me.role === 'admin'" label="操作" width="180" fixed="right">
+            <el-table-column v-if="me.role === 'admin'" label="操作" width="250" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
                 <el-button size="small" @click="openScreenshotHistory(row)">截图记录</el-button>
+                <el-button size="small" type="danger" @click="removeDevice(row)">移除</el-button>
               </template>
             </el-table-column>
           </el-table>
