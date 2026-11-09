@@ -1165,27 +1165,29 @@ const legendRole = [
             </el-tabs>
             <el-input v-model="deviceSearch" placeholder="搜索 ID / 名称 / 位置 / 责任人 / ADB" clearable style="width: 280px" />
           </div>
-          <el-table :data="detailDevices" border size="small">
-            <el-table-column prop="device_id" label="ID" width="140" />
-            <el-table-column prop="display_name" label="名称" width="130" />
-            <el-table-column prop="project_name" label="工程配置" width="150" show-overflow-tooltip />
-            <el-table-column prop="position_code" label="位置" width="120" />
-            <el-table-column prop="owner" label="责任人" width="120" />
-            <el-table-column prop="register_agent" label="Agent" width="130" show-overflow-tooltip>
+          <el-table :data="detailDevices" border size="small" class="device-table">
+            <el-table-column prop="device_id" label="ID" min-width="95" show-overflow-tooltip />
+            <el-table-column prop="display_name" label="名称" min-width="90" show-overflow-tooltip />
+            <el-table-column prop="project_name" label="工程" min-width="70" show-overflow-tooltip />
+            <el-table-column prop="position_code" label="位置" min-width="70" show-overflow-tooltip />
+            <el-table-column prop="owner" label="责任人" min-width="70" show-overflow-tooltip />
+            <el-table-column prop="register_agent" label="Agent" min-width="90" show-overflow-tooltip>
               <template #default="{ row }">{{ row.register_agent || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="health_level" label="健康" width="70" />
-            <el-table-column label="状态" width="100">
+            <el-table-column prop="health_level" label="健康" min-width="45" />
+            <el-table-column label="状态" min-width="75">
               <template #default="{ row }">
                 <el-tag size="small" :type="statusTag[row.status] || 'info'">{{ row.status }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="adb_address" label="ADB 地址" width="160" />
-            <el-table-column v-if="me.role === 'admin'" label="操作" width="250" fixed="right">
+            <el-table-column prop="adb_address" label="ADB" min-width="110" show-overflow-tooltip>
+              <template #default="{ row }"><span class="mono">{{ row.adb_address }}</span></template>
+            </el-table-column>
+            <el-table-column v-if="me.role === 'admin'" label="操作" width="140" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" type="primary" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
-                <el-button size="small" @click="openScreenshotHistory(row)">截图记录</el-button>
-                <el-button size="small" type="danger" @click="removeDevice(row)">移除</el-button>
+                <el-button link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
+                <el-button link size="small" @click="openScreenshotHistory(row)">记录</el-button>
+                <el-button link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -2010,6 +2012,10 @@ const legendRole = [
 .cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); transform: translateY(-2px); }
 .shot-download { display: inline-block; text-decoration: none; }
 .shot-preview { width: 100%; height: 52vh; display: block; }
+.device-table { font-size: 12px; }
+.device-table :deep(.el-table__cell) { padding: 3px 0; }
+.device-table :deep(.cell) { font-size: 12px; line-height: 1.4; padding-left: 6px; padding-right: 6px; }
+.device-table :deep(.el-table__header .cell) { font-size: 12px; font-weight: 600; }
 .shot-preview :deep(.el-image__inner) { width: 100%; height: 100%; object-fit: contain; }
 .settings-grid-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; }
 .settings-grid-form.settings-grid-form .settings-grid-full { grid-column: 1 / -1; }
