@@ -330,7 +330,7 @@ def force_release(
 
 
 @router.get("/credentials")
-def credentials(
+def list_credentials(
     identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
     session: Session = Depends(get_session),
 ):

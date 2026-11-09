@@ -754,6 +754,9 @@ const legendRole = [
               <el-table-column prop="project_name" label="工程配置" width="150" show-overflow-tooltip />
               <el-table-column prop="position_code" label="位置" width="120" />
               <el-table-column prop="owner" label="责任人" width="120" />
+              <el-table-column prop="register_agent" label="Agent" width="130" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.register_agent || '-' }}</template>
+              </el-table-column>
               <el-table-column prop="health_level" label="健康" width="70" />
               <el-table-column label="状态" width="100">
                 <template #default="{ row }">

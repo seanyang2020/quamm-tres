@@ -85,6 +85,8 @@ class Device(Base):
     health_level: Mapped[str] = mapped_column(String(8), default=HealthLevel.L0, nullable=False)
     registered_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     register_channel: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # v0.19：注册该设备的 Agent 名称（agent_info），设备页直接可见
+    register_agent: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     adb_port: Mapped[int] = mapped_column(Integer, default=5555, nullable=False)

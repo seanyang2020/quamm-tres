@@ -277,9 +277,10 @@ def res_device_register(
             session, form_id, position_code, owner,
             actor_email=auth.email, model_class=model_class, note=note, agent_info=agent_info,
         )
-        label = str(agent_info).strip()[:128] if agent_info else None
-        if label and auth.credential.agent_label != label:
-            auth.credential.agent_label = label
+        # 用解析后的 agent_info（可能回退自 probe 暂存）回写凭据，避免显式入参为空时漏写。
+        resolved_label = str(result.get("agent_info") or "").strip()[:128] or None
+        if resolved_label and auth.credential.agent_label != resolved_label:
+            auth.credential.agent_label = resolved_label
             session.commit()
         return result
     except DomainError as e:

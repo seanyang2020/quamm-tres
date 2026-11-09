@@ -34,6 +34,7 @@ _DEVICE_COLUMNS = {
     "has_wifi": "BOOLEAN",
     "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
     "firmware_version": "VARCHAR(64)",
+    "register_agent": "VARCHAR(128)",
 }
 
 # credential 表新增列（v0.11）-> DDL 片段

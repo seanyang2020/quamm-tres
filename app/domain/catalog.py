@@ -202,6 +202,7 @@ def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
                 "asset_tag": d.asset_tag,
                 "registered_by": d.registered_by,
                 "register_channel": d.register_channel,
+                "register_agent": d.register_agent,
                 "android_version": d.android_version,
                 "source": d.source,
                 "board_dt": d.board_dt,
@@ -426,6 +427,7 @@ def device_register(
         device.android_version = probe.get("android_version") or device.android_version
         device.position_code = position_code
         device.owner = owner
+        device.register_agent = agent_info
         if final_model != "unknown_model":
             device.model_class = final_model
         matched_as = "existing"
@@ -444,6 +446,7 @@ def device_register(
             health_level=probe.get("level", HealthLevel.L0),
             registered_by=actor_email,
             register_channel=RegisterChannel.MCP_AGENT,
+            register_agent=agent_info,
             ip=probe.get("ip"),
             adb_port=probe.get("adb_port", 5555),
             android_version=probe.get("android_version"),
