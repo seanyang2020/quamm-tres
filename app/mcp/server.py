@@ -88,6 +88,16 @@ def res_list_devices(
 
 
 @mcp.tool()
+def res_list_positions() -> list[dict]:
+    """查询所有已注册设备的位置清单（含 IP / ADB 地址 / 责任人 / 状态）。
+
+    位置为描述性文本（工位/会议室/机架机位等），按位置排序；
+    用于按物理位置找设备，或核对哪些设备尚未登记位置。
+    """
+    return _guard_ro(catalog.list_positions)
+
+
+@mcp.tool()
 def res_device_info(device_id: str) -> dict:
     """单台设备详情：机型、位置、状态、健康级别、当前占用（脱敏）。"""
     return _guard_ro(catalog.device_info, device_id, for_agent=True)

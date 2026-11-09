@@ -120,6 +120,7 @@ const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
+const healthInfo = ref(null)
 const ptCreateDialog = ref(false)
 const ptCreateForm = ref(null)
 const ptAllowIncomplete = ref(false)
@@ -242,6 +243,7 @@ async function boot() {
   if (me.value) {
     loadDashboard()
     loadVersionInfo()
+    loadHealthInfo()
   }
 }
 onMounted(boot)
@@ -489,6 +491,9 @@ function filterAudit(action) { auditAction.value = action || ''; loadAudit() }
 // ---- v0.16：版本信息在挂载时加载，供设置页「关于」展示 ----
 async function loadVersionInfo() {
   try { versionInfo.value = await api('/api/version') } catch (e) { versionInfo.value = null }
+}
+async function loadHealthInfo() {
+  try { healthInfo.value = await api('/api/health') } catch (e) { healthInfo.value = null }
 }
 
 // ---- v0.15：新增机型（先 POST 建基础记录，再 PUT 补工程字段）----
@@ -926,6 +931,10 @@ const legendRole = [
             <p v-if="versionInfo" style="margin: 0 0 12px">
               <strong>{{ versionInfo.name }}</strong> · 版本 {{ versionInfo.version }}
               <span v-if="versionInfo.stage">（{{ versionInfo.stage }}）</span>
+            </p>
+            <p v-if="healthInfo" style="margin: 0 0 12px; color: #606266">
+              启动时间：{{ healthInfo.started_at }}<br />
+              已运行：{{ healthInfo.uptime_human }}
             </p>
             <p style="color: #909399; margin: 0 0 12px">
               测试资源分配管理系统：Agent 经 MCP 申请/释放 ADB 测试设备，管理员在此维护系统参数与设备类型。

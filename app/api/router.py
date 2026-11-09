@@ -450,10 +450,14 @@ def patrol_runs(session: Session = Depends(get_session)):
 @router.get("/health")
 def health(session: Session = Depends(get_session)):
     last = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
+    from app import runtime
     return {
         "status": "ok",
         "version": get_version(),
         "last_patrol_at": _iso(last.ended_at) if last else None,
+        "started_at": _iso(runtime.STARTED_AT),
+        "uptime_seconds": round(runtime.uptime_seconds(), 1),
+        "uptime_human": runtime.format_uptime(),
     }
 
 
@@ -626,8 +630,9 @@ def settings_view(session: Session = Depends(get_session)):
     view = {
         "product_types": catalog.list_products(session),
         "location_rule": {
-            "format": "302-R2-05",
-            "description": "楼栋-机架-机位（302 楼栋 / R 机架 / 05 机位）",
+            "format": "推荐：302-R2-05（楼栋-机架-机位）或 工位/会议室 描述，如「A区工位-12」「3F会议室-01」",
+            "description": "位置为描述性文本，建议规范表达但非强制；注册时自动去空白，位置全局唯一。可用 res_list_positions 查询全部设备位置与 IP。",
+            "mandatory": False,
         },
         "probe_backend": settings.probe_backend,
     }

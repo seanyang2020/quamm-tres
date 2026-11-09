@@ -237,6 +237,31 @@ def list_devices(
     return [_public_device(d, session, for_agent=for_agent) for d in devices]
 
 
+def list_positions(session: Session) -> list[dict]:
+    """查询所有已注册设备的位置（含 IP/ADB 地址），按位置排序。
+
+    位置为描述性文本（工位/会议室/机架机位等），不强制格式；
+    未登记位置的设备排在最后，仍返回，便于补录。
+    """
+    devices = session.query(Device).all()
+    rows = [
+        {
+            "device_id": d.device_id,
+            "display_name": d.display_name,
+            "model_class": d.model_class,
+            "status": d.status,
+            "health_level": d.health_level,
+            "position_code": d.position_code,
+            "owner": d.owner,
+            "ip": d.ip,
+            "adb_port": d.adb_port,
+            "adb_address": d.adb_address,
+        }
+        for d in devices
+    ]
+    return sorted(rows, key=lambda r: (r["position_code"] is None, r["position_code"] or ""))
+
+
 def device_info(session: Session, device_id: str, for_agent: bool = True) -> dict:
     d = session.get(Device, device_id)
     if d is None:
@@ -352,6 +377,11 @@ def device_register(
         if not owner:
             missing.append("owner")
         raise DomainError("MISSING_FIELD", "缺少必填字段：" + ", ".join(missing), {"missing": missing})
+
+    # 位置支持描述性表达（工位/会议室/机架机位等），仅做轻量规范化，不强制格式：
+    # 去首尾空白、把内部连续空白折叠为单个空格。
+    position_code = " ".join(position_code.split())
+    owner = " ".join(owner.split())
 
     probe = form.probe
 
