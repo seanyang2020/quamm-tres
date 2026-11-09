@@ -5,6 +5,20 @@
 
 ## [0.25.0] - 2026-11-09
 
+### 新增：pending 设备端口敲门自动恢复（集成进巡检）
+- 背景：部分设备能 ping 通但 5555 无 adb 监听，原流程只能转现场处理。
+- 落地：新建 `app/domain/device_recovery.py`，用标准库复现 adbscan 的端口敲门算法，
+  行为等价 `adbscan -k -e <eventcode> <ip>`（默认事件码 2223：序列 2223→2232→2322→3222），
+  命中设备端守护进程即拉起 adbd，再等待 5555 开放。
+- 巡检接入：`run_patrol_round` 对 real 且 ping 通的 pending 设备自动敲门，写审计
+  `pending_knock_recover`；adb 起来后重新探测，达 L3 即自动转 available（auto_promote）。
+- 防护：每台设备 10 分钟敲门冷却（内存态），避免每轮重复敲门；设备 30s 未起则记录失败。
+- 配置：新增 3 个运行时键 `pending_auto_recover_enabled`（bool，默认开）、
+  `pending_knock_eventcode`（3–6 位数字，默认 2223）、`pending_knock_timeout`（5–120s，默认 30），
+  系统设置页可在线修改；runtime_config 新增字符串类型支持。
+- 验证：新增 12 项单测（序列算法/已在监听/恢复成功/超时/冷却/非法事件码），全量
+  17 failed/82 passed（17 为旧基线，无新增回归）；实跑巡检确认敲门、审计与自动转正均生效。
+
 ### 修复：设备概况刷新后首次加载空白，需切换页面才显示
 - 根因：`boot()` 恢复登录态后只加载了看板/版本/健康/机型/编译服务器，**遗漏了
   `loadDevices()`**；带会话直接刷新页面时 `devices` 为空，概况统计与品类卡全显 0，

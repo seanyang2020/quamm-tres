@@ -20,6 +20,7 @@ from app.runtime_config import get_runtime_value
 from app.constants import DeviceStatus, HealthLevel, LeaseState
 from app.domain import audit
 from app.domain.notices import notify_device_offline, notify_device_recovered
+from app.domain import device_recovery as recovery
 from app.domain.probe import probe_device
 from app.models import Device, Lease, PatrolRun
 from app.utils import new_run_id, utcnow
@@ -81,8 +82,38 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
             d.health_level = result.level
             d.consecutive_failures += 1
             if d.status == DeviceStatus.PENDING:
-                # 仍探不到，保持 pending，不重复计 suspect
-                pass
+                # 仍探不到：对 real 且 ping 通的设备尝试端口敲门自动恢复（拉起 adbd）
+                if (
+                    get_runtime_value(session, "pending_auto_recover_enabled")
+                    and d.source == "real"
+                    and recovery.ping_ok(d.ip)
+                ):
+                    rec = recovery.knock_recover(
+                        d.ip,
+                        str(get_runtime_value(session, "pending_knock_eventcode")),
+                        adb_port=d.adb_port or 5555,
+                        wait_timeout=int(get_runtime_value(session, "pending_knock_timeout")),
+                    )
+                    audit.record(
+                        session, actor="system", action="pending_knock_recover",
+                        device_id=d.device_id, detail=rec,
+                    )
+                    if rec.get("adb_ready"):
+                        r2 = probe_device(
+                            d.ip, d.adb_port or 5555,
+                            timeout=settings.probe_timeout_seconds, source=d.source,
+                        )
+                        if r2.reachable_l3:
+                            d.health_level = HealthLevel.L3
+                            d.consecutive_failures = 0
+                            d.last_seen_at = utcnow()
+                            d.status = DeviceStatus.AVAILABLE
+                            d.last_probe_at = utcnow()
+                            l3 += 1
+                            audit.record(
+                                session, actor="system", action="auto_promote",
+                                device_id=d.device_id,
+                            )
             elif d.status in (DeviceStatus.AVAILABLE, DeviceStatus.OFFLINE):
                 if d.consecutive_failures < int(get_runtime_value(session, "patrol_fail_threshold")):
                     suspect += 1

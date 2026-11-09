@@ -31,6 +31,10 @@ RUNTIME_SPECS: dict[str, dict[str, Any]] = {
     "screenshot_retention_days": {"type": "int", "min": 1, "max": 3650},
     "screenshot_total_max": {"type": "int", "min": 1, "max": 100000},
     "screenshot_cleanup_on_release": {"type": "bool"},
+    # pending 设备端口敲门自动恢复
+    "pending_auto_recover_enabled": {"type": "bool"},
+    "pending_knock_eventcode": {"type": "str", "min_length": 3, "max_length": 6, "digits": True},
+    "pending_knock_timeout": {"type": "int", "min": 5, "max": 120},
 }
 
 RUNTIME_KEYS = frozenset(RUNTIME_SPECS)
@@ -52,6 +56,8 @@ def _parse_stored(key: str, raw: str | None) -> Any:
         return _pydantic_default(key)
     if spec["type"] == "bool":
         return _parse_bool(raw)
+    if spec["type"] == "str":
+        return str(raw)
     return int(raw)
 
 
@@ -70,6 +76,18 @@ def validate_runtime_value(key: str, value: Any) -> tuple[Any | None, str | None
         ):
             return _parse_bool(value), None
         return None, f"{key} 须为布尔值"
+    # str
+    if spec["type"] == "str":
+        if not isinstance(value, str):
+            return None, f"{key} 须为字符串"
+        sv = value.strip()
+        lo = spec.get("min_length", 0)
+        hi = spec.get("max_length", 1024)
+        if len(sv) < lo or len(sv) > hi:
+            return None, f"{key} 长度须在 {lo}–{hi} 之间"
+        if spec.get("digits") and not sv.isdigit():
+            return None, f"{key} 须为纯数字"
+        return sv, None
     # int
     try:
         if isinstance(value, bool):

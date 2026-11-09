@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     screenshot_retention_days: int = 14       # 全局保留天数（超过即删）
     screenshot_total_max: int = 500           # 全局最多保留的截图总条数
     screenshot_cleanup_on_release: bool = True  # 换用户/释放时清空该设备截图
+    # pending 设备端口敲门自动恢复（等价 adbscan -k -e <eventcode>）
+    pending_auto_recover_enabled: bool = True   # 巡检对 ping 通但 adb 未起的 pending 设备自动敲门
+    pending_knock_eventcode: str = "2223"       # 端口敲门事件码（3–6 位数字）
+    pending_knock_timeout: int = 30             # 敲门后等待 adbd 起来的秒数
 
     # 固件下载 / 刷机（v0.14，复用现成工具，不重新实现）
     xos_base_url: str = "http://172.16.1.201/Daily/XOS"  # DB 目录根（末尾无 /）

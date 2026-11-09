@@ -121,6 +121,9 @@ const settingsForm = ref({
   screenshot_retention_days: 14,
   screenshot_total_max: 500,
   screenshot_cleanup_on_release: true,
+  pending_auto_recover_enabled: true,
+  pending_knock_eventcode: '2223',
+  pending_knock_timeout: 30,
 })
 const settingsSaving = ref(false)
 
@@ -443,6 +446,9 @@ function syncSettingsForm(data) {
     screenshot_retention_days: data.screenshot_retention_days,
     screenshot_total_max: data.screenshot_total_max,
     screenshot_cleanup_on_release: !!data.screenshot_cleanup_on_release,
+    pending_auto_recover_enabled: !!data.pending_auto_recover_enabled,
+    pending_knock_eventcode: data.pending_knock_eventcode,
+    pending_knock_timeout: data.pending_knock_timeout,
   }
 }
 async function loadSettings() {
@@ -1447,6 +1453,15 @@ const legendRole = [
               </el-form-item>
               <el-form-item label="allow_apply_when_suspect">
                 <el-switch v-model="settingsForm.allow_apply_when_suspect" />
+              </el-form-item>
+              <el-form-item label="pending 自动敲门恢复">
+                <el-switch v-model="settingsForm.pending_auto_recover_enabled" />
+              </el-form-item>
+              <el-form-item label="敲门事件码">
+                <el-input v-model="settingsForm.pending_knock_eventcode" maxlength="6" style="width: 140px" />
+              </el-form-item>
+              <el-form-item label="敲门等待（秒）">
+                <el-input-number v-model="settingsForm.pending_knock_timeout" :min="5" :max="120" />
               </el-form-item>
               <el-form-item class="settings-grid-full">
                 <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
