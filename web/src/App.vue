@@ -582,13 +582,26 @@ async function boot() {
 }
 onMounted(boot)
 
+async function offerBrowserSave(email, password) {
+  // SPA 异步登录不会自动触发浏览器保存提示，显式调用 Credential Management API
+  // （Chromium 系支持；非安全上下文或不支持时静默跳过）。
+  try {
+    if (window.PasswordCredential && window.navigator && navigator.credentials) {
+      const cred = new window.PasswordCredential({ id: email, password, name: email })
+      await navigator.credentials.store(cred)
+    }
+  } catch (e) { /* 用户拒绝或不支持，忽略 */ }
+}
+
 async function doLogin() {
   loginError.value = ''
+  const token = loginToken.value.trim()
   try {
     me.value = await api('/api/auth/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: loginToken.value.trim() }),
+      body: JSON.stringify({ token }),
     })
+    await offerBrowserSave(me.value.email, token)
     loginToken.value = ''
     active.value = 'dashboard'
     loadDashboard()
@@ -1003,8 +1016,11 @@ const legendRole = [
     <el-card class="auth-card">
       <h2>Quamm TRES 登录</h2>
       <p>请输入你的 rr_ 接入凭据（与 MCP 同一套 token）。</p>
-      <el-input v-model="loginToken" placeholder="rr_..." @keyup.enter="doLogin" />
-      <div style="margin-top: 12px"><el-button type="primary" @click="doLogin">登录</el-button></div>
+      <form autocomplete="on" @submit.prevent="doLogin">
+        <el-input v-model="loginToken" type="password" show-password name="token"
+          autocomplete="current-password" placeholder="rr_..." />
+        <div style="margin-top: 12px"><el-button type="primary" native-type="submit">登录</el-button></div>
+      </form>
       <p v-if="loginError" class="err">{{ loginError }}</p>
     </el-card>
   </div>

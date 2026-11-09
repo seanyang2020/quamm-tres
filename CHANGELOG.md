@@ -5,6 +5,13 @@
 
 ## [0.25.0] - 2026-11-09
 
+### 优化：登录 token 输入框密码化并支持浏览器保存
+- 登录页 token 输入框改为 `type="password"`（带 show-password 可切换明文），并包一层原生
+  `<form>`、加 `autocomplete="current-password"`，便于密码管理器识别与回填。
+- 因 SPA 异步 fetch 登录不会自动触发浏览器保存提示，登录成功后调用 Credential Management API
+  `navigator.credentials.store(new PasswordCredential(...))` 显式请求保存（以登录返回的邮箱为
+  账号、token 为密码）；非安全上下文或不支持的浏览器静默跳过，不影响登录。
+
 ### 新增：编译服务器（SSH 凭据加密保管 + 自动探测 + SDK 编译升级）
 - 新增独立「编译服务器」注册表 `build_server` 表（`BuildServer` 模型）：名称/主机/端口/用户名/
   认证方式(password|key)/加密密钥/公钥/工作根目录/探测状态/探测详情/最近探测时间；机型
