@@ -10,7 +10,7 @@ from fastmcp import FastMCP
 from app.config import settings
 from app.constants import get_version
 from app.db import SessionLocal
-from app.domain import catalog, flash, leasing
+from app.domain import catalog, credentials, flash, leasing
 from app.domain.catalog import DomainError
 from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
@@ -315,7 +315,19 @@ def res_firmware_status(device_id: str) -> dict:
 # ---------- 管理 ----------
 
 @mcp.tool()
-def res_admin(action: str, lease_id: str | None = None, reason: str | None = None, device_id: str | None = None) -> dict:
+def res_admin(
+    action: str,
+    lease_id: str | None = None,
+    reason: str | None = None,
+    device_id: str | None = None,
+    email: str | None = None,
+    role: str = "user",
+    name: str | None = None,
+    note: str | None = None,
+    valid_days: int | None = None,
+    confirm: bool = False,
+    send: bool = False,
+) -> dict:
     """管理员工具（普通 token 不可用）。
 
     action 枚举：
@@ -323,6 +335,8 @@ def res_admin(action: str, lease_id: str | None = None, reason: str | None = Non
     - overview：设备池概览（total/available/suspect/occupied/offline/active_leases）
     - stats：汇总统计（设备/租约/队列/通知四组计数）
     - list_credentials：列出全部凭据（token 尾号/有效期/是否吊销）
+    - invite：给指定邮箱发邀请函/凭据（email 必填；role=user/admin；send=true 直接 SMTP 发信，
+      否则只生成返回 token；已有有效凭据时返回 needs_confirm，confirm=true 才补发）
     """
     auth = require_auth()
     if not auth.is_admin:
@@ -330,6 +344,20 @@ def res_admin(action: str, lease_id: str | None = None, reason: str | None = Non
 
     session = SessionLocal()
     try:
+        if action == "invite":
+            if not email:
+                return {"error": "MISSING_FIELD", "message": "invite 需要 email"}
+            return credentials.issue_credential(
+                session,
+                email,
+                role=role,
+                name=name,
+                note=note,
+                valid_days=valid_days,
+                actor_email=auth.email,
+                confirm=confirm,
+                send=send,
+            )
         if action == "force_release":
             if not lease_id:
                 return {"error": "MISSING_FIELD", "message": "force_release 需要 lease_id"}
