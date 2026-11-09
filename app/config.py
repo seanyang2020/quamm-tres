@@ -41,6 +41,9 @@ class Settings(BaseSettings):
 
     # 巡检
     patrol_interval_minutes: int = 30
+    # v0.28：pending（待检）设备专项探测间隔。用户口径：待检设备每 10 分钟探一次，
+    # 尽快转正，别等到 30 分钟全量巡检；可在设置页在线调整。
+    pending_patrol_interval_minutes: int = 10
     patrol_fail_threshold: int = 2       # 连续 N 轮失败判 offline
     probe_timeout_seconds: int = 5
     # 探测后端：mock=模拟设备 HTTP /probe（默认，本地演示）；

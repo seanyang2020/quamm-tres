@@ -145,6 +145,8 @@ const feedbackStatus = ref('')
 const settings = ref(null)
 const settingsForm = ref({
   patrol_interval_minutes: 30,
+  pending_patrol_interval_minutes: 10,
+  probe_backend: 'real',
   patrol_fail_threshold: 2,
   holder_concurrency_limit: 2,
   allow_apply_when_suspect: false,
@@ -463,6 +465,37 @@ async function retakeScreenshot() {
 }
 
 // 截图历史（设备表入口）
+// v0.28：手动探测（单体 / 批量待检·离线）
+const probeBusy = ref('')
+const probeBatchBusy = ref('')
+async function probeOne(row) {
+  if (probeBusy.value) return
+  probeBusy.value = row.device_id
+  try {
+    const r = await api(`/api/devices/${row.device_id}/probe`, { method: 'POST' })
+    if (r.promoted) ElMessage.success(`探测成功：${r.level}，已转正为可用`)
+    else if (r.level === 'L3') ElMessage.success(`探测成功：${r.level}，状态 ${r.status}`)
+    else ElMessage.warning(`探测完成：${r.level || '失败'}，仍为 ${r.status}`)
+    await loadDevices()
+  } catch (e) { ElMessage.error(e.message) } finally { probeBusy.value = '' }
+}
+async function probeBatch(scope) {
+  if (probeBatchBusy.value) return
+  // 只探「当前品类 + 当前筛选」下的设备，避免按钮计数与实际探测范围不一致
+  const targets = detailBaseDevices.value.filter((d) => d.status === scope)
+  if (!targets.length) { ElMessage.info('当前没有可探测的设备'); return }
+  const ids = targets.slice(0, 20).map((d) => d.device_id)
+  probeBatchBusy.value = scope
+  try {
+    const r = await api('/api/devices/probe-batch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_ids: ids, limit: 20 }),
+    })
+    const more = targets.length > ids.length ? `（仅前 ${ids.length} 台，共 ${targets.length} 台）` : ''
+    ElMessage.success(`探测 ${r.scanned} 台，转正 ${r.promoted} 台，未通过 ${r.failed} 台${more}`)
+    await loadDevices()
+  } catch (e) { ElMessage.error(e.message) } finally { probeBatchBusy.value = '' }
+}
 async function openScreenshotHistory(row) {
   screenshotHistoryDevice.value = row.device_id
   screenshotHistoryVisible.value = true
@@ -529,6 +562,8 @@ function syncSettingsForm(data) {
   if (!data) return
   settingsForm.value = {
     patrol_interval_minutes: data.patrol_interval_minutes,
+    pending_patrol_interval_minutes: data.pending_patrol_interval_minutes,
+    probe_backend: data.probe_backend || 'real',
     patrol_fail_threshold: data.patrol_fail_threshold,
     holder_concurrency_limit: data.holder_concurrency_limit,
     allow_apply_when_suspect: !!data.allow_apply_when_suspect,
@@ -1279,12 +1314,16 @@ const legendRole = [
               <el-tab-pane :label="'待检(' + detailCounts.pending + ')'" name="pending" />
             </el-tabs>
             <div style="display: flex; align-items: center; gap: 8px">
+              <el-button v-if="me.role === 'admin'" size="small" :loading="probeBatchBusy === 'pending'"
+                :disabled="!detailCounts.pending" @click="probeBatch('pending')">探测待检({{ detailCounts.pending }})</el-button>
+              <el-button v-if="me.role === 'admin'" size="small" :loading="probeBatchBusy === 'offline'"
+                :disabled="!detailCounts.offline" @click="probeBatch('offline')">探测离线({{ detailCounts.offline }})</el-button>
               <el-input v-model="deviceSearch" placeholder="搜索 ID / 名称 / 位置 / 责任人 / ADB" clearable style="width: 280px" />
               <span v-if="deviceSearch.trim()" class="search-match">匹配 {{ detailFilteredDevices.length }} 台</span>
             </div>
           </div>
           <div class="device-table-wrap">
-          <el-table :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1180px">
+          <el-table :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1270px">
             <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip />
             <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip />
             <el-table-column prop="position_code" label="位置" width="85" show-overflow-tooltip />
@@ -1320,8 +1359,10 @@ const legendRole = [
                 <el-tag v-else size="small" type="success">公共</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="235">
+            <el-table-column label="操作" width="285">
               <template #default="{ row }">
+                <el-button v-if="me.role === 'admin'" link type="primary" size="small"
+                  :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
                 <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
@@ -1560,9 +1601,19 @@ const legendRole = [
               <el-form-item label="位置规则">
                 <span>{{ settings.location_rule.format }}（{{ settings.location_rule.description }}）</span>
               </el-form-item>
-              <el-form-item label="探测后端"><span>{{ settings.probe_backend }}</span></el-form-item>
+              <el-form-item label="探测后端">
+                <el-select v-model="settingsForm.probe_backend" style="width: 160px">
+                  <el-option label="real（真实 ADB 探测）" value="real" />
+                  <el-option label="mock（模拟设备，仅测试）" value="mock" />
+                </el-select>
+                <span style="margin-left: 8px; color: #909399">mock 只用于模拟设备；真实设备用 mock 会一直判 L0</span>
+              </el-form-item>
               <el-form-item label="巡检间隔（分钟）">
                 <el-input-number v-model="settingsForm.patrol_interval_minutes" :min="1" :max="1440" />
+              </el-form-item>
+              <el-form-item label="待检设备探测间隔（分钟）">
+                <el-input-number v-model="settingsForm.pending_patrol_interval_minutes" :min="1" :max="1440" />
+                <span style="margin-left: 8px; color: #909399">仅探测 pending 设备；申请无可用设备时还会立即补探一次</span>
               </el-form-item>
               <el-form-item label="巡检失败阈值（轮）">
                 <el-input-number v-model="settingsForm.patrol_fail_threshold" :min="1" :max="100" />

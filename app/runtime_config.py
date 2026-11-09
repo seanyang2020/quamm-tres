@@ -15,6 +15,10 @@ from app.utils import utcnow
 # 白名单：键 -> 类型与可选范围（int 校验 min/max；bool 无范围）
 RUNTIME_SPECS: dict[str, dict[str, Any]] = {
     "patrol_interval_minutes": {"type": "int", "min": 1, "max": 1440},
+    # v0.28：pending 设备专项巡检间隔（待检设备频繁探测，尽快转正）
+    "pending_patrol_interval_minutes": {"type": "int", "min": 1, "max": 1440},
+    # v0.28：探测后端可在线切换（mock/real）
+    "probe_backend": {"type": "str", "min_length": 4, "max_length": 8, "choices": ["mock", "real"]},
     "patrol_fail_threshold": {"type": "int", "min": 1, "max": 100},
     "holder_concurrency_limit": {"type": "int", "min": 1, "max": 20},
     "allow_apply_when_suspect": {"type": "bool"},
@@ -87,6 +91,9 @@ def validate_runtime_value(key: str, value: Any) -> tuple[Any | None, str | None
             return None, f"{key} 长度须在 {lo}–{hi} 之间"
         if spec.get("digits") and not sv.isdigit():
             return None, f"{key} 须为纯数字"
+        choices = spec.get("choices")
+        if choices and sv not in choices:
+            return None, f"{key} 须为 {', '.join(choices)} 之一"
         return sv, None
     # int
     try:

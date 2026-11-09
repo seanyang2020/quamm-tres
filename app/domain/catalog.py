@@ -336,6 +336,127 @@ def device_info(session: Session, device_id: str, for_agent: bool = True) -> dic
     return _public_device(d, session, for_agent=for_agent)
 
 
+# ---------- v0.28：已注册设备手动探测（单体 / 批量待检·离线） ----------
+
+def _apply_probe_result(device: Device, result, *, actor_email: str) -> bool:
+    """把一次探测结果写回设备；返回是否由「不可用」转正为 available。"""
+    before_status = device.status
+    device.last_probe_at = utcnow()
+    probed_version = (result.extra or {}).get("firmware_version")
+    if probed_version:
+        device.firmware_version = probed_version
+    if result.reachable_l3:
+        device.health_level = HealthLevel.L3
+        device.consecutive_failures = 0
+        device.last_seen_at = utcnow()
+        # 只有原本不可用、且没被占用的设备才转正；occupied/维护中/锁定设备只更新健康度
+        if (
+            before_status in (DeviceStatus.PENDING, DeviceStatus.OFFLINE)
+            and not bool(device.locked)
+        ):
+            device.status = DeviceStatus.AVAILABLE
+    else:
+        # 探测失败只更新健康度与失败计数；available 不因单次失败直接降级（交给巡检阈值）
+        device.health_level = result.level
+        device.consecutive_failures = (device.consecutive_failures or 0) + 1
+    return before_status != device.status and device.status == DeviceStatus.AVAILABLE
+
+
+def device_probe_registered(
+    session: Session, device_id: str, *, actor_email: str, is_admin: bool = False,
+) -> dict:
+    """手动探测一台已注册设备（设备页「探测」按钮）。"""
+    d = session.get(Device, device_id)
+    if d is None:
+        raise DomainError("NOT_FOUND", f"device {device_id} not found")
+    if not is_admin and d.registered_by != actor_email:
+        raise DomainError("FORBIDDEN", "只有注册人或管理员可以探测该设备")
+    if not d.ip:
+        raise DomainError("NO_IP", f"设备 {device_id} 没有登记 IP，无法探测")
+
+    result = probe_device(
+        d.ip, d.adb_port or 5555,
+        timeout=settings.probe_timeout_seconds, source=d.source,
+    )
+    promoted = _apply_probe_result(d, result, actor_email=actor_email)
+    audit.record(
+        session, actor=actor_email, action="device_probe", device_id=d.device_id,
+        detail={"level": result.level, "promoted": promoted, "source": d.source, "manual": True},
+    )
+    session.commit()
+    return {
+        "device_id": d.device_id,
+        "level": result.level,
+        "status": d.status,
+        "promoted": promoted,
+        "consecutive_failures": d.consecutive_failures,
+        "last_probe_at": d.last_probe_at.isoformat() if d.last_probe_at else None,
+    }
+
+
+def device_probe_batch(
+    session: Session, *, statuses: list[str] | None = None,
+    device_ids: list[str] | None = None, actor_email: str, limit: int = 20,
+) -> dict:
+    """批量探测（设备页「探测待检/离线」按钮）。并发 3 路，单次上限 20 台。"""
+    q = session.query(Device).filter(Device.ip.isnot(None))
+    if device_ids:
+        q = q.filter(Device.device_id.in_(device_ids))
+    elif statuses:
+        q = q.filter(Device.status.in_(statuses))
+    else:
+        q = q.filter(Device.status.in_([DeviceStatus.PENDING, DeviceStatus.OFFLINE]))
+    rows = q.order_by(Device.created_at.asc()).limit(max(1, min(limit, 20))).all()
+    if not rows:
+        return {"scanned": 0, "promoted": 0, "failed": 0, "results": []}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    targets = [(d.device_id, d.ip, d.adb_port or 5555, d.source) for d in rows]
+
+    def run(item):
+        device_id, ip, port, source = item
+        try:
+            return device_id, probe_device(
+                ip, port, timeout=settings.probe_timeout_seconds, source=source
+            )
+        except Exception:  # noqa: BLE001
+            return device_id, None
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(run, targets))
+
+    by_id = {d.device_id: d for d in rows}
+    out = []
+    promoted = failed = 0
+    for device_id, result in results:
+        d = by_id.get(device_id)
+        if d is None:
+            continue
+        if result is None:
+            failed += 1
+            out.append({"device_id": device_id, "level": None, "status": d.status, "promoted": False})
+            continue
+        was_promoted = _apply_probe_result(d, result, actor_email=actor_email)
+        if was_promoted:
+            promoted += 1
+        if not result.reachable_l3:
+            failed += 1
+        out.append({
+            "device_id": device_id,
+            "level": result.level,
+            "status": d.status,
+            "promoted": was_promoted,
+        })
+    audit.record(
+        session, actor=actor_email, action="device_probe_batch",
+        detail={"scanned": len(rows), "promoted": promoted, "failed": failed,
+                "statuses": statuses or [], "device_ids": device_ids or []},
+    )
+    session.commit()
+    return {"scanned": len(rows), "promoted": promoted, "failed": failed, "results": out}
+
+
 # ---------- 注册 ----------
 
 def _match_existing(session: Session, probe: dict) -> Device | None:

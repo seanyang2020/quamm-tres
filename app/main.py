@@ -29,7 +29,9 @@ async def lifespan(app: FastAPI):
     init_db()
     # 进程启动时按 settings.probe_backend 选定探测后端（默认 mock）。
     # 注册（MCP）与巡检（worker）共用同一实现。
-    setup_prober_from_settings()
+    # v0.28：探测后端（mock/real）以运行时设置为准，重启后不会退回默认 mock
+    with SessionLocal() as _probe_session:
+        setup_prober_from_settings(_probe_session)
     with SessionLocal() as session:
         migrate(session)          # 补 device/credential 新列 + 修正管理员标志（老库不丢数据）
         seed_product_types(session)

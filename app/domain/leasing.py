@@ -129,9 +129,11 @@ def _try_recover_for_apply(session: Session, device: Device,
         return
 
     def probe_now():
+        # v0.28 修复：原实现把 session 当成 host 传入，导致探测地址变成
+        # "Session(...):<ip>"，申请 pending 设备的自动恢复实际一直失效。
         return probe_device(
-            session, device.ip, device.adb_port,
-            source="real", timeout=settings.probe_timeout_seconds,
+            device.ip, device.adb_port or 5555,
+            timeout=settings.probe_timeout_seconds, source=device.source or "real",
         )
 
     r1 = probe_now()
@@ -139,7 +141,7 @@ def _try_recover_for_apply(session: Session, device: Device,
         eventcode = str(get_runtime_value(session, "pending_knock_eventcode"))
         wait_to = int(get_runtime_value(session, "pending_knock_timeout"))
         knock = device_recovery.knock_recover(
-            device.ip, eventcode, adb_port=device.adb_port,
+            device.ip, eventcode, adb_port=device.adb_port or 5555,
             wait_timeout=wait_to, use_cooldown=False,  # 显式申请不受冷却限制
         )
         audit.record(
@@ -169,6 +171,61 @@ def _try_recover_for_apply(session: Session, device: Device,
             {"device_id": device.device_id, "ip": device.ip,
              "retry": "稍后重新调用 res_apply", "suggestion": "仍失败则现场检查供电/网络"},
         )
+
+
+def _probe_pending_for_apply(
+    session: Session, target_type: str, target_code: str,
+    *, actor: str, limit: int = 8,
+) -> int:
+    """v0.28：申请时若没有可用设备、只有 pending 设备，立即探测一次。
+
+    用户口径：无设备可用且只剩待检设备时，申请动作本身触发一次探测，探通就
+    直接转 available 参与本次分配，不用等下一轮巡检。
+    返回转正台数。
+    """
+    q = session.query(Device).filter(
+        Device.status == DeviceStatus.PENDING,
+        Device.locked != True,  # noqa: E712
+        Device.ip.isnot(None),
+    )
+    if target_type == "device":
+        q = q.filter(Device.device_id == target_code)
+    else:
+        q = q.filter(Device.model_class == target_code)
+    rows = q.order_by(Device.created_at.asc()).limit(limit).all()
+    if not rows:
+        return 0
+
+    promoted = 0
+    for d in rows:
+        # 探测后端按设备自身 source 分流（mock 测试设备仍走 mock）
+        result = probe_device(
+            d.ip, d.adb_port or 5555,
+            timeout=settings.probe_timeout_seconds, source=d.source,
+        )
+        d.last_probe_at = utcnow()
+        probed_version = (result.extra or {}).get("firmware_version")
+        if probed_version:
+            d.firmware_version = probed_version
+        if result.reachable_l3:
+            d.health_level = HealthLevel.L3
+            d.consecutive_failures = 0
+            d.last_seen_at = utcnow()
+            d.status = DeviceStatus.AVAILABLE
+            promoted += 1
+            audit.record(
+                session, actor=actor, action="apply_pending_probe",
+                device_id=d.device_id, detail={"promoted": True, "level": result.level},
+            )
+        else:
+            d.health_level = result.level
+            d.consecutive_failures = (d.consecutive_failures or 0) + 1
+            audit.record(
+                session, actor=actor, action="apply_pending_probe",
+                device_id=d.device_id, detail={"promoted": False, "level": result.level},
+            )
+    session.commit()
+    return promoted
 
 
 def _find_available(
@@ -404,6 +461,16 @@ def apply(
         session, target_type, target_code, gate_product,
         email=principal.email, agent_label=agent_info, is_admin=auth.is_admin,
     )
+    if device is None and not had_candidates:
+        # v0.28：没有可用设备时，若还有待检设备就先现场探一次，探通即参与本次分配
+        promoted = _probe_pending_for_apply(
+            session, target_type, target_code, actor=principal.email
+        )
+        if promoted:
+            device, had_candidates, verdict = _find_available(
+                session, target_type, target_code, gate_product,
+                email=principal.email, agent_label=agent_info, is_admin=auth.is_admin,
+            )
     if device is None and had_candidates:
         # 有可用设备但固件版本全部不满足：不排队，明确报无兼容设备
         reason = (verdict or {}).get("reason") or "固件版本不满足要求"

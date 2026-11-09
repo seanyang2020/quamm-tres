@@ -18,6 +18,10 @@ from app.config import settings
 from app.db import SessionLocal, init_db
 from app.domain import leasing, patrol, credentials
 from app.domain.probe import setup_prober_from_settings
+from app.constants import DeviceStatus
+from app.models import Device
+from app.runtime_config import get_runtime_value
+from app.utils import utcnow
 from app.seed import seed_product_types
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -57,6 +61,40 @@ def _patrol_job() -> None:
         session.close()
 
 
+# v0.28：pending 设备专项巡检。用户口径：待检设备每 10 分钟探测一次（可在线调）。
+# 每分钟滴答一次，按运行时间隔判定是否该跑，避免改设置要重启 worker。
+_last_pending_patrol_at = None
+
+
+def _pending_patrol_job() -> None:
+    global _last_pending_patrol_at
+    session = SessionLocal()
+    try:
+        interval = int(get_runtime_value(session, "pending_patrol_interval_minutes"))
+        now = utcnow()
+        if _last_pending_patrol_at is not None:
+            elapsed = (now - _last_pending_patrol_at).total_seconds()
+            if elapsed < max(60, interval * 60 - 5):
+                return
+        pending_ids = [
+            d.device_id
+            for d in session.query(Device).filter(Device.status == DeviceStatus.PENDING).all()
+        ]
+        _last_pending_patrol_at = now
+        if not pending_ids:
+            return
+        run = patrol.run_patrol_round(session, device_ids=pending_ids)
+        logger.info(
+            "pending patrol done: scanned=%s l3=%s (interval=%smin)",
+            run.scanned_count, run.l3_count, interval,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("pending patrol failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def _credential_expiry_job() -> None:
     session = SessionLocal()
     try:
@@ -90,11 +128,14 @@ def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
         seed_product_types(session)
-    setup_prober_from_settings()
+    with SessionLocal() as session:
+        setup_prober_from_settings(session)
 
     scheduler = BackgroundScheduler()
     scheduler.add_job(_lease_scan_job, "interval", seconds=settings.lease_scan_seconds, id="lease_scan")
     scheduler.add_job(_patrol_job, "interval", minutes=settings.patrol_interval_minutes, id="patrol")
+    # v0.28：待检设备每 10 分钟探测一次（运行时 pending_patrol_interval_minutes 可调）
+    scheduler.add_job(_pending_patrol_job, "interval", minutes=1, id="pending_patrol")
     scheduler.add_job(_credential_expiry_job, "interval", hours=24, id="credential_expiry")
     # v0.24：截图全局保留策略（每小时一次，best-effort，独立线程不阻塞其它任务）
     scheduler.add_job(_screenshot_prune_job, "interval", hours=1, id="screenshot_prune")

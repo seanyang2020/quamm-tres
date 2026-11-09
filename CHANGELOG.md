@@ -3,6 +3,38 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.28.0] - 2026-11-09
+
+### 新增：pending 设备自动恢复探测与手动探测（单体 / 批量）
+- pending 专项巡检：worker 新增 `_pending_patrol_job`，每分钟滴答一次、按运行时键
+  `pending_patrol_interval_minutes`（默认 10 分钟）判断是否执行，只挑 `status=pending`
+  的设备调 `run_patrol_round(device_ids=...)`；改间隔不需要重启 worker，也不再依赖
+  重排已注册的 apscheduler job。
+- 申请时补探：`leasing.apply` 在「无可用设备且无候选」时，先按目标机型（或指定
+  `device_id`）对 pending 且未锁定的设备补探一次（最多 8 台），探到 L3 即转正并直接
+  分配；仍失败则按原逻辑排队返回 `QUEUED`，不会让申请直接失败。
+- 修复 `_try_recover_for_apply` 的探测调用参数：原实现把 `session` 当成 `host` 传给
+  `probe_device`，导致 pending 设备「重探 + 端口敲门」路径一直失效；现按
+  `probe_device(ip, port, timeout, source)` 正确调用，`knock_recover` 的端口也补默认 5555。
+- 手动探测接口：新增 `POST /api/devices/{device_id}/probe`（单台）与
+  `POST /api/devices/probe-batch`（批量，默认待检+离线，单次最多 20 台，3 路并发）。
+  探测结果写回 `health_level` / `last_probe_at` / `firmware_version`；只有「原本
+  pending/offline 且未锁定」的设备在探到 L3 时转 `available`，occupied/锁定设备只更新
+  健康度，available 不因单次失败降级（降级仍交给巡检阈值）。
+- 设备页：每行新增「探测」按钮，状态区新增「探测待检(N)」「探测离线(N)」批量按钮
+  （只探当前品类/筛选范围内的设备，admin 可见），操作列 4→5 个按钮（宽 285），
+  表格 `min-width` 1270，窄视口横向滚动后全部列与按钮完整可见。
+- 探测后端可在线切换：运行时键新增 `probe_backend`（real/mock）与
+  `pending_patrol_interval_minutes`（1–1440）；设置页「探测后端」由只读文本改为下拉
+  （附「真实设备用 mock 会一直判 L0」提示），新增「待检设备探测间隔（分钟）」输入框。
+  切换 `probe_backend` 立即重建全局 prober；服务启动与 worker 启动均从 settings KV
+  读取，重启后不会退回 pydantic 默认 `mock`。
+- 数据修正：`dev_6a2777187f` 的 `source` 由 `mock` 纠正为 `real`，运行时
+  `probe_backend` 写为 `real`（默认 `mock` 会把真机探测结果永久压在 L0）。
+- 测试：新增 `tests/test_pending_probe.py` 4 项（运行时键校验、申请补探成功即分配、
+  补探失败回落排队、补探跳过锁定与其它机型），全量 `pytest` 维持既有基线
+  17 failed / 103 passed（新增 4 项全通过）。
+
 ## [0.27.0] - 2026-11-09
 
 ### 新增：编译服务器 token 隔离与去重提示、设备锁定、占用者邮箱

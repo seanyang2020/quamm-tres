@@ -344,6 +344,48 @@ def web_device_probe(
         raise HTTPException(status_code=400, detail=e.message)
 
 
+@router.post("/devices/{device_id}/probe")
+def web_device_probe_registered(
+    device_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """v0.28：手动探测一台已注册设备（设备页「探测」按钮）。"""
+    try:
+        return catalog.device_probe_registered(
+            session, device_id=device_id,
+            actor_email=identity.email, is_admin=(identity.role == "admin"),
+        )
+    except catalog.DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/probe-batch")
+def web_device_probe_batch(
+    payload: dict | None = Body(None),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """v0.28：批量探测待检/离线设备（单次最多 20 台）。"""
+    body = payload or {}
+    statuses = body.get("statuses")
+    device_ids = body.get("device_ids")
+    if isinstance(statuses, str):
+        statuses = [statuses]
+    if isinstance(device_ids, str):
+        device_ids = [device_ids]
+    try:
+        return catalog.device_probe_batch(
+            session,
+            statuses=[str(s) for s in statuses] if statuses else None,
+            device_ids=[str(x) for x in device_ids] if device_ids else None,
+            actor_email=identity.email,
+            limit=int(body.get("limit") or 20),
+        )
+    except catalog.DomainError as e:
+        raise _domain_http(e)
+
+
 @router.post("/devices/register")
 def web_device_register(
     payload: dict = Body(...),
@@ -936,6 +978,11 @@ def update_settings(
     for key, value in normalized.items():
         set_runtime_value(session, key, value)
     session.commit()
+    # v0.28：探测后端（mock/real）在线切换后立即重建全局 prober
+    if "probe_backend" in normalized:
+        from app.domain.probe import setup_prober_from_settings
+
+        setup_prober_from_settings(session)
     return settings_view(session=session)
 
 

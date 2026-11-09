@@ -148,7 +148,16 @@ def probe_device(
     return get_prober_for(source).probe(host, port, timeout)
 
 
-def setup_prober_from_settings() -> None:
+def setup_prober_from_settings(session=None) -> None:
+    """设定全局探测后端。v0.28：传入 session 时优先用运行时配置（设置页可在线切换）。"""
     from app.config import settings
 
-    set_prober(build_prober(settings.probe_backend))
+    backend = settings.probe_backend
+    if session is not None:
+        try:
+            from app.runtime_config import get_runtime_value
+
+            backend = str(get_runtime_value(session, "probe_backend") or backend)
+        except Exception:  # noqa: BLE001  老库/缺表时退回静态配置
+            backend = settings.probe_backend
+    set_prober(build_prober(backend))
