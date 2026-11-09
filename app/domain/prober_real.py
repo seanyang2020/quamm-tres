@@ -5,10 +5,17 @@ Quamm XOS 是精简嵌入式 Linux，**不是标准 Android，没有 getprop 命
 绝不调用 getprop，也不 push / remount / 刷机。
 
 流程：``adb connect ip:port``（超时 3s）→ ``adb -s ip:port shell <cmd>`` 逐个读文件
-→ ``adb disconnect``。连不上 / 读不到 → L0；读到 product_name 且有固定 mac → L3。
+→ ``adb disconnect``。
 
-固定 mac 口径：eth0 存在且不以 ``fe:`` 开头则取 eth0；否则取不以 ``fe:`` 开头的
-wlan0；否则为 None。``fe:``（本地管理 / 随机化）地址不能当设备主键。
+v0.28.2 入池口径：**adb 连得上且 shell 能执行即 L3**（用 ``echo __TRES_SHELL_OK__``
+探针判定）。product_name / MAC / 固件版本降级为「有则采集」的元数据，不再作为入池门槛——
+esl2 一类设备没有 eth0、wlan MAC 又是 ``fe:`` 本地管理地址，按旧口径会永久 L0 无法入池。
+连不上、或 shell 起不来（``adbd: exec '/bin/sh' failed``、``device offline``）仍判 L0。
+
+固定 mac 口径（仅作登记指纹，不再是入池条件）：eth0 有地址则取 eth0，否则取 wlan0，
+都没有为 None。v0.28.2 起 ``fe:``（local-admin 位）地址**也采信**——实测 esl2 的
+``fe:xx`` 地址跨会话稳定，属烧录固定值；仅排除全零地址。``extra`` 里同时记录
+``mac_source`` 与 ``mac_is_local_admin``，便于后续排错。
 
 所有 adb 命令同时用 GNU ``timeout`` 与 subprocess 超时双重包裹，绝不无限挂起。
 
@@ -26,6 +33,9 @@ from app.constants import HealthLevel
 logger = logging.getLogger(__name__)
 
 ADB_TIMEOUT = 5  # 单条 adb 命令默认超时（对齐 adbscan；并发扫描时由调用方传入更大值）
+
+# v0.28.2：shell 活性探针。大写 + 双下划线，不会被 _TOKEN_RE / _MAC_RE 误命中。
+_SHELL_PROBE = "echo __TRES_SHELL_OK__"
 
 _MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 _TOKEN_RE = re.compile(r"[a-z0-9_]{1,64}")
@@ -133,8 +143,14 @@ def read_firmware_version(host: str, port: int = 5555) -> str | None:
 
 
 def _is_fixed(mac: str | None) -> bool:
-    """fe: 开头是本地管理 / 随机化地址，不能当主键。"""
-    return bool(mac) and not mac.lower().startswith("fe:")
+    """是否可作为设备指纹。
+
+    v0.28.2：**不再排除 fe: 前缀**。实测 esl2 类设备只有 wlan0，地址形如
+    ``fe:47:b5:cd:b5:0d``，跨多次 connect/disconnect 读取完全一致——它是烧录的
+    固定地址，只是带 local-admin 位；按前缀一刀切会把正常设备判成无指纹。
+    仅排除空值与全零地址。
+    """
+    return bool(mac) and mac.strip().lower() != "00:00:00:00:00:00"
 
 
 class RealXosProber:
@@ -160,6 +176,7 @@ class RealXosProber:
         cpu_part: str | None = None
         cpu_implementer: str | None = None
         has_fpu = False
+        mac_source: str | None = None
 
         # 1) connect（超时）。输出含 connected 才算连上；offline / 不可达直接 L0。
         rc, out = _run(["connect", address], timeout)
@@ -169,8 +186,21 @@ class RealXosProber:
             _run(["disconnect", address], timeout)
             return self._result(ProbeResult, HealthLevel.L0, None, None, None, None, "unknown", False, None, None)
 
+        shell_ok = False
         try:
-            # 2) 逐个读文件（每条命令都带 timeout；文件不存在时 stdout 为空 -> 跳过）
+            # 2) shell 活性探针：adb 连得上 ≠ shell 可执行（adbd exec 失败、offline 都要判 L0）
+            _, alive_out = _run(["-s", address, "shell", _SHELL_PROBE], timeout)
+            shell_ok = "__TRES_SHELL_OK__" in alive_out
+            if not shell_ok:
+                # 并发扫描下首次可能被饿死，放宽超时补一次
+                _, alive_out = _run(
+                    ["-s", address, "shell", _SHELL_PROBE], max(timeout + 2, 8)
+                )
+                shell_ok = "__TRES_SHELL_OK__" in alive_out
+            if not shell_ok:
+                logger.info("real probe shell dead %s: %s", address, alive_out[:120])
+
+            # 3) 逐个读文件（每条命令都带 timeout；文件不存在时 stdout 为空 -> 跳过）
             _, pn_out = _run(["-s", address, "shell", "cat /etc/product_name"], timeout)
             product_name = _first_token(pn_out)
             # 并发扫描下首次读取可能被饿死，空结果时补一次（放宽超时）。
@@ -218,26 +248,29 @@ class RealXosProber:
         finally:
             _run(["disconnect", address], timeout)
 
-        # 固定 mac：eth0 优先（非 fe:），否则 wlan0（非 fe:），否则 None
+        # 固定 mac：eth0 优先，否则 wlan0，都没有则 None（fe: 前缀不再排除）
         if _is_fixed(eth_mac):
-            fixed_mac = eth_mac
+            fixed_mac, mac_source = eth_mac, "eth0"
         elif _is_fixed(wlan_mac):
-            fixed_mac = wlan_mac
+            fixed_mac, mac_source = wlan_mac, "wlan0"
         else:
-            fixed_mac = None
+            fixed_mac, mac_source = None, None
 
-        level = HealthLevel.L3 if (product_name and fixed_mac) else HealthLevel.L0
+        # v0.28.2：判据只看「adb 连得上 + shell 能执行」；元数据缺失不影响入池
+        level = HealthLevel.L3 if shell_ok else HealthLevel.L0
         return self._result(
             ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
             storage_type, has_wifi, board_dt, firmware_version,
-            features, cpu_part, cpu_implementer, has_fpu,
+            features, cpu_part, cpu_implementer, has_fpu, shell_ok=shell_ok,
+            mac_source=mac_source,
         )
 
     @staticmethod
     def _result(
         ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
         storage_type, has_wifi, board_dt, firmware_version,
-        features=None, cpu_part=None, cpu_implementer=None, has_fpu=False,
+        features=None, cpu_part=None, cpu_implementer=None, has_fpu=False, shell_ok=False,
+        mac_source=None,
     ):
         return ProbeResult(
             level=level,
@@ -253,6 +286,9 @@ class RealXosProber:
                 "eth_mac": eth_mac,
                 "wlan_mac": wlan_mac,
                 "fixed_mac": fixed_mac,
+                "mac_source": mac_source,
+                "mac_is_local_admin": bool(fixed_mac) and fixed_mac.lower().startswith("fe:"),
+                "shell_ok": shell_ok,
                 "storage_type": storage_type,
                 "has_wifi": has_wifi,
                 "board_dt": board_dt,

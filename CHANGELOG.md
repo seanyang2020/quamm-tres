@@ -3,6 +3,25 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.28.2] - 2026-11-09
+
+### 变更：入池口径改为「ADB 连得上、shell 能执行即 L3」
+- 旧口径 `L3 = product_name 且 固定 MAC`，导致 esl2 一类设备永久 L0：这类设备只有
+  wlan0、没有 eth0，地址是 `fe:` 开头的 local-admin 位，被 `_is_fixed` 一刀切排除，
+  即使 `adb shell` 完全可用也进不了可用池。
+- 新口径：connect 成功后先跑一条活性探针 `echo __TRES_SHELL_OK__`（首次失败放宽超时重试
+  一次），探针回显即判 L3。`product_name` / MAC / 固件版本 / 芯片能力降级为「有则采集」
+  的元数据，不再作为入池门槛。
+- 仍判 L0 的三种情况：connect 失败、`adb: device offline`（握手不成）、shell 起不来
+  （`adbd: exec '/bin/sh' failed`，如 rootfs 损坏）。
+- `_is_fixed` 不再排除 `fe:` 前缀：实测 esl2 的 `fe:47:b5:cd:b5:0d`、`fe:0f:e2:1e:1c:5f`
+  跨多次 connect/disconnect 读取完全一致，属烧录固定地址；仅排除全零地址。
+  `extra` 新增 `shell_ok` / `mac_source`（eth0/wlan0）/ `mac_is_local_admin` 便于排错。
+- 测试：新增 `tests/test_prober_l3.py` 7 项（shell 活无元数据仍 L3、shell 死 L0、connect
+  失败 L0、`fe:` MAC 采信、全零 MAC 排除、eth0 优先），全部通过。
+
+> 口径确认：临时 IP / MAC 不做处理，也不因同 IP 登记做去重或注销——设备只要能连上就入池。
+
 ## [0.28.1] - 2026-11-09
 
 ### 修正：手动探测结果立即生效（探不到即降级为不可用）
