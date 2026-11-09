@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const pages = [
@@ -30,8 +30,11 @@ const dashboard = ref(null)
 const devices = ref([])
 // v0.17：设备按机型分组 + 关键字搜索 / 机型筛选
 const deviceSearch = ref('')
-const selectedDeviceType = ref(null)
+const ALL_DEVICES = '__all__'       // 概况「全部设备」明细的特殊标识，不是真实机型
+const selectedDeviceType = ref(null) // null=概况、'__all__'=全部设备、其它=具体机型
 const detailStatusTab = ref('all')
+const detailPage = ref(1)
+const detailPageSize = ref(25)
 // v0.23 截图预览 / v0.24 截图生命周期（元数据、重新截图、历史、存储管理）
 const screenshotVisible = ref(false)
 const screenshotUrl = ref('')
@@ -73,8 +76,25 @@ const deviceOverview = computed(() => {
     pending: list.filter((d) => d.status === 'pending').length,
   })).sort((a, b) => a.type.localeCompare(b.type))
 })
-const detailDevices = computed(() => {
-  let list = classifiedDevices.value.filter((d) => d.model_class === selectedDeviceType.value)
+// 当前明细的原始集合（不含状态与搜索过滤），用于 tab 计数
+const detailBaseDevices = computed(() => {
+  if (selectedDeviceType.value === ALL_DEVICES) return classifiedDevices.value
+  return classifiedDevices.value.filter((d) => d.model_class === selectedDeviceType.value)
+})
+// 状态 tab 计数基于原始集合，与搜索无关
+const detailCounts = computed(() => {
+  const list = detailBaseDevices.value
+  return {
+    all: list.length,
+    occupied: list.filter((d) => d.status === 'occupied').length,
+    available: list.filter((d) => d.status === 'available').length,
+    offline: list.filter((d) => d.status === 'offline').length,
+    pending: list.filter((d) => d.status === 'pending').length,
+  }
+})
+// 状态 + 搜索过滤后的完整列表（分页前）
+const detailFilteredDevices = computed(() => {
+  let list = detailBaseDevices.value
   if (detailStatusTab.value !== 'all') list = list.filter((d) => d.status === detailStatusTab.value)
   const kw = deviceSearch.value.trim().toLowerCase()
   if (kw) {
@@ -85,11 +105,30 @@ const detailDevices = computed(() => {
   }
   return list
 })
-function openDeviceType(type) {
+// 当前页数据
+const detailDevices = computed(() => {
+  const start = (detailPage.value - 1) * detailPageSize.value
+  return detailFilteredDevices.value.slice(start, start + detailPageSize.value)
+})
+const detailTitle = computed(() => selectedDeviceType.value === ALL_DEVICES ? '全部设备' : selectedDeviceType.value)
+const detailRangeStart = computed(() => detailFilteredDevices.value.length === 0 ? 0 : (detailPage.value - 1) * detailPageSize.value + 1)
+const detailRangeEnd = computed(() => Math.min(detailPage.value * detailPageSize.value, detailFilteredDevices.value.length))
+
+// 切换品类 / 状态 / 搜索时回到第 1 页
+watch([selectedDeviceType, detailStatusTab, deviceSearch], () => { detailPage.value = 1 })
+// 每页条数变化时保留筛选，仅把页码收敛到有效范围
+watch([detailPageSize, () => detailFilteredDevices.value.length], () => {
+  const maxPage = Math.max(1, Math.ceil(detailFilteredDevices.value.length / detailPageSize.value))
+  if (detailPage.value > maxPage) detailPage.value = maxPage
+})
+function openDeviceDetail(type, status = 'all') {
   selectedDeviceType.value = type
-  detailStatusTab.value = 'all'
+  detailStatusTab.value = status
   deviceSearch.value = ''
+  detailPage.value = 1
 }
+function openDeviceType(type) { openDeviceDetail(type, 'all') }
+function openOverviewStat(status) { openDeviceDetail(ALL_DEVICES, status) }
 function backToOverview() { selectedDeviceType.value = null }
 
 const leases = ref([])
@@ -477,6 +516,8 @@ function goDevices() {
   active.value = 'devices'
   selectedDeviceType.value = null
   deviceSearch.value = ''
+  detailStatusTab.value = 'all'
+  detailPage.value = 1
 }
 async function loadLeases() { leases.value = await api('/api/leases') }
 async function loadCredentials() { credentials.value = await api('/api/credentials') }
@@ -1171,31 +1212,31 @@ const legendRole = [
 
           <el-row :gutter="12" style="margin: 14px 0">
             <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card">
-                <div class="ov-label">全部设备</div>
+              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('all')">
+                <div class="ov-label">设备总数</div>
                 <div class="ov-num">{{ deviceTotals.total }}</div>
               </el-card>
             </el-col>
             <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card">
+              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('available')">
                 <div class="ov-label">可用</div>
                 <div class="ov-num" style="color: #67c23a">{{ deviceTotals.available }}</div>
               </el-card>
             </el-col>
             <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card">
+              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('occupied')">
                 <div class="ov-label">占用</div>
                 <div class="ov-num" style="color: #e6a23c">{{ deviceTotals.occupied }}</div>
               </el-card>
             </el-col>
             <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card">
+              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('offline')">
                 <div class="ov-label">离线</div>
                 <div class="ov-num" style="color: #f56c6c">{{ deviceTotals.offline }}</div>
               </el-card>
             </el-col>
             <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card">
+              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('pending')">
                 <div class="ov-label">待检</div>
                 <div class="ov-num" style="color: #909399">{{ deviceTotals.pending }}</div>
               </el-card>
@@ -1226,28 +1267,33 @@ const legendRole = [
         <div v-else>
           <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap">
             <el-button size="small" @click="backToOverview">返回概况</el-button>
-            <h2 style="margin: 0">{{ selectedDeviceType }}</h2>
+            <h2 style="margin: 0">{{ detailTitle }}</h2>
+            <el-tag size="small" type="info">共 {{ detailCounts.all }} 台</el-tag>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 10px 0">
             <el-tabs v-model="detailStatusTab" style="flex: 1; min-width: 280px">
-              <el-tab-pane label="全部" name="all" />
-              <el-tab-pane label="占用" name="occupied" />
-              <el-tab-pane label="可用" name="available" />
-              <el-tab-pane label="离线" name="offline" />
-              <el-tab-pane label="待检" name="pending" />
+              <el-tab-pane :label="'全部(' + detailCounts.all + ')'" name="all" />
+              <el-tab-pane :label="'占用(' + detailCounts.occupied + ')'" name="occupied" />
+              <el-tab-pane :label="'可用(' + detailCounts.available + ')'" name="available" />
+              <el-tab-pane :label="'离线(' + detailCounts.offline + ')'" name="offline" />
+              <el-tab-pane :label="'待检(' + detailCounts.pending + ')'" name="pending" />
             </el-tabs>
-            <el-input v-model="deviceSearch" placeholder="搜索 ID / 名称 / 位置 / 责任人 / ADB" clearable style="width: 280px" />
+            <div style="display: flex; align-items: center; gap: 8px">
+              <el-input v-model="deviceSearch" placeholder="搜索 ID / 名称 / 位置 / 责任人 / ADB" clearable style="width: 280px" />
+              <span v-if="deviceSearch.trim()" class="search-match">匹配 {{ detailFilteredDevices.length }} 台</span>
+            </div>
           </div>
-          <el-table :data="detailDevices" border size="small" class="device-table">
-            <el-table-column prop="device_id" label="ID" min-width="95" show-overflow-tooltip />
-            <el-table-column prop="display_name" label="名称" min-width="90" show-overflow-tooltip />
-            <el-table-column prop="position_code" label="位置" min-width="70" show-overflow-tooltip />
-            <el-table-column prop="owner" label="责任人" min-width="70" show-overflow-tooltip />
-            <el-table-column prop="register_agent" label="Agent" min-width="90" show-overflow-tooltip>
+          <div class="device-table-wrap">
+          <el-table :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1180px">
+            <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip />
+            <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip />
+            <el-table-column prop="position_code" label="位置" width="85" show-overflow-tooltip />
+            <el-table-column prop="owner" label="责任人" width="85" show-overflow-tooltip />
+            <el-table-column prop="register_agent" label="Agent" width="115" show-overflow-tooltip>
               <template #default="{ row }">{{ row.register_agent || '-' }}</template>
             </el-table-column>
-            <el-table-column prop="health_level" label="健康" min-width="45" />
-            <el-table-column label="状态" min-width="75">
+            <el-table-column prop="health_level" label="健康" width="55" />
+            <el-table-column label="状态" width="110">
               <template #default="{ row }">
                 <el-tag size="small" :type="statusTag[row.status] || 'info'">{{ row.status }}</el-tag>
                 <el-tooltip v-if="row.locked" :content="'已锁定' + (row.locked_reason ? '：' + row.locked_reason : '') + (row.locked_by ? '（' + row.locked_by + '）' : '')" placement="top">
@@ -1255,16 +1301,16 @@ const legendRole = [
                 </el-tooltip>
               </template>
             </el-table-column>
-            <el-table-column label="占用者" min-width="120" show-overflow-tooltip>
+            <el-table-column label="占用者" width="135" show-overflow-tooltip>
               <template #default="{ row }">
                 <span v-if="row.holder_email">{{ row.holder_email }}</span>
                 <span v-else style="color: #c0c4cc">-</span>
               </template>
             </el-table-column>
-            <el-table-column prop="adb_address" label="ADB" min-width="110" show-overflow-tooltip>
+            <el-table-column prop="adb_address" label="ADB" width="135" show-overflow-tooltip>
               <template #default="{ row }"><span class="mono">{{ row.adb_address }}</span></template>
             </el-table-column>
-            <el-table-column label="共享" min-width="80">
+            <el-table-column label="共享" width="90">
               <template #default="{ row }">
                 <el-tooltip v-if="row.share_scope === 'restricted'"
                   :content="(row.allowed_emails || []).concat(row.allowed_agent_labels || []).join('，') || '受限'" placement="top">
@@ -1274,7 +1320,7 @@ const legendRole = [
                 <el-tag v-else size="small" type="success">公共</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="200" fixed="right">
+            <el-table-column label="操作" width="235">
               <template #default="{ row }">
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
@@ -1283,7 +1329,19 @@ const legendRole = [
               </template>
             </el-table-column>
           </el-table>
-          <el-empty v-if="!detailDevices.length" description="该状态下没有设备" />
+          </div>
+          <el-empty v-if="!detailFilteredDevices.length" description="该状态下没有设备" />
+          <div v-if="detailFilteredDevices.length" class="detail-pager">
+            <span class="detail-range">共 {{ detailFilteredDevices.length }} 台，第 {{ detailRangeStart }}-{{ detailRangeEnd }} 台</span>
+            <el-pagination
+              v-model:current-page="detailPage"
+              v-model:page-size="detailPageSize"
+              :page-sizes="[25, 50, 100]"
+              :total="detailFilteredDevices.length"
+              layout="sizes, prev, pager, next, jumper"
+              background
+            />
+          </div>
         </div>
       </div>
 
@@ -2176,14 +2234,20 @@ const legendRole = [
 .dash-num { font-size: 28px; line-height: 1.2; }
 .version-foot { padding: 8px 16px; font-size: 11px; color: #b0b3b8; text-align: center; user-select: none; }
 .title-version { margin-left: 6px; font-size: 11px; font-weight: 400; color: #909399; }
+.ov-card { cursor: pointer; transition: box-shadow .2s, border-color .2s, transform .2s; }
+.ov-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); border-color: #409eff; transform: translateY(-2px); }
 .ov-card :deep(.el-card__body) { padding: 16px; }
 .ov-label { color: #606266; font-size: 14px; }
 .ov-num { font-size: 30px; line-height: 1.2; margin-top: 6px; font-weight: 600; }
-.cat-card { cursor: pointer; transition: box-shadow .2s, transform .2s; }
-.cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); transform: translateY(-2px); }
+.cat-card { cursor: pointer; transition: box-shadow .2s, border-color .2s, transform .2s; }
+.cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); border-color: #409eff; transform: translateY(-2px); }
+.search-match { color: #409eff; font-size: 13px; white-space: nowrap; }
+.detail-pager { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+.detail-range { color: #909399; font-size: 13px; }
 .shot-download { display: inline-block; text-decoration: none; }
 .shot-preview { width: 100%; height: 52vh; display: block; }
 .device-table { font-size: 12px; }
+.device-table-wrap { width: 100%; overflow-x: auto; }
 .device-table :deep(.el-table__cell) { padding: 3px 0; }
 .device-table :deep(.cell) { font-size: 12px; line-height: 1.4; padding-left: 6px; padding-right: 6px; }
 .device-table :deep(.el-table__header .cell) { font-size: 12px; font-weight: 600; }
