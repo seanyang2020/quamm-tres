@@ -12,10 +12,12 @@ import threading
 from datetime import timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
+from fastapi.responses import FileResponse
+from pathlib import Path
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app import mailer, web_auth
+from app import mailer, screenshot, web_auth
 from app.config import settings
 from app.constants import (
     PENDING_CLEANUP_DAYS,
@@ -293,7 +295,7 @@ def web_device_probe(
             port=port,
             hint_model=(str(payload.get("hint_model") or "").strip() or None),
             hint_position=(str(payload.get("hint_position") or "").strip() or None),
-            source=(str(payload.get("source") or "").strip() or None),
+            source=(str(payload.get("source") or "").strip() or "real"),
             agent_info="web-console",
         )
     except catalog.DomainError as e:
@@ -348,6 +350,49 @@ def web_device_discover(
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------- 设备截图（v0.23，管理员） ----------
+
+@router.post("/devices/{device_id}/screenshot")
+def device_screenshot(
+    device_id: str,
+    payload: dict | None = Body(None),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """管理员对设备截图并保存到服务器；返回文件路径与元数据（cookie 鉴权）。"""
+    body = payload or {}
+    try:
+        quality = int(body.get("quality") or 60)
+        rotate = int(body.get("rotate") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="quality/rotate 须为整数")
+    try:
+        return screenshot.capture_screenshot(
+            device_id=device_id, quality=quality, rotate=rotate, session=session
+        )
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.get("/screenshots/{file_name}")
+def get_screenshot(
+    file_name: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+):
+    """读取已生成的截图（FileResponse，按文件名严格校验，防路径穿越）。"""
+    # 只接受 <device>_<UTC时间戳>.jpg：白名单正则 + basename 一致 + 目录包含校验三层。
+    if (
+        not screenshot._SAFE_FILENAME_RE.fullmatch(file_name)
+        or Path(file_name).name != file_name
+    ):
+        raise HTTPException(status_code=400, detail="非法文件名")
+    base = screenshot.SCREENSHOT_DIR.resolve()
+    target = (base / file_name).resolve()
+    if target.parent != base or not target.is_file():
+        raise HTTPException(status_code=404, detail="截图不存在")
+    return FileResponse(str(target), media_type="image/jpeg")
 
 
 @router.get("/feedback")
@@ -818,6 +863,16 @@ def update_product_type(
         if field in payload:
             value = payload[field]
             setattr(pt, field, (str(value).strip() if value is not None else None) or None)
+    # v0.23：芯片/浮点能力（float_abi 仅 hard/soft/auto；不强制、允许留空）。
+    if "chip_model" in payload:
+        value = payload["chip_model"]
+        pt.chip_model = (str(value).strip() if value is not None else None) or None
+    if "float_abi" in payload:
+        value = str(payload["float_abi"] or "auto").strip().lower()
+        pt.float_abi = value if value in ("hard", "soft", "auto") else "auto"
+    if "has_fpu" in payload:
+        value = payload["has_fpu"]
+        pt.has_fpu = value if isinstance(value, bool) else str(value or "").strip().lower() in ("1", "true", "yes", "on")
     # v0.13：支持「停用 / 重新启用」同一入口（bool 或 "true"/"false" 字符串都兼容）。
     if "enabled" in payload:
         value = payload["enabled"]
@@ -842,6 +897,11 @@ def add_product_type(
         raise HTTPException(status_code=400, detail="type_code 必填")
     if session.get(ProductType, code) is not None:
         raise HTTPException(status_code=409, detail=f"机型 {code} 已存在")
+    fa = str(payload.get("float_abi") or "auto").strip().lower()
+    fa = fa if fa in ("hard", "soft", "auto") else "auto"
+    hf = payload.get("has_fpu")
+    has_fpu = hf if isinstance(hf, bool) else str(hf or "").strip().lower() in ("1", "true", "yes", "on")
+    chip_model = payload.get("chip_model")
     pt = ProductType(
         type_code=code,
         display_name=payload.get("display_name") or code,
@@ -851,6 +911,9 @@ def add_product_type(
         adb_port=int(payload.get("adb_port") or 5555),
         enabled=True,
         model_pattern=payload.get("model_pattern"),
+        chip_model=(str(chip_model).strip() or None) if chip_model is not None else None,
+        float_abi=fa,
+        has_fpu=has_fpu,
         created_at=utcnow(),
     )
     session.add(pt)

@@ -36,6 +36,10 @@ PACKAGE_RE = re.compile(r"CURRENT[^\s]*\.tar\.gz$", re.IGNORECASE)
 _HREF_RE = re.compile(r'href="([^"]+)"')
 WORK_ROOT = Path(__file__).resolve().parent.parent / "var" / "db_source"
 
+# v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
+# 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
+XOSADB2UPDATE_PATH = "/home/scm/bin/xosadb2update"
+
 
 # ---------------- 路径智能适配 ----------------
 
@@ -242,7 +246,11 @@ def extract_and_find_ini(package_path: str, keep: bool = False) -> dict:
 
 def upgrade(ip: str, script_ini: str, update_args: str = "-f -a -e data",
             timeout: int = 600) -> dict:
-    xosadb2update = shutil.which("xosadb2update") or "/home/scm/bin/xosadb2update"
+    xosadb2update = (
+        os.environ.get("XOSADB2UPDATE_PATH")
+        or shutil.which("xosadb2update")
+        or XOSADB2UPDATE_PATH
+    )
     cmd = [xosadb2update, *update_args.split(), "-i", ip, script_ini]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)

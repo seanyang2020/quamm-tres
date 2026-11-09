@@ -26,11 +26,47 @@ COMPLETE_FIELDS = ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path")
 METADATA_FIELDS = (
     "defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes",
 )
+# v0.23：芯片/浮点能力（不纳入「完整度」判定，允许信息不全，不阻塞注册）。
+CHIP_FIELDS = ("chip_model", "float_abi", "has_fpu")
+
+# 已知 ARM CPU part -> 主芯片型号（探测自动回填 chip_model 用，best-effort）。
+_CPU_PART_MODELS = {
+    "0xc07": "Cortex-A7",
+    "0xc09": "Cortex-A9",
+    "0xc0f": "Cortex-A15",
+    "0xd03": "Cortex-A53",
+    "0xd07": "Cortex-A57",
+    "0xd08": "Cortex-A72",
+}
 
 
 def product_complete(pt: ProductType) -> bool:
     """工程配置/SDK 获取/编译命令/镜像路径四列都非空 = complete。"""
     return all((getattr(pt, f, None) or "").strip() for f in COMPLETE_FIELDS)
+
+
+def _backfill_product_chip(session, type_code: str | None, extra: dict | None) -> None:
+    """v0.23：注册时若探测读到了 /proc/cpuinfo，自动回填机型芯片/浮点字段。
+
+    只补空/auto 值，不覆盖人工设定；探测不到（mock / L0）直接跳过，不阻塞注册。
+    不在此单独 commit：由 device_register 末尾统一 commit。
+    """
+    features = (extra or {}).get("features")
+    if not type_code or type_code == "unknown_model" or features is None:
+        return
+    pt = session.get(ProductType, type_code)
+    if pt is None:
+        return
+    has_fpu = any(t.startswith("vfp") or t == "neon" for t in features.lower().split())
+    if has_fpu and not getattr(pt, "has_fpu", False):
+        pt.has_fpu = True                       # 只升级 True，不把默认 False 当「无 FPU」写回
+    cur = (getattr(pt, "float_abi", None) or "auto").strip().lower()
+    if cur not in ("hard", "soft"):
+        pt.float_abi = "hard" if has_fpu else "soft"
+    if not (getattr(pt, "chip_model", None) or "").strip():
+        part = ((extra or {}).get("cpu_part") or "").lower()
+        if part in _CPU_PART_MODELS:
+            pt.chip_model = _CPU_PART_MODELS[part]
 
 
 class DomainError(Exception):
@@ -173,6 +209,8 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
         }
         for f in METADATA_FIELDS:
             row[f] = getattr(p, f, None)
+        for f in CHIP_FIELDS:
+            row[f] = getattr(p, f, None)
         result.append(row)
     return result
 
@@ -291,9 +329,11 @@ def device_probe(
     hint_position: str | None = None,
     source: str | None = None,
     agent_info: str | None = None,
+    timeout: int | None = None,
 ) -> dict:
     # source 为空时沿用全局后端；给出时按来源分流（real=真实 XOS ADB）。
-    result = probe_device(ip, port or 5555, timeout=settings.probe_timeout_seconds, source=source)
+    probe_timeout = timeout or settings.probe_timeout_seconds
+    result = probe_device(ip, port or 5555, timeout=probe_timeout, source=source)
     probe = {
         "ip": ip,
         "adb_port": port,
@@ -304,6 +344,7 @@ def device_probe(
         "android_version": result.android_version,
         "build_fingerprint": result.build_fingerprint,
         "asset_tag": result.asset_tag,
+        "extra": result.extra or {},
     }
 
     # 同 IP 幂等：30 分钟内重复 probe 返回同一个 form
@@ -467,6 +508,8 @@ def device_register(
         device.status = DeviceStatus.PENDING
 
     device.last_probe_at = now
+    # v0.23：探测得到芯片/浮点信息时自动回填机型字典（best-effort，不阻塞注册）。
+    _backfill_product_chip(session, final_model, probe.get("extra") or {})
     audit.record(
         session,
         actor=actor_email,

@@ -32,6 +32,11 @@ const devices = ref([])
 const deviceSearch = ref('')
 const selectedDeviceType = ref(null)
 const detailStatusTab = ref('all')
+// v0.23 设备截图预览
+const screenshotVisible = ref(false)
+const screenshotUrl = ref('')
+const screenshotMeta = ref(null)
+const screenshotBusy = ref('')
 const classifiedDevices = computed(() => devices.value.filter((d) => d.model_class))
 const deviceTotals = computed(() => {
   const list = classifiedDevices.value
@@ -222,7 +227,7 @@ async function submitDeviceRegister() {
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
-const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '' })
+const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false })
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
@@ -234,6 +239,7 @@ const ptCreateSaving = ref(false)
 const ptCreateRow = ref({
   type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
   defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+  chip_model: '', float_abi: 'auto', has_fpu: false,
 })
 const ptCreateRules = computed(() => {
   const req = { required: true, message: '该字段默认必填（可勾选底部「允许不完整」放开）', trigger: 'blur' }
@@ -266,6 +272,24 @@ async function api(path, opts) {
 async function loadDashboard() { dashboard.value = await api('/api/dashboard') }
 async function loadDevices() {
   devices.value = await api('/api/devices')
+}
+// v0.23：管理员对设备截图，成功后用 el-image 弹窗预览
+async function takeScreenshot(row) {
+  screenshotBusy.value = row.device_id
+  try {
+    const r = await api('/api/devices/' + encodeURIComponent(row.device_id) + '/screenshot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quality: 60, rotate: 0 }),
+    })
+    screenshotUrl.value = API_BASE + '/api/screenshots/' + encodeURIComponent(r.file_name)
+    screenshotMeta.value = r
+    screenshotVisible.value = true
+    ElMessage.success('截图成功：' + r.file_name)
+  } catch (e) {
+    ElMessage.error(e.message || '截图失败')
+  } finally {
+    screenshotBusy.value = ''
+  }
 }
 function goDevices() {
   active.value = 'devices'
@@ -656,6 +680,7 @@ function openPtEdit(row) {
     defconfig: row.defconfig || '', sdk_repo_cmd: row.sdk_repo_cmd || '',
     build_cmd: row.build_cmd || '', image_path: row.image_path || '',
     jenkins_url: row.jenkins_url || '', notes: row.notes || '',
+    chip_model: row.chip_model || '', float_abi: row.float_abi || 'auto', has_fpu: !!row.has_fpu,
   }
   ptEditDialog.value = true
 }
@@ -667,6 +692,8 @@ async function savePtEdit() {
         defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
         jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
+        chip_model: ptEditRow.value.chip_model, float_abi: ptEditRow.value.float_abi,
+        has_fpu: ptEditRow.value.has_fpu,
       }),
     })
     ElMessage.success('已保存（' + r.complete_label + '）')
@@ -690,6 +717,7 @@ function resetPtCreate() {
   ptCreateRow.value = {
     type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
     defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+    chip_model: '', float_abi: 'auto', has_fpu: false,
   }
   ptAllowIncomplete.value = false
   ptCreateForm.value?.clearValidate?.()
@@ -722,6 +750,7 @@ async function submitPtCreate() {
       body: JSON.stringify({
         defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
         image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+        chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
       }),
     })
     ElMessage.success('已新增机型 ' + code)
@@ -946,6 +975,11 @@ const legendRole = [
               </template>
             </el-table-column>
             <el-table-column prop="adb_address" label="ADB 地址" width="160" />
+            <el-table-column v-if="me.role === 'admin'" label="操作" width="90" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
+              </template>
+            </el-table-column>
           </el-table>
           <el-empty v-if="!detailDevices.length" description="该状态下没有设备" />
         </div>
@@ -1249,7 +1283,7 @@ const legendRole = [
 
           <el-tab-pane label="设备类型" name="product-types">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
-              <h3 style="margin: 0">设备类型元数据（defconfig / SDK 获取 / 编译 / 镜像 / Jenkins / 备注）</h3>
+              <h3 style="margin: 0">设备类型元数据（defconfig / SDK / 编译 / 镜像 / Jenkins / 芯片·浮点 / 备注）</h3>
               <el-button v-if="me.role === 'admin'" type="primary" @click="openPtCreate">新增机型</el-button>
             </div>
             <p style="color: #909399">新增机型时 5 个工程字段默认必填；勾选「允许不完整（仅测试）」可放开。无引用时可物理删除（需二次确认）。</p>
@@ -1259,6 +1293,9 @@ const legendRole = [
               <el-table-column prop="defconfig" label="defconfig" width="200" show-overflow-tooltip />
               <el-table-column label="完整度" width="110">
                 <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'warning'">{{ row.complete_label }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="芯片 / 浮点" width="180">
+                <template #default="{ row }">{{ row.chip_model || '-' }} · {{ row.float_abi || 'auto' }}{{ row.has_fpu ? ' (FPU)' : '' }}</template>
               </el-table-column>
               <el-table-column label="操作" width="260">
                 <template #default="{ row }">
@@ -1417,6 +1454,15 @@ const legendRole = [
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接"><el-input v-model="ptEditRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="ptEditRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
+            <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
+            <el-form-item label="浮点 ABI">
+              <el-select v-model="ptEditRow.float_abi" style="width: 100%">
+                <el-option label="auto（探测自动判定）" value="auto" />
+                <el-option label="hard（硬浮点 / vxosdbg）" value="hard" />
+                <el-option label="soft（软浮点 / xosdbg）" value="soft" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="硬件 FPU"><el-switch v-model="ptEditRow.has_fpu" /></el-form-item>
           </el-form>
           <template #footer><el-button @click="ptEditDialog = false">取消</el-button><el-button type="primary" @click="savePtEdit">保存</el-button></template>
         </el-dialog>
@@ -1434,6 +1480,15 @@ const legendRole = [
             <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="备注"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
+            <el-form-item label="主芯片型号"><el-input v-model="ptCreateRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
+            <el-form-item label="浮点 ABI">
+              <el-select v-model="ptCreateRow.float_abi" style="width: 100%">
+                <el-option label="auto（探测自动判定）" value="auto" />
+                <el-option label="hard（硬浮点 / vxosdbg）" value="hard" />
+                <el-option label="soft（软浮点 / xosdbg）" value="soft" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>
             <el-form-item>
               <el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox>
             </el-form-item>
@@ -1442,6 +1497,16 @@ const legendRole = [
             <el-button @click="ptCreateDialog = false">取消</el-button>
             <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">新增</el-button>
           </template>
+        </el-dialog>
+
+        <!-- v0.23 设备截图预览 -->
+        <el-dialog v-model="screenshotVisible" title="设备截图" width="520px">
+          <div v-if="screenshotMeta" style="margin-bottom: 8px; color: #606266; font-size: 12px">
+            {{ screenshotMeta.device_id || screenshotMeta.ip }} · {{ screenshotMeta.float_abi }} / {{ screenshotMeta.bin }} · {{ screenshotMeta.bytes }} bytes
+          </div>
+          <el-image v-if="screenshotUrl" :src="screenshotUrl" fit="contain"
+                    style="width: 100%; max-height: 60vh" :preview-src-list="[screenshotUrl]" />
+          <template #footer><el-button type="primary" @click="screenshotVisible = false">关闭</el-button></template>
         </el-dialog>
       </div>
 
@@ -1485,8 +1550,29 @@ const legendRole = [
               <el-table-column label="机型" width="130">
                 <template #default="{ row }">{{ row.probe?.model || '-' }}</template>
               </el-table-column>
-              <el-table-column label="MAC">
+              <el-table-column label="MAC" width="150">
                 <template #default="{ row }">{{ row.mac || row.probe?.mac || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="其他信息" width="100">
+                <template #default="{ row }">
+                  <el-popover placement="left" :width="260" trigger="click">
+                    <template #reference>
+                      <el-button size="small" link type="primary">查看详情</el-button>
+                    </template>
+                    <div v-if="row.error" style="color: #f56c6c; margin-bottom: 6px">探测异常：{{ row.error }}</div>
+                    <el-descriptions v-if="row.other_info" :column="1" size="small" border>
+                      <el-descriptions-item label="健康等级">{{ row.other_info.level || '-' }}</el-descriptions-item>
+                      <el-descriptions-item label="产品名">{{ row.other_info.product_name || '-' }}</el-descriptions-item>
+                      <el-descriptions-item label="固件版本">{{ row.other_info.firmware || '-' }}</el-descriptions-item>
+                      <el-descriptions-item label="有线MAC">{{ row.other_info.eth_mac || '-' }}</el-descriptions-item>
+                      <el-descriptions-item label="无线MAC">{{ row.other_info.wlan_mac || '-' }}</el-descriptions-item>
+                      <el-descriptions-item label="存储类型">{{ row.other_info.storage || '-' }}</el-descriptions-item>
+                      <el-descriptions-item label="带WiFi">{{ row.other_info.has_wifi ? '是' : '否' }}</el-descriptions-item>
+                      <el-descriptions-item label="板级兼容">{{ row.other_info.board || '-' }}</el-descriptions-item>
+                    </el-descriptions>
+                    <div v-else>暂无更多探测信息</div>
+                  </el-popover>
+                </template>
               </el-table-column>
               <el-table-column label="状态" width="90">
                 <template #default="{ row }">

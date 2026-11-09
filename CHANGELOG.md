@@ -3,6 +3,39 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.23.0] - 2026-11-09
+
+### 新增
+- 设备截图 + 芯片/浮点能力，经 MCP 释放：
+  - `app/vendor/xosdbg`（软浮点 eabi，无 FPU 机型）/ `app/vendor/vxosdbg`
+    （硬浮点 eabihf，带 VFP 机型）两个静态 ARM 二进制入库，保持可执行
+  - 新 `app/screenshot.py`（标准库 + subprocess）：GNU `timeout` + subprocess 双保险，
+    绝不无限挂起；浮点 ABI 三级判定——① 机型配置 float_abi/has_fpu →
+    ② adb 读 `/proc/cpuinfo` Features（含 vfp/neon 即硬浮点）→ ③ 运行时兜底
+    （分别 push 后执行 `--version`，挑可正常运行的二进制）；带截图时 ABI 不匹配自动换另一个
+  - 流程：connect → 选二进制 → push `/data/xosdbg`（不可写/空间不足自动退 `/tmp/xosdbg`）
+    → chmod → `xosscreen -s` 生成设备端 jpg → pull 到 `app/var/screenshots/<device>_<UTC>.jpg`
+    → 校验 JPEG → 清理设备端临时文件（best-effort）
+  - `prober_real.py` 探测额外读 `/proc/cpuinfo`，把 features / cpu_part /
+    cpu_implementer / has_fpu 放入 `ProbeResult.extra`
+  - `ProductType` 增 chip_model / float_abi(hard/soft/auto,默认 auto) / has_fpu(默认 0)，
+    `models.py` + `migrations.py` inspect 判列幂等 ALTER；品类注册/编辑可填写，
+    注册时从探测结果自动回填（只补空/auto，不覆盖人工设定，不阻塞注册）
+  - MCP 新增 `res_screenshot`（30→31 工具，require_auth，DomainError 转 error）
+  - REST 新增管理员 `POST /api/devices/{device_id}/screenshot`（cookie 鉴权）与
+    `GET /api/screenshots/{file_name}`（FileResponse，白名单正则 + basename + 目录包含
+    三层校验防路径穿越）
+  - 前端设备表操作列加「截图」按钮（admin），成功后 el-image 弹窗预览；
+    设备类型编辑/新增表单加芯片·浮点字段
+  - `db_source.py`：xosadb2update 路径做成可配置常量 `XOSADB2UPDATE_PATH`
+    （env 可覆盖），确认默认 `/home/scm/bin/xosadb2update` 存在且默认 `update_args`
+    仍为 `-f -a -e data`（保留 data 区，不升级 data 区）
+
+### 验证
+- 对 172.16.10.246（qm10xv_full，硬浮点）截图成功：cpuinfo 判 hard → vxosdbg，
+  `-s` 抓图 + pull 回主机 JPEG（SOI/EOI 可打开）；`scripts/verify_screenshot.py`
+- 前端 `web/` `npm run build` 通过；`pytest tests/ -q` 全量回归通过
+
 ## [0.22.0] - 2026-11-09
 
 ### 变更

@@ -11,6 +11,9 @@ Quamm XOS 是精简嵌入式 Linux，**不是标准 Android，没有 getprop 命
 wlan0；否则为 None。``fe:``（本地管理 / 随机化）地址不能当设备主键。
 
 所有 adb 命令同时用 GNU ``timeout`` 与 subprocess 超时双重包裹，绝不无限挂起。
+
+v0.23：额外读 ``/proc/cpuinfo``，把 features / cpu_part / cpu_implementer /
+has_fpu（Features 含 vfp/neon）放进 ``ProbeResult.extra``，供设备截图选浮点 ABI。
 """
 from __future__ import annotations
 
@@ -22,28 +25,32 @@ from app.constants import HealthLevel
 
 logger = logging.getLogger(__name__)
 
-ADB_TIMEOUT = 3  # 单条 adb 命令最长 3s（connect / shell / disconnect 统一口径）
+ADB_TIMEOUT = 5  # 单条 adb 命令默认超时（对齐 adbscan；并发扫描时由调用方传入更大值）
 
 _MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 _TOKEN_RE = re.compile(r"[a-z0-9_]{1,64}")
 # v0.14：设备固件版本。实测 XOS 落在 /etc/fw_version（如 V1.00.01.236 / 1.0.0），
 # 部分工程才有 /etc/version。只认「数字点分」形态，挡掉 shell 横幅与报错。
 _VERSION_RE = re.compile(r"[Vv]?\d+(?:\.\d+){1,3}")
+# v0.23：/proc/cpuinfo 的 Features / CPU part / CPU implementer 行（XOS 无 getprop）。
+_CPU_FEATURES_RE = re.compile(r"^\s*Features\s*:\s*(.+)$", re.I | re.M)
+_CPU_PART_RE = re.compile(r"^\s*CPU part\s*:\s*(\S+)", re.I | re.M)
+_CPU_IMPL_RE = re.compile(r"^\s*CPU implementer\s*:\s*(\S+)", re.I | re.M)
 
 
-def _run(cmd: list[str]) -> tuple[int, str]:
+def _run(cmd: list[str], timeout: int = ADB_TIMEOUT) -> tuple[int, str]:
     """跑一条 adb 命令；GNU timeout + subprocess 超时双保险，不挂起。
 
     返回 (returncode, stdout.strip())。stderr 单独丢弃：cat 失败的错误文本
     不带干净 token / MAC，不会被下面的解析误当成有效值。
     """
-    full = ["timeout", str(ADB_TIMEOUT), "adb", *cmd]
+    full = ["timeout", str(timeout), "adb", *cmd]
     try:
         proc = subprocess.run(
             full,
             capture_output=True,
             text=True,
-            timeout=ADB_TIMEOUT + 1,
+            timeout=timeout + 1,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -82,6 +89,26 @@ def _first_version(out: str) -> str | None:
         if m:
             return s
     return None
+
+
+def _parse_cpuinfo(out: str) -> tuple[str | None, str | None, str | None, bool]:
+    """解析 cat /proc/cpuinfo → (features, cpu_part, cpu_implementer, has_fpu)。
+
+    has_fpu：Features 含 vfp（含 vfpv3/vfpv4）或 neon 即为硬件浮点；
+    实测 qm10xv_full(Cortex-A7, part 0xc07) Features 为
+    "half thumb fastmult vfp edsp neon vfpv3 ..."。
+    """
+    text = out.replace("\r", "\n")
+    m = _CPU_FEATURES_RE.search(text)
+    features = " ".join(m.group(1).split()) if m else None
+    has_fpu = False
+    if features:
+        has_fpu = any(t.startswith("vfp") or t == "neon" for t in features.lower().split())
+    m = _CPU_PART_RE.search(text)
+    cpu_part = m.group(1) if m else None
+    m = _CPU_IMPL_RE.search(text)
+    cpu_implementer = m.group(1) if m else None
+    return features, cpu_part, cpu_implementer, has_fpu
 
 
 def read_firmware_version(host: str, port: int = 5555) -> str | None:
@@ -129,52 +156,67 @@ class RealXosProber:
         has_wifi = False
         board_dt: str | None = None
         firmware_version: str | None = None
+        features: str | None = None
+        cpu_part: str | None = None
+        cpu_implementer: str | None = None
+        has_fpu = False
 
-        # 1) connect（3s 超时）。输出含 connected 才算连上；offline / 不可达直接 L0。
-        rc, out = _run(["connect", address])
+        # 1) connect（超时）。输出含 connected 才算连上；offline / 不可达直接 L0。
+        rc, out = _run(["connect", address], timeout)
         connected = "connected" in out.lower()
         if not connected:
             logger.info("real probe connect failed %s rc=%s: %s", address, rc, out[:120])
-            _run(["disconnect", address])
+            _run(["disconnect", address], timeout)
             return self._result(ProbeResult, HealthLevel.L0, None, None, None, None, "unknown", False, None, None)
 
         try:
             # 2) 逐个读文件（每条命令都带 timeout；文件不存在时 stdout 为空 -> 跳过）
-            _, pn_out = _run(["-s", address, "shell", "cat /etc/product_name"])
+            _, pn_out = _run(["-s", address, "shell", "cat /etc/product_name"], timeout)
             product_name = _first_token(pn_out)
+            # 并发扫描下首次读取可能被饿死，空结果时补一次（放宽超时）。
+            if product_name is None:
+                _, pn_out = _run(
+                    ["-s", address, "shell", "cat /etc/product_name"], max(timeout + 2, 8)
+                )
+                product_name = _first_token(pn_out)
 
-            _, eth_out = _run(["-s", address, "shell", "cat /sys/class/net/eth0/address"])
+            _, eth_out = _run(["-s", address, "shell", "cat /sys/class/net/eth0/address"], timeout)
             eth_mac = _first_mac(eth_out)  # 无 eth0 -> None（跳过）
 
-            _, wlan_out = _run(["-s", address, "shell", "cat /sys/class/net/wlan0/address"])
+            _, wlan_out = _run(["-s", address, "shell", "cat /sys/class/net/wlan0/address"], timeout)
             wlan_mac = _first_mac(wlan_out)
 
-            _, cmd_out = _run(["-s", address, "shell", "cat /proc/cmdline"])
+            _, cmd_out = _run(["-s", address, "shell", "cat /proc/cmdline"], timeout)
             if "spi_nor" in cmd_out:
                 storage_type = "nor"
             elif "spi_nfc" in cmd_out:
                 storage_type = "nand"
 
             _, wifi_out = _run(
-                ["-s", address, "shell", "test -d /sys/class/net/wlan0 && echo QUAMM_WIFI_OK"]
+                ["-s", address, "shell", "test -d /sys/class/net/wlan0 && echo QUAMM_WIFI_OK"],
+                timeout,
             )
             has_wifi = "QUAMM_WIFI_OK" in wifi_out
 
             _, dt_out = _run(
-                ["-s", address, "shell", "cat /proc/device-tree/compatible"]
+                ["-s", address, "shell", "cat /proc/device-tree/compatible"], timeout
             )
             # device-tree compatible 是 \0 分隔的多串，替换为空格后折成一行。
             joined_dt = " ".join(dt_out.replace("\x00", " ").split())
-            # 只认含 "xxx,yyy" 逗号对的 compatible 串；挡掉登录 shell 横幅垃圾。
+            # 只认含 "xxx,yyy" 逗号对的 compatible 串；挡登录 shell 横幅垃圾。
             board_dt = joined_dt if re.search(r"[a-z0-9]+,[a-z0-9]+", joined_dt) else None
 
-            _, fw_out = _run(["-s", address, "shell", "cat /etc/fw_version"])
+            _, fw_out = _run(["-s", address, "shell", "cat /etc/fw_version"], timeout)
             firmware_version = _first_version(fw_out)
             if firmware_version is None:
-                _, ver_out = _run(["-s", address, "shell", "cat /etc/version"])
+                _, ver_out = _run(["-s", address, "shell", "cat /etc/version"], timeout)
                 firmware_version = _first_version(ver_out)
+
+            # v0.23：读 /proc/cpuinfo 判定浮点 ABI（Features 含 vfp/neon 即硬浮点）。
+            _, cpu_out = _run(["-s", address, "shell", "cat /proc/cpuinfo"], timeout)
+            features, cpu_part, cpu_implementer, has_fpu = _parse_cpuinfo(cpu_out)
         finally:
-            _run(["disconnect", address])
+            _run(["disconnect", address], timeout)
 
         # 固定 mac：eth0 优先（非 fe:），否则 wlan0（非 fe:），否则 None
         if _is_fixed(eth_mac):
@@ -188,12 +230,14 @@ class RealXosProber:
         return self._result(
             ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
             storage_type, has_wifi, board_dt, firmware_version,
+            features, cpu_part, cpu_implementer, has_fpu,
         )
 
     @staticmethod
     def _result(
         ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
         storage_type, has_wifi, board_dt, firmware_version,
+        features=None, cpu_part=None, cpu_implementer=None, has_fpu=False,
     ):
         return ProbeResult(
             level=level,
@@ -213,5 +257,10 @@ class RealXosProber:
                 "has_wifi": has_wifi,
                 "board_dt": board_dt,
                 "firmware_version": firmware_version,
+                # v0.23：芯片/浮点能力，供截图二进制选择（vxosdbg=hard / xosdbg=soft）。
+                "features": features,
+                "cpu_part": cpu_part,
+                "cpu_implementer": cpu_implementer,
+                "has_fpu": has_fpu,
             },
         )

@@ -18,6 +18,9 @@ build_cmd / image_path / jenkins_url / notes），全部可空，允许「信息
 0.14.0 引入：固件策略。product_type 补 db_project_name / required_major /
 required_minor / required_patch，device 补 firmware_version；flash_job 为全新表
 （create_all 建表）。db_project_name 按当前 5 个真实机型回填（仅空值回填，不覆盖人工修改）。
+
+0.23.0 引入：芯片/浮点能力。product_type 补 chip_model / float_abi / has_fpu 三列
+（inspect 判列后 ALTER ADD，幂等），默认 auto / 0，供设备截图选浮点 ABI。
 """
 from __future__ import annotations
 
@@ -66,6 +69,14 @@ _LEASE_COLUMNS = {
     "last_heartbeat_at": "DATETIME",
 }
 
+# product_type 表新增列（v0.23 芯片/浮点能力）-> DDL 片段（inspect 判列后 ADD，幂等）
+# float_abi 默认 auto（由探测推断），has_fpu 默认 0；不覆盖任何已有数据。
+_PRODUCT_TYPE_CHIP_COLUMNS = {
+    "chip_model": "VARCHAR(128)",
+    "float_abi": "VARCHAR(16) DEFAULT 'auto'",
+    "has_fpu": "BOOLEAN NOT NULL DEFAULT 0",
+}
+
 # v0.14：当前 5 个真实机型的 DB 工程名（用 dbxostest.py -ls + 设备 /etc/fw_version
 # 构建号对照确认）。只回填空值，不覆盖人工修改。
 _DB_PROJECT_BACKFILL = {
@@ -88,6 +99,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_FIRMWARE_COLUMNS)
     _backfill_db_project_names(session)
     _ensure_columns(session, "lease", _LEASE_COLUMNS)
+    _ensure_columns(session, "product_type", _PRODUCT_TYPE_CHIP_COLUMNS)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:

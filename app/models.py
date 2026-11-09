@@ -63,6 +63,15 @@ class ProductType(Base):
     required_patch: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+    # v0.23：芯片/浮点能力（设备截图据此选 xosdbg=soft / vxosdbg=hard）。
+    # 取值 hard/soft/auto；auto 表示由 /proc/cpuinfo 或运行时兜底推断。
+    chip_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    float_abi: Mapped[str | None] = mapped_column(
+        String(16), default="auto", server_default="auto", nullable=True
+    )
+    has_fpu: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime())
 
 

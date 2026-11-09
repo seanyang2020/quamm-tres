@@ -1,4 +1,4 @@
-"""MCP Server：quamm-tres（21 个工具，streamable HTTP，单实例）。
+"""MCP Server：quamm-tres（31 个工具，streamable HTTP，单实例）。
 
 鉴权由 McpAuthMiddleware 完成；工具内 require_auth() 取当前身份。
 res_admin 仅管理员可用（运行时校验），普通 token 调用返回 FORBIDDEN。
@@ -13,7 +13,7 @@ from app.constants import AGENT_CONTRACT_VERSION, AGENT_REQUIRED_FIELDS, get_ver
 from app.db import SessionLocal
 from app.domain import catalog, credentials, feedback, flash, leasing
 from app.domain.catalog import DomainError
-from app import db_source
+from app import db_source, screenshot
 from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
 from app.roadmap import list_roadmap
@@ -510,6 +510,37 @@ def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: in
         return _err(e)
     except AuthError as e:
         return {"error": "AUTH", "message": e.message}
+
+
+# ---------- 设备截图（v0.23） ----------
+
+@mcp.tool()
+def res_screenshot(
+    device_id: str | None = None,
+    ip: str | None = None,
+    port: int = 5555,
+    quality: int = 60,
+    rotate: int = 0,
+) -> dict:
+    """对指定设备截图并保存到服务器，返回文件路径与元数据。
+
+    自动按浮点 ABI 选设备端二进制：hard=vxosdbg（带 VFP）/ soft=xosdbg（无 FPU），
+    优先取机型配置的 float_abi/has_fpu，否则读 /proc/cpuinfo 的 Features，再兜底运行时探测。
+    device_id（从库读 ip/port）或直接 ip/port 二选一；quality 1-100（默认 60），
+    rotate 0/90/180/270（默认 0）。返回 file_name 可用 REST GET /api/screenshots/{file_name} 读取。
+    需有效凭据（require_auth）；失败返回 {"error": code, "message": ...}。
+    """
+    def run(session, auth):
+        return screenshot.capture_screenshot(
+            device_id=device_id,
+            ip=ip,
+            port=port,
+            quality=quality,
+            rotate=rotate,
+            session=session,
+        )
+
+    return _guard(run)
 
 
 # ---------- 管理 ----------

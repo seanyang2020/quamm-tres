@@ -128,14 +128,21 @@ def scan(session, networks: Optional[list[str]] = None, port: int = DEFAULT_PORT
             "mac": _arp_mac(ip),
             "form_id": None,
             "probe": None,
+            "other_info": None,
             "identity_match": None,
             "already_registered": False,
             "error": None,
         }
         try:
-            probed = catalog.device_probe(session, ip=ip, port=port, agent_info="web-console")
+            # 给足单设备探测时间（默认 8s），避免并发扫描后 adb 读取被饿死导致机型为空。
+            # 设备发现扫的是真实网络 ADB 设备，强制 real 后端，不受全局 mock 影响。
+            probed = catalog.device_probe(
+                session, ip=ip, port=port, agent_info="web-console",
+                source="real", timeout=8,
+            )
             rec["form_id"] = probed.get("form_id")
             rec["probe"] = probed.get("probe")
+            rec["other_info"] = _build_other_info(probed.get("probe"))
             rec["identity_match"] = probed.get("identity_match")
             rec["already_registered"] = (
                 (probed.get("identity_match") or {}).get("result") == "existing"
@@ -151,3 +158,21 @@ def scan(session, networks: Optional[list[str]] = None, port: int = DEFAULT_PORT
         "found": len(found),
         "devices": devices,
     }
+
+
+def _build_other_info(probe: dict | None) -> dict:
+    """汇总综合探测信号，机型无法确定时供用户决策。"""
+    if not probe:
+        return {}
+    extra = probe.get("extra") or {}
+    return {
+        "level": probe.get("level"),
+        "product_name": extra.get("product_name") or probe.get("model"),
+        "firmware": extra.get("firmware_version") or probe.get("build_fingerprint"),
+        "eth_mac": extra.get("eth_mac"),
+        "wlan_mac": extra.get("wlan_mac"),
+        "storage": extra.get("storage_type"),
+        "has_wifi": extra.get("has_wifi"),
+        "board": extra.get("board_dt"),
+    }
+
