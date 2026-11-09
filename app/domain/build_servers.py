@@ -1,13 +1,16 @@
-"""编译服务器领域（v0.25）：CRUD + 加密保管 + 添加时自动探测决定能力。
+"""编译服务器领域（v0.25）：账号级私有、一账号一台、自助配置 + 自动探测。
 
-约定：db 首参，写库末尾显式 commit；序列化只回显掩码，绝不返回明文/密文。
+- build_server 行归属 principal（账号，以邮箱标识），principal_id 唯一；
+- 登录用户只能增删改/探测自己的服务器，管理员可操作全部；
+- 密钥 Fernet 加密、只回显掩码，服务端经 remote_ssh 集中使用、不下发 agent；
+- 写库末尾显式 commit。
 """
 from __future__ import annotations
 
 import secrets as _secrets
 
 from app.domain.catalog import DomainError
-from app.models import BuildServer, ProductType
+from app.models import BuildServer
 from app.remote_ssh import run_remote, tcp_reachable
 from app.secret_crypto import decrypt_secret, encrypt_secret, mask_secret
 from app.utils import utcnow
@@ -35,50 +38,56 @@ def generate_ssh_keypair() -> tuple[str, str]:
     return private_pem, public_ssh
 
 
-def create_build_server(db, *, actor: str, name: str, host: str, port: int = 22,
-                        username: str, auth_mode: str = "password",
+def _owned(db, server_id: str, principal_id: int, is_admin: bool) -> BuildServer:
+    row = db.get(BuildServer, server_id)
+    if not row:
+        raise DomainError("BUILD_SERVER_NOT_FOUND", f"编译服务器不存在：{server_id}")
+    if row.principal_id != principal_id and not is_admin:
+        raise DomainError("FORBIDDEN", "无权操作他人的编译服务器")
+    return row
+
+
+def create_build_server(db, *, actor: str, principal_id: int, name: str, host: str,
+                        port: int = 22, username: str, auth_mode: str = "password",
                         secret: str | None = None, work_root: str = "tres-auto") -> dict:
     name, host, username = name.strip(), host.strip(), username.strip()
     if not name or not host or not username:
         raise DomainError("VALIDATION_ERROR", "名称/主机/用户名不能为空")
     if auth_mode not in ("password", "key"):
         raise DomainError("VALIDATION_ERROR", "auth_mode 仅支持 password/key")
-    if db.query(BuildServer).filter(BuildServer.name == name).first():
-        raise DomainError("BUILD_SERVER_NAME_TAKEN", f"名称已存在：{name}")
+    # 一账号一台
+    if db.query(BuildServer).filter(BuildServer.principal_id == principal_id).first():
+        raise DomainError(
+            "BUILD_SERVER_ALREADY_EXISTS",
+            "当前账号已配置编译服务器，请直接编辑（一账号一台）",
+        )
 
     public_key = None
     if auth_mode == "key" and not secret:
         secret, public_key = generate_ssh_keypair()
 
     row = BuildServer(
-        server_id=_new_id(), name=name, host=host, port=int(port or 22),
-        username=username, auth_mode=auth_mode,
-        secret_encrypted=encrypt_secret(secret),
-        public_key=public_key, work_root=work_root or "tres-auto",
-        status="unknown", created_at=utcnow(),
+        server_id=_new_id(), principal_id=principal_id, name=name, host=host,
+        port=int(port or 22), username=username, auth_mode=auth_mode,
+        secret_encrypted=encrypt_secret(secret), public_key=public_key,
+        work_root=work_root or "tres-auto", status="unknown", created_at=utcnow(),
     )
     db.add(row)
-    db.add(_audit(actor, "build_server_create", row.server_id, {"name": name, "host": host}))
+    db.add(_audit(actor, "build_server_create", row.server_id,
+                  {"principal_id": principal_id, "name": name, "host": host}))
     db.commit()
     db.refresh(row)
     return serialize(row)
 
 
-def update_build_server(db, *, actor: str, server_id: str,
-                        name: str | None = None, host: str | None = None,
+def update_build_server(db, *, actor: str, principal_id: int, is_admin: bool,
+                        server_id: str, name: str | None = None, host: str | None = None,
                         port: int | None = None, username: str | None = None,
                         auth_mode: str | None = None, secret: str | None = None,
                         work_root: str | None = None) -> dict:
-    row = db.get(BuildServer, server_id)
-    if not row:
-        raise DomainError("BUILD_SERVER_NOT_FOUND", f"编译服务器不存在：{server_id}")
+    row = _owned(db, server_id, principal_id, is_admin)
 
     if name is not None and name.strip():
-        other = db.query(BuildServer).filter(
-            BuildServer.name == name.strip(), BuildServer.server_id != server_id
-        ).first()
-        if other:
-            raise DomainError("BUILD_SERVER_NAME_TAKEN", f"名称已存在：{name}")
         row.name = name.strip()
     if host is not None and host.strip():
         row.host = host.strip()
@@ -92,7 +101,7 @@ def update_build_server(db, *, actor: str, server_id: str,
         if auth_mode not in ("password", "key"):
             raise DomainError("VALIDATION_ERROR", "auth_mode 仅支持 password/key")
         row.auth_mode = auth_mode
-    # 仅当显式传入非空 secret 才重新加密；留空表示沿用原密钥
+    # 仅当显式传入非空 secret 才重新加密；留空沿用原密钥
     if secret:
         row.secret_encrypted = encrypt_secret(secret)
         row.public_key = None
@@ -103,34 +112,29 @@ def update_build_server(db, *, actor: str, server_id: str,
     return serialize(row)
 
 
-def delete_build_server(db, *, actor: str, server_id: str) -> dict:
-    row = db.get(BuildServer, server_id)
-    if not row:
-        raise DomainError("BUILD_SERVER_NOT_FOUND", f"编译服务器不存在：{server_id}")
-    refs = db.query(ProductType).filter(ProductType.build_server_id == server_id).count()
-    if refs:
-        raise DomainError("BUILD_SERVER_IN_USE", f"仍被 {refs} 个机型引用，请先解除引用", {"refs": refs})
+def delete_build_server(db, *, actor: str, principal_id: int, is_admin: bool,
+                        server_id: str) -> dict:
+    row = _owned(db, server_id, principal_id, is_admin)
     db.add(_audit(actor, "build_server_delete", row.server_id, {"name": row.name}))
     db.delete(row)
     db.commit()
     return {"deleted": server_id}
 
 
-def list_build_servers(db) -> list[dict]:
-    return [serialize(r) for r in db.query(BuildServer).order_by(BuildServer.created_at).all()]
+def list_build_servers(db, *, principal_id: int, is_admin: bool = False) -> list[dict]:
+    q = db.query(BuildServer)
+    if not is_admin:
+        q = q.filter(BuildServer.principal_id == principal_id)
+    return [serialize(r) for r in q.order_by(BuildServer.created_at).all()]
 
 
-def get_build_server(db, server_id: str) -> dict:
-    row = db.get(BuildServer, server_id)
-    if not row:
-        raise DomainError("BUILD_SERVER_NOT_FOUND", f"编译服务器不存在：{server_id}")
-    return serialize(row)
+def get_build_server(db, *, principal_id: int, is_admin: bool, server_id: str) -> dict:
+    return serialize(_owned(db, server_id, principal_id, is_admin))
 
 
-def probe_build_server(db, *, server_id: str, subdir: str | None = None) -> dict:
-    row = db.get(BuildServer, server_id)
-    if not row:
-        raise DomainError("BUILD_SERVER_NOT_FOUND", f"编译服务器不存在：{server_id}")
+def probe_build_server(db, *, principal_id: int, is_admin: bool, server_id: str,
+                       subdir: str | None = None) -> dict:
+    row = _owned(db, server_id, principal_id, is_admin)
     try:
         plain = decrypt_secret(row.secret_encrypted)
     except ValueError as exc:
@@ -194,6 +198,7 @@ def serialize(row: BuildServer) -> dict:
             plain = None
     return {
         "server_id": row.server_id,
+        "principal_id": row.principal_id,
         "name": row.name,
         "host": row.host,
         "port": row.port,

@@ -1,6 +1,7 @@
-"""SDK 编译升级编排（v0.25）：服务端经 SSH 在编译机拉代码/编译，可再升级设备。
+"""SDK 编译升级编排（v0.25）：服务端经 SSH 在「当前账号自己的编译机」拉代码/编译。
 
-agent 只调高层 MCP 工具，全程不接触 SSH 密钥；工作目录 ~/<work_root>/<机型>-<IP尾号>。
+agent 只调高层 MCP 工具，全程不接触 SSH 密钥；
+工作目录 ~/<work_root>/<机型>-<IP尾号>；机型上只保留拉代码/编译命令。
 """
 from __future__ import annotations
 
@@ -10,15 +11,13 @@ from app.remote_ssh import run_remote
 from app.secret_crypto import decrypt_secret
 
 
-def _resolve(db, type_code: str) -> tuple[ProductType, BuildServer, str]:
+def _resolve(db, principal_id: int, type_code: str) -> tuple[ProductType, BuildServer, str]:
     pt = db.get(ProductType, type_code)
     if not pt:
         raise DomainError("PRODUCT_NOT_FOUND", f"机型不存在：{type_code}")
-    if not pt.build_server_id:
-        raise DomainError("NO_BUILD_SERVER", f"机型 {type_code} 未配置编译服务器")
-    bs = db.get(BuildServer, pt.build_server_id)
+    bs = db.query(BuildServer).filter(BuildServer.principal_id == principal_id).first()
     if not bs:
-        raise DomainError("BUILD_SERVER_NOT_FOUND", "引用的编译服务器不存在")
+        raise DomainError("NO_BUILD_SERVER", "当前账号未配置自己的编译服务器")
     try:
         secret = decrypt_secret(bs.secret_encrypted)
     except ValueError as exc:
@@ -26,13 +25,13 @@ def _resolve(db, type_code: str) -> tuple[ProductType, BuildServer, str]:
     return pt, bs, secret
 
 
-def run_sdk_build(db, *, type_code: str, ip_suffix: str | None = None,
+def run_sdk_build(db, *, principal_id: int, type_code: str, ip_suffix: str | None = None,
                   timeout: int = 1800) -> dict:
-    pt, bs, secret = _resolve(db, type_code)
+    pt, bs, secret = _resolve(db, principal_id, type_code)
     if not pt.sdk_repo_cmd or not pt.build_cmd:
         raise DomainError(
             "BUILD_CONFIG_INCOMPLETE",
-            "机型缺少 sdk_repo_cmd / build_cmd，请在设备类型中补齐",
+            "机型缺少 sdk_repo_cmd / build_cmd，请联系管理员在设备类型中补齐",
         )
 
     subdir = f"{type_code}-{ip_suffix}" if ip_suffix else type_code

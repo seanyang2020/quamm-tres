@@ -449,6 +449,8 @@ async function loadProductTypes() { productTypes.value = await api('/api/product
 
 // ---- v0.25：编译服务器（SSH 凭据 Fernet 加密，服务端集中执行）----
 const buildServers = ref([])
+// 当前账号自己的编译服务器（一账号一台）；管理员可在列表看到全部
+const myBuildRow = computed(() => buildServers.value.find(b => b.principal_id === (me.value && me.value.principal_id)) || null)
 const bsDialog = ref(false)
 const bsSaving = ref(false)
 const bsRow = ref({ server_id: null, name: '', host: '', port: 22, username: '', auth_mode: 'password', secret: '', work_root: 'tres-auto' })
@@ -485,7 +487,7 @@ async function saveBs() {
 }
 async function deleteBs(row) {
   try {
-    await ElMessageBox.confirm('确认删除编译服务器「' + row.name + '」？被机型引用时会拒绝。', '确认', { type: 'warning' })
+    await ElMessageBox.confirm('确认删除你配置的编译服务器「' + row.name + '」？', '确认', { type: 'warning' })
   } catch (e) { return }
   try {
     await api('/api/build-servers/' + encodeURIComponent(row.server_id), { method: 'DELETE' })
@@ -575,7 +577,7 @@ async function boot() {
     loadVersionInfo()
     loadHealthInfo()
     loadProductTypes()
-    if (me.value.role === 'admin') loadBuildServers()
+    loadBuildServers()
   }
 }
 onMounted(boot)
@@ -1599,12 +1601,12 @@ const legendRole = [
               </el-form-item>
             </el-form>
           </el-tab-pane>
-          <el-tab-pane v-if="me.role === 'admin'" label="编译服务器" name="build-servers">
+          <el-tab-pane label="编译服务器" name="build-servers">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-              <h3 style="margin:0">编译服务器（SSH 凭据加密保管，服务端集中执行，不下发 agent）</h3>
-              <el-button type="primary" @click="openBsCreate">添加编译服务器</el-button>
+              <h3 style="margin:0">我的编译服务器（账号私有，SSH 凭据加密保管，服务端集中执行，不下发 agent）</h3>
+              <el-button v-if="!myBuildRow" type="primary" @click="openBsCreate">添加我的编译服务器</el-button>
             </div>
-            <p style="color:#909399">添加后点「探测」：端口→认证→工作目录→git→工具链，全通过才具备 SDK 编译升级能力。密钥模式留空密码会自动生成 ed25519，公钥需放到编译机。</p>
+            <p style="color:#909399">每个账号配置自己的编译服务器（一账号一台）。点「探测」：端口→认证→工作目录→git→工具链，全通过才具备 SDK 编译升级能力。密钥模式留空会自动生成 ed25519，公钥需放到编译机。</p>
             <el-table :data="buildServers" border>
               <el-table-column prop="name" label="名称" width="140" />
               <el-table-column label="主机" width="180">
@@ -1655,11 +1657,6 @@ const legendRole = [
         <el-dialog v-model="ptEditDialog" :title="'编辑设备类型 · ' + ptEditRow.type_code" width="640px">
           <el-form label-width="120px">
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
-            <el-form-item label="编译服务器">
-              <el-select v-model="ptEditRow.build_server_id" clearable placeholder="不绑定（不支持 SDK 编译升级）" style="width: 100%">
-                <el-option v-for="b in buildServers" :key="b.server_id" :label="b.name + '（' + b.host + ' · ' + b.status + '）'" :value="b.server_id" />
-              </el-select>
-            </el-form-item>
             <el-form-item label="SDK 获取命令"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
@@ -1686,11 +1683,6 @@ const legendRole = [
             <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
             <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
             <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
-            <el-form-item label="编译服务器">
-              <el-select v-model="ptCreateRow.build_server_id" clearable placeholder="不绑定（不支持 SDK 编译升级）" style="width: 100%">
-                <el-option v-for="b in buildServers" :key="b.server_id" :label="b.name + '（' + b.host + ' · ' + b.status + '）'" :value="b.server_id" />
-              </el-select>
-            </el-form-item>
             <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" prop="build_cmd"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
             <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>

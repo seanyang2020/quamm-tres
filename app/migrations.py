@@ -110,6 +110,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_CHIP_COLUMNS)
     _ensure_screenshot_table(session)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_BUILD_COLUMNS)
+    _rebuild_build_server_for_principal(session)
 
 
 def _ensure_screenshot_table(session: Session) -> None:
@@ -201,3 +202,34 @@ def _fix_admin_flags(session: Session) -> None:
         {"admin": ADMIN_EMAIL},
     )
     session.commit()
+
+def _rebuild_build_server_for_principal(session: Session) -> None:
+    """v0.25 账号级改造：build_server 增加 principal_id（唯一），name 去掉全局唯一。
+
+    空表（试用环境，无数据）直接 DROP 后按新模型重建；有数据则只做幂等 ALTER 加列，
+    不破坏存量（name 上的旧唯一约束保留，不影响使用）。
+    """
+    from app import models  # noqa: F401 确保模型注册
+    from app.db import Base
+
+    engine = session.get_bind()
+    insp = inspect(engine)
+    if "build_server" not in insp.get_table_names():
+        Base.metadata.create_all(engine, tables=[models.BuildServer.__table__])
+        return
+    cols = {c["name"] for c in insp.get_columns("build_server")}
+    if "principal_id" in cols:
+        return
+    row_count = session.execute(text("SELECT COUNT(*) FROM build_server")).scalar()
+    if row_count == 0:
+        session.execute(text("DROP TABLE build_server"))
+        session.commit()
+        Base.metadata.create_all(engine, tables=[models.BuildServer.__table__])
+    else:
+        _ensure_columns(session, "build_server", {"principal_id": "INTEGER"})
+        session.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS uq_build_server_principal "
+                 "ON build_server(principal_id)")
+        )
+        session.commit()
+

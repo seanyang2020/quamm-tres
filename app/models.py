@@ -401,7 +401,11 @@ class BuildServer(Base):
     __tablename__ = "build_server"
 
     server_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # bs_+hex
-    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    # v0.25：账号级归属（一账号一台，unique）；name 仅作展示标签，不再全局唯一
+    principal_id: Mapped[int | None] = mapped_column(
+        ForeignKey("principal.id"), unique=True, nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
     host: Mapped[str] = mapped_column(String(128), nullable=False)
     port: Mapped[int] = mapped_column(Integer, default=22, server_default="22", nullable=False)
     username: Mapped[str] = mapped_column(String(64), nullable=False)

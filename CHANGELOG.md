@@ -26,6 +26,23 @@
 - 前端：设置新增「编译服务器」tab（系统介绍仍为最后一个 tab），机型编辑/新增对话框可选择绑定
   编译服务器并查看状态，编译服务器对话框支持密码/密钥两种方式与探测结果展示。
 
+### 调整：编译服务器改为账号级私有（取消统一编译服务器）
+- 归属口径变更：编译服务器不再全局共享、也不再由机型绑定，改为跟随 token 背后的账号（principal，
+  以邮箱唯一标识）。`BuildServer` 新增 `principal_id`（外键→principal，唯一），`name` 去掉全局唯一；
+  每个账号配置自己的一台、账号自助配置，登录后只显示自己的配置；token 换发或同账号多 token 共享配置。
+- 迁移：试用环境 `build_server` 为空表时按新模型 DROP 重建（含 principal_id 唯一、name 非唯一）；
+  有数据时幂等 ALTER 加列并建唯一索引。`ProductType.build_server_id` 字段保留但不再使用。
+- 领域层 `app/domain/build_servers.py` 重写：按 principal_id 查重（一账号一台，重复抛
+  BUILD_SERVER_ALREADY_EXISTS），新增归属裁决（非属主且非管理员返回 FORBIDDEN），list/update/delete/
+  probe 均按账号隔离；`app/sdk_build.py` 改为按当前账号的 principal_id 解析自己的编译服务器，
+  未配置返回 NO_BUILD_SERVER。
+- 接口：REST 编译服务器路由由管理员改为登录态（require_login），移除机型绑定路由
+  /product-types/{code}/build-server，FORBIDDEN→403、BUILD_SERVER_ALREADY_EXISTS→409；
+  /auth/login 与 /auth/me 返回体增加 principal_id。MCP `res_build_servers` 去掉管理员门禁与 bind
+  （任何有效凭据自助操作自己的），`res_sdk_build_upgrade` 按自身 principal_id 解析。
+- 前端：「编译服务器」tab 对所有登录用户开放，标题改为「我的编译服务器（账号私有）」，无配置时才显示
+  「添加我的编译服务器」按钮，机型编辑/新增对话框移除编译服务器选择器。
+
 ## [0.24.0] - 2026-11-09
 
 ### 新增

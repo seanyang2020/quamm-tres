@@ -712,66 +712,56 @@ def res_build_servers(
     secret: str | None = None,
     work_root: str | None = None,
     subdir: str | None = None,
-    type_code: str | None = None,
 ) -> dict:
-    """编译服务器管理（仅管理员；密钥 Fernet 加密、只回显掩码，不下发明文）。
+    """编译服务器自助管理（任何有效凭据；操作自己的服务器，管理员可操作全部）。
 
-    action: list / create / update / delete / probe / bind
+    密钥 Fernet 加密、只回显掩码，服务端集中执行、不下发明文。一账号一台。
+    action: list / create / update / delete / probe
     - create：name/host/username 必填，auth_mode=password|key（key 留空 secret 自动生成 ed25519）
-    - probe：逐步 tcp→auth→workdir→git→toolchain，决定 sdk.build_upgrade 能力
-    - bind：把 server_id 绑定到 type_code（机型），server_id 留空表示解除
+    - probe：逐步 tcp→auth→workdir→git→toolchain，决定当前账号的 sdk.build_upgrade 能力
     """
     auth = require_auth()
-    if not auth.is_admin:
-        return {"error": "FORBIDDEN", "message": "仅管理员可用"}
+    principal_id = auth.principal.id
+    is_admin = bool(auth.is_admin)
     session = SessionLocal()
     try:
         if action == "list":
-            return {"items": buildsvc.list_build_servers(session)}
+            return {"items": buildsvc.list_build_servers(
+                session, principal_id=principal_id, is_admin=is_admin)}
         if action == "create":
             return buildsvc.create_build_server(
-                session, actor=auth.email, name=name or "", host=host or "",
-                port=int(port or 22), username=username or "",
-                auth_mode=auth_mode or "password", secret=secret or None,
-                work_root=work_root or "tres-auto",
+                session, actor=auth.email, principal_id=principal_id,
+                name=name or "", host=host or "", port=int(port or 22),
+                username=username or "", auth_mode=auth_mode or "password",
+                secret=secret or None, work_root=work_root or "tres-auto",
             )
         if action == "update":
             if not server_id:
                 return {"error": "MISSING_FIELD", "message": "update 需要 server_id"}
             return buildsvc.update_build_server(
-                session, actor=auth.email, server_id=server_id, name=name, host=host,
-                port=port, username=username, auth_mode=auth_mode,
-                secret=secret or None, work_root=work_root,
+                session, actor=auth.email, principal_id=principal_id, is_admin=is_admin,
+                server_id=server_id, name=name, host=host, port=port, username=username,
+                auth_mode=auth_mode, secret=secret or None, work_root=work_root,
             )
         if action == "delete":
             if not server_id:
                 return {"error": "MISSING_FIELD", "message": "delete 需要 server_id"}
-            return buildsvc.delete_build_server(session, actor=auth.email, server_id=server_id)
+            return buildsvc.delete_build_server(
+                session, actor=auth.email, principal_id=principal_id,
+                is_admin=is_admin, server_id=server_id,
+            )
         if action == "probe":
             if not server_id:
                 return {"error": "MISSING_FIELD", "message": "probe 需要 server_id"}
-            return buildsvc.probe_build_server(session, server_id=server_id, subdir=subdir)
-        if action == "bind":
-            if not type_code:
-                return {"error": "MISSING_FIELD", "message": "bind 需要 type_code"}
-            pt = session.get(ProductType, type_code)
-            if pt is None:
-                return {"error": "PRODUCT_NOT_FOUND", "message": f"机型不存在：{type_code}"}
-            if server_id and session.get(_bs_model(), server_id) is None:
-                return {"error": "BUILD_SERVER_NOT_FOUND", "message": "编译服务器不存在"}
-            pt.build_server_id = server_id or None
-            session.commit()
-            return {"type_code": type_code, "build_server_id": pt.build_server_id}
+            return buildsvc.probe_build_server(
+                session, principal_id=principal_id, is_admin=is_admin,
+                server_id=server_id, subdir=subdir,
+            )
         return {"error": "UNKNOWN_ACTION", "message": f"未知 action: {action}"}
     except DomainError as e:
         return _err(e)
     finally:
         session.close()
-
-
-def _bs_model():
-    from app.models import BuildServer
-    return BuildServer
 
 
 @mcp.tool()
@@ -782,15 +772,16 @@ def res_sdk_build_upgrade(
 ) -> dict:
     """在编译机拉最新代码并编译（服务端 SSH 集中执行，agent 不接触密钥）。
 
-    工作目录 ~/<work_root>/<机型>-<IP尾号>；机型需已绑定编译服务器且配置
+    工作目录 ~/<work_root>/<机型>-<IP尾号>；当前账号需已配置自己的编译服务器且机型配置
     sdk_repo_cmd / build_cmd。返回各步 rc 与日志，success 表示编译通过。
     """
     try:
-        require_auth()
+        auth = require_auth()
         session = SessionLocal()
         try:
             return sdk_build.run_sdk_build(
-                session, type_code=type_code, ip_suffix=ip_suffix, timeout=timeout
+                session, principal_id=auth.principal.id, type_code=type_code,
+                ip_suffix=ip_suffix, timeout=timeout,
             )
         finally:
             session.close()
