@@ -1689,15 +1689,14 @@ const legendRole = [
           <template #footer><el-button @click="editDialog = false">取消</el-button><el-button type="primary" @click="saveEdit">保存</el-button></template>
         </el-dialog>
 
-        <el-dialog v-model="ptEditDialog" :title="'编辑设备类型 · ' + ptEditRow.type_code" width="640px">
-          <el-form label-width="120px">
+        <el-dialog v-model="ptEditDialog" :title="'编辑设备类型 · ' + ptEditRow.type_code" width="820px" :close-on-click-modal="false">
+          <el-form label-width="96px" class="pt-grid">
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
-            <el-form-item label="SDK 获取命令"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
-            <el-form-item label="编译命令"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
+            <el-form-item label="SDK 获取命令" class="pt-full"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
+            <el-form-item label="编译命令" class="pt-full"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接"><el-input v-model="ptEditRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
-            <el-form-item label="备注"><el-input v-model="ptEditRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
-            <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
             <el-form-item label="浮点 ABI">
               <el-select v-model="ptEditRow.float_abi" style="width: 100%">
                 <el-option label="auto（探测自动判定）" value="auto" />
@@ -1706,24 +1705,20 @@ const legendRole = [
               </el-select>
             </el-form-item>
             <el-form-item label="硬件 FPU"><el-switch v-model="ptEditRow.has_fpu" /></el-form-item>
+            <el-form-item label="备注" class="pt-full"><el-input v-model="ptEditRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
           </el-form>
           <template #footer><el-button @click="ptEditDialog = false">取消</el-button><el-button type="primary" @click="savePtEdit">保存</el-button></template>
         </el-dialog>
 
-        <el-dialog v-model="ptCreateDialog" title="新增机型" width="720px" :close-on-click-modal="false">
-          <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="120px">
+        <el-dialog v-model="ptCreateDialog" title="新增机型" width="860px" :close-on-click-modal="false">
+          <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="96px" class="pt-grid">
             <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
             <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>
             <el-form-item label="有屏"><el-switch v-model="ptCreateRow.has_screen" /></el-form-item>
             <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
             <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
-            <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
-            <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
-            <el-form-item label="编译命令" prop="build_cmd"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
-            <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
-            <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
-            <el-form-item label="备注"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
             <el-form-item label="主芯片型号"><el-input v-model="ptCreateRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
+            <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
             <el-form-item label="浮点 ABI">
               <el-select v-model="ptCreateRow.float_abi" style="width: 100%">
                 <el-option label="auto（探测自动判定）" value="auto" />
@@ -1731,10 +1726,13 @@ const legendRole = [
                 <el-option label="soft（软浮点 / xosdbg）" value="soft" />
               </el-select>
             </el-form-item>
+            <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd" class="pt-full"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
+            <el-form-item label="编译命令" prop="build_cmd" class="pt-full"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
+            <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>
-            <el-form-item>
-              <el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox>
-            </el-form-item>
+            <el-form-item label="允许不完整"><el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox></el-form-item>
+            <el-form-item label="备注" class="pt-full"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
           </el-form>
           <template #footer>
             <el-button @click="ptCreateDialog = false">取消</el-button>
@@ -2016,6 +2014,9 @@ const legendRole = [
 .device-table :deep(.el-table__cell) { padding: 3px 0; }
 .device-table :deep(.cell) { font-size: 12px; line-height: 1.4; padding-left: 6px; padding-right: 6px; }
 .device-table :deep(.el-table__header .cell) { font-size: 12px; font-weight: 600; }
+.pt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; }
+.pt-grid :deep(.el-form-item) { margin-bottom: 14px; }
+.pt-grid .pt-full { grid-column: 1 / -1; }
 .shot-preview :deep(.el-image__inner) { width: 100%; height: 100%; object-fit: contain; }
 .settings-grid-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; }
 .settings-grid-form.settings-grid-form .settings-grid-full { grid-column: 1 / -1; }
