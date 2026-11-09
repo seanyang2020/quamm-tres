@@ -11,7 +11,7 @@ from app.config import settings
 from app.runtime_config import get_runtime_value
 from app.constants import AGENT_CONTRACT_VERSION, AGENT_REQUIRED_FIELDS, get_version
 from app.db import SessionLocal
-from app.domain import catalog, credentials, flash, leasing
+from app.domain import catalog, credentials, feedback, flash, leasing
 from app.domain.catalog import DomainError
 from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
@@ -247,6 +247,21 @@ def res_roadmap(include_released: bool = False, include_pending: bool = True) ->
     每项含 id、标题、描述、状态（planned/in_progress/pending_decision/released）、类别与计划版本。
     """
     return list_roadmap(include_released=include_released, include_pending=include_pending)
+
+
+@mcp.tool()
+def res_feedback(category: str, content: str) -> dict:
+    """提交对本系统的意见/建议，供管理员批判性吸收采纳。
+
+    - category: bug（缺陷）/improvement（改进建议）/question（疑问）/praise（肯定）；
+    - content: 具体描述，建议包含场景、期望行为与复现方式，不超过 4000 字；
+    - 提交后管理员会在设置「Agent 意见」中评审（采纳/暂缓/驳回）。
+    """
+    return _guard(
+        lambda s, auth: feedback.submit_feedback(
+            s, credential=auth.credential, category=category, content=content
+        )
+    )
 
 
 # ---------- 设备注册（B 域） ----------

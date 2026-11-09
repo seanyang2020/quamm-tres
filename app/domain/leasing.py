@@ -324,6 +324,7 @@ def apply(
             last_heartbeat_at=now,
         )
         device.status = DeviceStatus.OCCUPIED
+        device.register_agent = agent_info
         session.add(lease)
         audit.record(
             session, actor=principal.email, action="apply",

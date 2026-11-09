@@ -83,6 +83,8 @@ const queueData = ref(null)
 const anomalies = ref(null)
 const audit = ref(null)
 const auditAction = ref('')
+const feedbackList = ref([])
+const feedbackStatus = ref('')
 const settings = ref(null)
 const settingsForm = ref({
   patrol_interval_minutes: 30,
@@ -113,6 +115,107 @@ const preview = ref(null)          // batch-generate 返回的完整响应
 const generating = ref(false)
 const sending = ref(false)
 const sendResults = ref([])
+// 同一批发放请求的幂等键：网络重试时保持不变，避免重复建凭据；发送完成或放弃后换新
+const idempotencyKey = ref('')
+function newIdempotencyKey() {
+  idempotencyKey.value = (window.crypto && crypto.randomUUID)
+    ? crypto.randomUUID()
+    : 'idem-' + Date.now() + '-' + Math.random().toString(16).slice(2)
+}
+newIdempotencyKey()
+
+// Web 手工添加设备（两步：探测 -> 确认注册）
+const deviceAddVisible = ref(false)
+const deviceAddStep = ref(1)
+const deviceAddProbing = ref(false)
+const deviceAddSaving = ref(false)
+const deviceAddForm = ref({ ip: '', port: 5555, hint_model: '' })
+const deviceAddProbe = ref(null)
+const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', note: '' })
+// 设备发现模式
+const deviceAddMode = ref('ip')
+const discoveryNetworks = ref('')
+const discovering = ref(false)
+const discoveryResults = ref([])
+
+function openDeviceAdd() {
+  deviceAddStep.value = 1
+  deviceAddMode.value = 'ip'
+  deviceAddProbe.value = null
+  deviceAddForm.value = { ip: '', port: 5555, hint_model: '' }
+  deviceAddConfirm.value = { position_code: '', owner: '', model_class: '', note: '' }
+  discoveryNetworks.value = ''
+  discoveryResults.value = []
+  deviceAddVisible.value = true
+}
+
+async function runDiscovery() {
+  discovering.value = true
+  try {
+    const nets = discoveryNetworks.value.split(',').map((s) => s.trim()).filter(Boolean)
+    const r = await api('/api/devices/discover', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(nets.length ? { networks: nets } : {}),
+    })
+    discoveryResults.value = r.devices || []
+    ElMessage.success('发现 ' + r.found + ' 台设备（扫描 ' + r.total_hosts + ' 个 IP）')
+  } catch (e) { ElMessage.error(e.message) } finally { discovering.value = false }
+}
+
+function pickDiscovered(row) {
+  if (!row.form_id) { ElMessage.error(row.error || '该设备无可用表单，请重新探测'); return }
+  deviceAddProbe.value = {
+    form_id: row.form_id,
+    probe: row.probe,
+    identity_match: row.identity_match,
+  }
+  deviceAddConfirm.value = {
+    position_code: '',
+    owner: '',
+    model_class: row.probe?.model || '',
+    note: '',
+  }
+  deviceAddStep.value = 2
+}
+
+async function submitDeviceProbe() {
+  if (!deviceAddForm.value.ip.trim()) { ElMessage.error('请填写设备 IP'); return }
+  deviceAddProbing.value = true
+  try {
+    const r = await api('/api/devices/probe', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip: deviceAddForm.value.ip.trim(),
+        port: deviceAddForm.value.port || 5555,
+        hint_model: deviceAddForm.value.hint_model || null,
+      }),
+    })
+    deviceAddProbe.value = r
+    deviceAddConfirm.value.model_class = r.probe?.model || deviceAddForm.value.hint_model || ''
+    deviceAddStep.value = 2
+  } catch (e) { ElMessage.error(e.message) } finally { deviceAddProbing.value = false }
+}
+
+async function submitDeviceRegister() {
+  if (!deviceAddConfirm.value.position_code.trim()) { ElMessage.error('请填写位置'); return }
+  if (!deviceAddConfirm.value.owner.trim()) { ElMessage.error('请填写负责人'); return }
+  deviceAddSaving.value = true
+  try {
+    const r = await api('/api/devices/register', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        form_id: deviceAddProbe.value.form_id,
+        position_code: deviceAddConfirm.value.position_code,
+        owner: deviceAddConfirm.value.owner,
+        model_class: deviceAddConfirm.value.model_class || null,
+        note: deviceAddConfirm.value.note || null,
+      }),
+    })
+    ElMessage.success('设备已保存：' + (r.device_id || r.device?.device_id || ''))
+    deviceAddVisible.value = false
+    loadDevices()
+  } catch (e) { ElMessage.error(e.message) } finally { deviceAddSaving.value = false }
+}
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
@@ -214,6 +317,30 @@ async function loadAudit() {
   audit.value = await api('/api/audit' + q)
 }
 
+async function loadFeedback() {
+  const q = feedbackStatus.value ? '?status=' + encodeURIComponent(feedbackStatus.value) : ''
+  feedbackList.value = await api('/api/feedback' + q)
+}
+
+async function reviewFeedback(row, status) {
+  let note = ''
+  try {
+    const r = await ElMessageBox.prompt('可填写评审意见（采纳理由/驳回原因，可留空）', '评审 Agent 意见', {
+      confirmButtonText: '确定', cancelButtonText: '取消', inputType: 'textarea',
+      inputValue: row.admin_note || '',
+    })
+    note = r.value || ''
+  } catch (e) { return }
+  try {
+    await api('/api/feedback/' + row.feedback_id + '/review', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, admin_note: note }),
+    })
+    ElMessage.success('已评审')
+    loadFeedback()
+  } catch (e) { ElMessage.error(e.message) }
+}
+
 function switchPage(key) {
   active.value = key
   if (key === 'dashboard') loadDashboard()
@@ -224,7 +351,7 @@ function switchPage(key) {
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
   else if (key === 'settings') {
-    loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit()
+    loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback()
   }
 }
 
@@ -366,7 +493,7 @@ async function generateCredentials() {
   try {
     preview.value = await api('/api/credentials/batch-generate', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(sendForm.value),
+      body: JSON.stringify({ ...sendForm.value, idempotency_key: idempotencyKey.value }),
     })
     previewVisible.value = true
   } catch (e) { ElMessage.error(e.message) } finally { generating.value = false }
@@ -387,6 +514,7 @@ async function confirmSend() {
     else ElMessage.success('已发邮件给 ' + ok + ' 人')
     previewVisible.value = false
     preview.value = null
+    newIdempotencyKey()
     loadCredentials()
   } catch (e) { ElMessage.error(e.message) } finally { sending.value = false }
 }
@@ -394,6 +522,7 @@ async function confirmSend() {
 function closePreview() {
   previewVisible.value = false
   preview.value = null
+  newIdempotencyKey()
 }
 
 async function copyText(text, okMsg) {
@@ -747,6 +876,7 @@ const legendRole = [
             </el-select>
             <el-button size="small" @click="toggleAllDeviceGroups(true)">全部展开</el-button>
             <el-button size="small" @click="toggleAllDeviceGroups(false)">全部收起</el-button>
+            <el-button v-if="me.role === 'admin'" size="small" type="primary" @click="openDeviceAdd">添加设备</el-button>
           </div>
         </div>
         <p style="color: #909399; margin: 8px 0">
@@ -1194,6 +1324,49 @@ const legendRole = [
               <el-table-column label="详情"><template #default="{ row }">{{ row.detail ? JSON.stringify(row.detail) : '-' }}</template></el-table-column>
             </el-table>
           </el-tab-pane>
+
+          <el-tab-pane v-if="me.role === 'admin'" label="Agent 意见" name="feedback">
+            <div style="margin-bottom: 12px">
+              <el-select v-model="feedbackStatus" placeholder="按状态筛选（全部）" clearable @change="loadFeedback" style="width: 220px">
+                <el-option label="待处理" value="pending" />
+                <el-option label="已采纳" value="accepted" />
+                <el-option label="暂缓" value="deferred" />
+                <el-option label="已驳回" value="rejected" />
+              </el-select>
+            </div>
+            <el-table :data="feedbackList" border>
+              <el-table-column prop="created_at" label="时间" width="170" />
+              <el-table-column label="类别" width="100">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.category === 'bug' ? 'danger' : (row.category === 'praise' ? 'success' : 'info')">{{ row.category }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="agent_label" label="Agent" width="150">
+                <template #default="{ row }">{{ row.agent_label || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="意见 / 评审备注">
+                <template #default="{ row }">
+                  <div>{{ row.content }}</div>
+                  <div v-if="row.admin_note" style="color: #909399; font-size: 12px; margin-top: 4px">评审：{{ row.admin_note }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="90">
+                <template #default="{ row }">
+                  <el-tag v-if="row.status === 'pending'" size="small" type="warning">待处理</el-tag>
+                  <el-tag v-else-if="row.status === 'accepted'" size="small" type="success">已采纳</el-tag>
+                  <el-tag v-else-if="row.status === 'deferred'" size="small" type="info">暂缓</el-tag>
+                  <el-tag v-else size="small" type="danger">已驳回</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="200">
+                <template #default="{ row }">
+                  <el-button size="small" link type="success" @click="reviewFeedback(row, 'accepted')">采纳</el-button>
+                  <el-button size="small" link type="info" @click="reviewFeedback(row, 'deferred')">暂缓</el-button>
+                  <el-button size="small" link type="danger" @click="reviewFeedback(row, 'rejected')">驳回</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
         </el-tabs>
 
         <el-dialog v-model="editDialog" title="编辑联系人" width="440px">
@@ -1240,6 +1413,102 @@ const legendRole = [
           </template>
         </el-dialog>
       </div>
+
+      <!-- 全局弹窗：手工添加设备（两步：探测 -> 注册） -->
+      <el-dialog v-model="deviceAddVisible" title="添加设备" width="680px" :close-on-click-modal="false">
+        <el-steps :active="deviceAddStep - 1" align-center finish-status="success" style="margin-bottom: 16px">
+          <el-step title="探测设备" />
+          <el-step title="确认信息" />
+        </el-steps>
+
+        <template v-if="deviceAddStep === 1">
+          <el-radio-group v-model="deviceAddMode" style="margin-bottom: 14px">
+            <el-radio-button value="ip">IP 直连</el-radio-button>
+            <el-radio-button value="discover">设备发现</el-radio-button>
+          </el-radio-group>
+
+          <el-form v-if="deviceAddMode === 'ip'" label-width="100px">
+            <el-form-item label="设备 IP" required>
+              <el-input v-model="deviceAddForm.ip" placeholder="如 172.16.60.16" />
+            </el-form-item>
+            <el-form-item label="ADB 端口">
+              <el-input-number v-model="deviceAddForm.port" :min="1" :max="65535" />
+            </el-form-item>
+            <el-form-item label="机型提示">
+              <el-select v-model="deviceAddForm.hint_model" placeholder="可选，留空以探测为准" clearable style="width: 100%">
+                <el-option v-for="t in productTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+
+          <div v-else>
+            <div style="display: flex; gap: 8px; margin-bottom: 10px">
+              <el-input
+                v-model="discoveryNetworks"
+                placeholder="网段，逗号分隔，如 172.16.60.0/24；留空自动探测本机网段"
+              />
+              <el-button type="primary" :loading="discovering" @click="runDiscovery">扫描</el-button>
+            </div>
+            <el-table :data="discoveryResults" border size="small" max-height="320">
+              <el-table-column prop="ip" label="IP" width="140" />
+              <el-table-column label="机型" width="130">
+                <template #default="{ row }">{{ row.probe?.model || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="MAC">
+                <template #default="{ row }">{{ row.mac || row.probe?.mac || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="状态" width="90">
+                <template #default="{ row }">
+                  <el-tag v-if="row.already_registered" size="small" type="info">已登记</el-tag>
+                  <el-tag v-else size="small" type="success">新设备</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="90">
+                <template #default="{ row }">
+                  <el-button size="small" link type="primary" @click="pickDiscovered(row)">选择</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
+        </template>
+
+        <template v-else>
+          <el-descriptions v-if="deviceAddProbe" :column="2" border size="small" style="margin-bottom: 12px">
+            <el-descriptions-item label="健康等级">{{ deviceAddProbe.probe?.level }}</el-descriptions-item>
+            <el-descriptions-item label="MAC">{{ deviceAddProbe.probe?.mac || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="SN">{{ deviceAddProbe.probe?.sn || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="探测机型">{{ deviceAddProbe.probe?.model || '-' }}</el-descriptions-item>
+          </el-descriptions>
+          <el-alert
+            v-if="deviceAddProbe?.identity_match?.result === 'existing'"
+            type="warning" :closable="false" style="margin-bottom: 12px"
+            :title="'识别为已有设备 ' + deviceAddProbe.identity_match.matched_device_id + '，注册将更新其信息而非新建'"
+          />
+          <el-form label-width="100px">
+            <el-form-item label="位置" required>
+              <el-input v-model="deviceAddConfirm.position_code" placeholder="工位/会议室/机架机位，如 302-R2-05" />
+            </el-form-item>
+            <el-form-item label="负责人" required>
+              <el-input v-model="deviceAddConfirm.owner" placeholder="维护责任人" />
+            </el-form-item>
+            <el-form-item label="机型">
+              <el-select v-model="deviceAddConfirm.model_class" placeholder="选择机型" clearable style="width: 100%">
+                <el-option v-for="t in productTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="备注">
+              <el-input v-model="deviceAddConfirm.note" type="textarea" :rows="2" />
+            </el-form-item>
+          </el-form>
+        </template>
+
+        <template #footer>
+          <el-button @click="deviceAddVisible = false">取消</el-button>
+          <el-button v-if="deviceAddStep === 2" @click="deviceAddStep = 1">上一步</el-button>
+          <el-button v-if="deviceAddStep === 1 && deviceAddMode === 'ip'" type="primary" :loading="deviceAddProbing" @click="submitDeviceProbe">探测</el-button>
+          <el-button v-else-if="deviceAddStep === 2" type="primary" :loading="deviceAddSaving" @click="submitDeviceRegister">确认注册</el-button>
+        </template>
+      </el-dialog>
 
       <!-- 全局弹窗：凭据预览（接入申请页与设置页都可能触发，故放在页面条件之外） -->
       <el-dialog v-model="previewVisible" title="凭据预览（尚未发送）" width="920px" :close-on-click-modal="false" @closed="closePreview">

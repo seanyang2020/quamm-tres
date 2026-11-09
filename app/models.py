@@ -338,3 +338,21 @@ class Setting(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class AgentFeedback(Base):
+    """Agent 意见收集（v0.20）：Agent 经 MCP 提交对系统的意见/建议，管理员在设置内批判性采纳。"""
+
+    __tablename__ = "agent_feedback"
+
+    feedback_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    credential_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("credential.id"), nullable=True, index=True
+    )
+    agent_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)  # bug/improvement/question/praise
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False, index=True)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)

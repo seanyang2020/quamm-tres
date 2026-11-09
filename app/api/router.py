@@ -28,7 +28,8 @@ from app.constants import (
     version_info,
 )
 from app.db import get_session
-from app.domain import catalog, credentials, leasing, patrol
+from app.domain import catalog, credentials, feedback, leasing, patrol
+from app import discovery
 from app.domain.queueing import position as queue_position
 from app.models import (
     AuditEvent,
@@ -272,6 +273,108 @@ def device_detail(device_id: str, session: Session = Depends(get_session)):
         return catalog.device_info(session, device_id, for_agent=False)
     except catalog.DomainError as e:
         raise HTTPException(status_code=404, detail=e.message)
+
+
+@router.post("/devices/probe")
+def web_device_probe(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """Web 手工添加设备第一步：按 IP/端口探测，返回 form_id 与探测结果。"""
+    ip = str(payload.get("ip") or "").strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="ip 必填")
+    port = int(payload.get("port") or 5555)
+    try:
+        return catalog.device_probe(
+            session,
+            ip=ip,
+            port=port,
+            hint_model=(str(payload.get("hint_model") or "").strip() or None),
+            hint_position=(str(payload.get("hint_position") or "").strip() or None),
+            source=(str(payload.get("source") or "").strip() or None),
+            agent_info="web-console",
+        )
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/devices/register")
+def web_device_register(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """Web 手工添加设备第二步：确认位置/负责人/机型后入库。"""
+    form_id = str(payload.get("form_id") or "").strip()
+    if not form_id:
+        raise HTTPException(status_code=400, detail="form_id 必填")
+    try:
+        return catalog.device_register(
+            session,
+            form_id=form_id,
+            position_code=str(payload.get("position_code") or "").strip(),
+            owner=str(payload.get("owner") or "").strip(),
+            actor_email=identity.email,
+            model_class=(str(payload.get("model_class") or "").strip() or None),
+            note=(str(payload.get("note") or "").strip() or None),
+            agent_info="web-console",
+        )
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.post("/devices/discover")
+def web_device_discover(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """设备发现模式：扫描网段（可指定 networks，缺省自动探测本机 /24），返回可注册设备。"""
+    raw = payload.get("networks")
+    if isinstance(raw, str):
+        networks = [raw] if raw.strip() else None
+    elif isinstance(raw, list):
+        networks = [str(x) for x in raw if str(x).strip()]
+    else:
+        networks = None
+    try:
+        return discovery.scan(
+            session,
+            networks=networks,
+            port=int(payload.get("port") or 5555),
+            timeout=float(payload.get("timeout") or 1.0),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/feedback")
+def list_feedback(
+    status: str | None = None,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    return feedback.list_feedback(session, status=status)
+
+
+@router.post("/feedback/{feedback_id}/review")
+def review_feedback(
+    feedback_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return feedback.review_feedback(
+            session,
+            feedback_id,
+            status=str(payload.get("status") or ""),
+            admin_note=payload.get("admin_note"),
+        )
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=400, detail=e.message)
 
 
 @router.get("/leases")
@@ -947,30 +1050,72 @@ def smtp_test(
 # ---------- 发接入凭据（v0.13：先生成预览、再确认发信；旧 send 保留兼容） ----------
 
 _CREDENTIAL_BATCH_TTL = timedelta(minutes=30)
+# 已发送结果的重放窗口：响应丢失时客户端可在该窗口内安全重放，不会重复发信
+_SENT_REPLAY_TTL = timedelta(minutes=10)
 # token 明文只在生成时返回一次，之后库里只有 hash。确认发信前把明文暂存在内存里，
 # 30 分钟有效；确认发送（或批次过期）后立即清除。单进程 uvicorn 足够，重启即失效。
 _pending_batches: dict[str, dict] = {}
+_sent_batches: dict[str, dict] = {}
+# 客户端幂等键 -> batch_id，网络重试同一逻辑请求时复用同一批次，避免重复建凭据
+_idempotency_keys: dict[str, dict] = {}
 _pending_lock = threading.Lock()
 
 
-def _store_pending_batch(batch: dict) -> None:
-    """明文批次入内存，顺带清掉已过期批次。"""
+def _store_pending_batch(batch: dict, response: dict) -> None:
+    """明文批次入内存，顺带清掉已过期批次/幂等键。"""
     now = utcnow()
     with _pending_lock:
         for key in [k for k, v in _pending_batches.items() if v["expires_at"] <= now]:
             _pending_batches.pop(key, None)
+        for key in [k for k, v in _idempotency_keys.items() if v["expires_at"] <= now]:
+            _idempotency_keys.pop(key, None)
+        for key in [k for k, v in _sent_batches.items() if v["expires_at"] <= now]:
+            _sent_batches.pop(key, None)
+        batch["response"] = response
         _pending_batches[batch["batch_id"]] = batch
 
 
-def _take_pending_batch(batch_id: str) -> dict | None:
-    """取回并移除一个未过期批次；不存在 / 已过期返回 None。"""
+def bind_idempotency_key(key: str, batch_id: str) -> None:
     with _pending_lock:
-        batch = _pending_batches.pop(batch_id, None)
+        _idempotency_keys[key] = {"batch_id": batch_id, "expires_at": utcnow() + _CREDENTIAL_BATCH_TTL}
+
+
+def replay_idempotent_batch(key: str) -> dict | None:
+    """幂等键命中且批次仍有效时，返回其原始响应。"""
+    with _pending_lock:
+        rec = _idempotency_keys.get(key)
+        if rec is None or rec["expires_at"] <= utcnow():
+            return None
+        batch = _pending_batches.get(rec["batch_id"])
+        if batch is None or batch["expires_at"] <= utcnow():
+            return None
+        return batch.get("response")
+
+
+def _take_pending_batch(batch_id: str) -> dict | None:
+    """取回（不移除）一个未过期批次；不存在 / 已过期返回 None。"""
+    with _pending_lock:
+        batch = _pending_batches.get(batch_id)
         if batch is None:
             return None
         if batch["expires_at"] <= utcnow():
             return None
         return batch
+
+
+def get_sent_replay(batch_id: str) -> dict | None:
+    with _pending_lock:
+        rec = _sent_batches.get(batch_id)
+        if rec is None or rec["expires_at"] <= utcnow():
+            return None
+        return rec["result"]
+
+
+def store_sent_result(batch_id: str, result: dict) -> None:
+    now = utcnow()
+    with _pending_lock:
+        _pending_batches.pop(batch_id, None)
+        _sent_batches[batch_id] = {"result": result, "expires_at": now + _SENT_REPLAY_TTL}
 
 
 def _collect_recipients(payload: dict) -> list[str]:
@@ -1117,7 +1262,13 @@ def batch_generate_credentials(
 
     返回 token 明文（仅此一次）、渲染好的邮件主题/正文、含首个 token 的 mcpServers 配置。
     支持 emails / manual_emails，以及无邮箱的 manual_holders（仅姓名）。
+    支持 idempotency_key：同一键的网络重试在 30 分钟内复用同一批次，不重复建凭据。
     """
+    idem_key = str(payload.get("idempotency_key") or "").strip()
+    if idem_key:
+        replay = replay_idempotent_batch(idem_key)
+        if replay is not None:
+            return replay
     ordered = _collect_recipients(payload)
     holders = _collect_manual_holders(payload)
     if not ordered and not holders:
@@ -1146,10 +1297,7 @@ def batch_generate_credentials(
     ]
     batch_id = new_id("batch_", 6)
     expires_at = utcnow() + _CREDENTIAL_BATCH_TTL
-    _store_pending_batch(
-        {"batch_id": batch_id, "results": results, "note": note, "expires_at": expires_at}
-    )
-    return {
+    response = {
         "batch_id": batch_id,
         "count": len(results),
         "expires_at": _iso(expires_at),
@@ -1159,6 +1307,13 @@ def batch_generate_credentials(
         "mcp_config": mailer.build_mcp_config(results[0]["token"]),
         "mcp_config_text": mailer.mcp_config_text(results[0]["token"]),
     }
+    _store_pending_batch(
+        {"batch_id": batch_id, "results": results, "note": note, "expires_at": expires_at},
+        response,
+    )
+    if idem_key:
+        bind_idempotency_key(idem_key, batch_id)
+    return response
 
 
 @router.post("/credentials/batch-send")
@@ -1167,13 +1322,17 @@ def batch_send_credentials(
     identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
     session: Session = Depends(get_session),
 ):
-    """按 batch_id 取回 30 分钟内生成的明文，逐人真正 SMTP 发信；发完立即清除 pending。
+    """按 batch_id 取回 30 分钟内生成的明文，逐人真正 SMTP 发信。
 
     无邮箱（has_email=False）条目跳过发信，token 仍有效。
+    发送结果保留 10 分钟：响应丢失时同一 batch_id 重放返回原结果，不会重复发信。
     """
     batch_id = str(payload.get("batch_id") or "").strip()
     if not batch_id:
         raise HTTPException(status_code=400, detail="缺少 batch_id")
+    replay = get_sent_replay(batch_id)
+    if replay is not None:
+        return replay
     batch = _take_pending_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=410, detail="批次不存在或已超过 30 分钟，请重新生成凭据")
@@ -1200,7 +1359,9 @@ def batch_send_credentials(
         except Exception as e:  # noqa: BLE001 - 单人失败不影响其他人，token 仍可用
             r["error"] = str(e)
         results.append(r)
-    return {"count": len(results), "results": results}
+    out = {"count": len(results), "results": results}
+    store_sent_result(batch_id, out)
+    return out
 
 
 # 兼容：原来「一按即生成 + 直接发信」的用法保留，Web 不再调用。

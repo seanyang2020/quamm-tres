@@ -3,6 +3,28 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.20.0] - 2026-11-09
+
+### 新增
+- Web 手工添加设备入口（管理员，设备页「添加设备」）：与 MCP 两段式注册同验证、同信息要求，
+  支持两种模式：
+  - IP 直连：指定 IP/端口探测后确认注册（POST /devices/probe、/devices/register）
+  - 设备发现：集成 adbscan 扫描能力（新 app/discovery.py，自动探测本机 /24 或指定网段，
+    并发扫描 5555 后回读 product_name/MAC），列表展示并标记是否已登记，选中后补充编辑再添加
+- Agent 意见收集：新表 agent_feedback；MCP 新增 res_feedback（category/content），
+  任何有效凭据可提交；设置内新增「Agent 意见」tab，管理员可采纳/暂缓/驳回并填写评审意见，
+  支持按状态筛选，用于批判性吸收采纳
+
+### 修复
+- 凭据发放幂等：batch-generate 支持 idempotency_key，网络重试命中同一键直接返回原批次、
+  不再重复建凭据；batch-send 对已发送结果做短期重放，避免响应丢失导致重复发信
+- 设备页 Agent 列空白：auto-import 不写 register_agent；leasing.apply 占用时回写
+  device.register_agent，并对有活跃租约但该字段为空的设备从 credential.agent_label 回填
+
+### 清理
+- 硬删快速重试产生的重复凭据 49–53（删前已备份，确认无 lease/queue 引用）
+- 版本号 0.19.5 -> 0.20.0
+
 ## [0.19.5] - 2026-11-09
 
 ### 修复
