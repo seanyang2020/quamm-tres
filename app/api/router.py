@@ -391,9 +391,12 @@ def restore_credential(
 def delete_credential(
     credential_id: int,
     identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    force: bool = False,
     session: Session = Depends(get_session),
 ):
     try:
+        if force:
+            return credentials.force_delete_credential(session, credential_id, actor=identity.email)
         return credentials.delete_credential(session, credential_id, actor=identity.email)
     except catalog.DomainError as e:
         raise HTTPException(status_code=409, detail=e.message)

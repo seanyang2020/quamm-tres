@@ -77,6 +77,7 @@ function goDevices(status = '') {
 }
 const leases = ref([])
 const credentials = ref([])
+const credentialTab = ref('active')
 const notices = ref([])
 const patrolRuns = ref([])
 const queueData = ref(null)
@@ -442,6 +443,18 @@ async function deleteCredential(id) {
     })
     await api('/api/credentials/' + id, { method: 'DELETE' })
     ElMessage.success('已删除'); loadCredentials()
+  } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
+}
+async function forceDeleteCredential(id) {
+  try {
+    const { value: confirmText } = await ElMessageBox.prompt(
+      '强制删除将永久清除该凭据及其全部关联租约、排队记录，且不可恢复。如确认请输入“删除”。',
+      '管理员强制删除', {
+        confirmButtonText: '强制删除', cancelButtonText: '取消', type: 'error',
+        inputValidator: (v) => v === '删除' || '请输入“删除”二字确认',
+      })
+    await api('/api/credentials/' + id + '?force=true', { method: 'DELETE' })
+    ElMessage.success('已强制删除并清理关联数据'); loadCredentials()
   } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
 }
 async function forceReleaseLease(leaseId) {
@@ -885,31 +898,44 @@ const legendRole = [
       <!-- 凭据台账 -->
       <div v-else-if="active === 'credentials'">
         <h2>凭据</h2>
-        <el-table :data="credentials" border>
-          <el-table-column prop="email" label="邮箱" width="200" />
-          <el-table-column prop="name" label="姓名" width="120" />
-          <el-table-column prop="role" label="权限" width="80" />
-          <el-table-column prop="token_prefix" label="token 前缀" width="140" />
-          <el-table-column prop="agent_label" label="Agent" width="140" />
-          <el-table-column prop="note" label="备注" width="140" />
-          <el-table-column label="是否激活" width="100">
-            <template #default="{ row }"><el-tag :type="row.active ? 'success' : 'danger'">{{ row.active ? '激活' : '停用' }}</el-tag></template>
-          </el-table-column>
-          <el-table-column prop="expires_at" label="到期时间" width="200" />
-          <el-table-column prop="created_at" label="创建时间" width="200" />
-          <el-table-column label="操作" width="260" fixed="right">
-            <template #default="{ row }">
-              <template v-if="row.revoked">
-                <el-button size="small" type="warning" @click="restoreCredential(row.id)">恢复</el-button>
-                <el-button size="small" type="danger" @click="deleteCredential(row.id)">删除</el-button>
-              </template>
-              <template v-else>
-                <el-button size="small" @click="renewCredential(row.id)">续期</el-button>
-                <el-button size="small" type="danger" @click="revokeCredential(row.id)">吊销</el-button>
-              </template>
-            </template>
-          </el-table-column>
-        </el-table>
+        <el-tabs v-model="credentialTab">
+          <el-tab-pane label="有效凭据" name="active">
+            <el-table :data="credentials.filter((c) => !c.revoked)" border>
+              <el-table-column prop="email" label="邮箱" width="200" />
+              <el-table-column prop="name" label="姓名" width="120" />
+              <el-table-column prop="role" label="权限" width="80" />
+              <el-table-column prop="token_prefix" label="token 前缀" width="140" />
+              <el-table-column prop="agent_label" label="Agent" width="140" />
+              <el-table-column prop="note" label="备注" width="140" />
+              <el-table-column prop="expires_at" label="到期时间" width="200" />
+              <el-table-column prop="created_at" label="创建时间" width="200" />
+              <el-table-column label="操作" width="180" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" @click="renewCredential(row.id)">续期</el-button>
+                  <el-button size="small" type="danger" @click="revokeCredential(row.id)">吊销</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+          <el-tab-pane :label="'已吊销 (' + credentials.filter((c) => c.revoked).length + ')'" name="revoked">
+            <el-table :data="credentials.filter((c) => c.revoked)" border>
+              <el-table-column prop="email" label="邮箱" width="200" />
+              <el-table-column prop="name" label="姓名" width="120" />
+              <el-table-column prop="role" label="权限" width="80" />
+              <el-table-column prop="token_prefix" label="token 前缀" width="140" />
+              <el-table-column prop="agent_label" label="Agent" width="140" />
+              <el-table-column prop="note" label="备注" width="140" />
+              <el-table-column prop="expires_at" label="到期时间" width="200" />
+              <el-table-column label="操作" width="300" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" type="warning" @click="restoreCredential(row.id)">恢复</el-button>
+                  <el-button size="small" type="danger" @click="deleteCredential(row.id)">删除</el-button>
+                  <el-button size="small" type="danger" plain @click="forceDeleteCredential(row.id)">强制删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
+        </el-tabs>
       </div>
 
       <!-- 审计 -->

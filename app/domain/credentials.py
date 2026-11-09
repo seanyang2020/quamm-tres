@@ -251,3 +251,54 @@ def delete_credential(session: Session, credential_id: int, actor: str) -> dict:
     )
     session.commit()
     return {"id": credential_id, "deleted": True}
+
+
+def force_delete_credential(session: Session, credential_id: int, actor: str) -> dict:
+    """管理员强制删除：先回收活跃租约，再硬删除该凭据及其全部关联数据（租约/排队条目）。
+
+    与 delete_credential 的区别：不做引用保护，关联数据一并清除，操作全程留审计。
+    """
+    from app.models import Lease, QueueEntry
+    from app.domain import leasing
+
+    cred = session.get(Credential, credential_id)
+    if cred is None:
+        raise DomainError("NOT_FOUND", f"credential {credential_id} not found")
+    target = cred.principal.email if cred.principal else None
+
+    # 1) 先把活跃租约正确回收（释放设备、清理物理锁、通知），再删除全部租约
+    reclaimed = leasing.force_release_credential_leases(
+        session, credential_id, actor=actor, reason="管理员强制删除凭据"
+    )
+    lease_count = session.query(Lease).filter(Lease.credential_id == credential_id).count()
+    session.query(Lease).filter(Lease.credential_id == credential_id).delete(
+        synchronize_session=False
+    )
+    # 2) 删除该凭据关联的排队条目
+    queue_count = (
+        session.query(QueueEntry).filter(QueueEntry.credential_id == credential_id).count()
+    )
+    session.query(QueueEntry).filter(QueueEntry.credential_id == credential_id).delete(
+        synchronize_session=False
+    )
+    # 3) 删除凭据本身
+    session.delete(cred)
+    audit.record(
+        session,
+        actor=actor,
+        action="force_delete_credential",
+        detail={
+            "credential_id": credential_id,
+            "target": target,
+            "reclaimed_active_leases": reclaimed,
+            "deleted_leases": lease_count,
+            "deleted_queue_entries": queue_count,
+        },
+    )
+    session.commit()
+    return {
+        "id": credential_id,
+        "force_deleted": True,
+        "deleted_leases": lease_count,
+        "deleted_queue_entries": queue_count,
+    }

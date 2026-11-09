@@ -392,6 +392,7 @@ def res_admin(
     - revoke_credential：吊销凭据并级联强制回收其活跃租约（需 credential_id）
     - restore_credential：恢复已吊销凭据（需 credential_id）
     - delete_credential：硬删除凭据（需 credential_id；有租约引用则拒绝）
+    - force_delete_credential：管理员强制删除（需 credential_id；级联回收并删除关联租约/排队数据）
     """
     auth = require_auth()
     if not auth.is_admin:
@@ -431,6 +432,10 @@ def res_admin(
             if credential_id is None:
                 return {"error": "MISSING_FIELD", "message": "delete_credential 需要 credential_id"}
             return credentials.delete_credential(session, credential_id, actor=auth.email)
+        if action == "force_delete_credential":
+            if credential_id is None:
+                return {"error": "MISSING_FIELD", "message": "force_delete_credential 需要 credential_id"}
+            return credentials.force_delete_credential(session, credential_id, actor=auth.email)
         if action == "overview":
             from app.constants import is_claimable
 
