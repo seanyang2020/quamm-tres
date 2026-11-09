@@ -1,9 +1,11 @@
 """巡检 worker（独立进程，见 05 §6、06 S12）。
 
-三个定时任务：
+定时任务：
 - 租约到期扫描（10s）：GRANTED->EXPIRING->EXPIRED 强制回收
 - offer 超时扫描（10s）：队首 60s 未确认顺延
 - 巡检（默认 30min）：L0-L3 探测，suspect/offline/恢复
+- 凭据到期提醒（24h）
+- 截图全局 prune（1h，v0.24）：按保留天数/总数上限清理，best-effort
 生产用 PostgreSQL 时靠 advisory lock 保证单实例（见 05 §7.4），SQLite 单进程演示不重复执行。
 """
 from __future__ import annotations
@@ -68,6 +70,22 @@ def _credential_expiry_job() -> None:
         session.close()
 
 
+def _screenshot_prune_job() -> None:
+    """v0.24 全局截图 prune（best-effort，不阻塞其它周期任务）。"""
+    session = SessionLocal()
+    try:
+        from app import screenshot_lifecycle
+
+        result = screenshot_lifecycle.prune_global(session, actor="system")
+        if result["retention_deleted"] or result["total_deleted"]:
+            logger.info("screenshot prune: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("screenshot prune failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
@@ -78,6 +96,8 @@ def run_worker() -> None:
     scheduler.add_job(_lease_scan_job, "interval", seconds=settings.lease_scan_seconds, id="lease_scan")
     scheduler.add_job(_patrol_job, "interval", minutes=settings.patrol_interval_minutes, id="patrol")
     scheduler.add_job(_credential_expiry_job, "interval", hours=24, id="credential_expiry")
+    # v0.24：截图全局保留策略（每小时一次，best-effort，独立线程不阻塞其它任务）
+    scheduler.add_job(_screenshot_prune_job, "interval", hours=1, id="screenshot_prune")
     scheduler.start()
     logger.info("worker started (lease_scan=%ss, patrol=%smin)", settings.lease_scan_seconds, settings.patrol_interval_minutes)
 

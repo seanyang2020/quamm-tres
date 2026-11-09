@@ -26,6 +26,11 @@ RUNTIME_SPECS: dict[str, dict[str, Any]] = {
     "heartbeat_required": {"type": "bool"},
     "heartbeat_interval_minutes": {"type": "int", "min": 1, "max": 1440},
     "heartbeat_miss_grace_minutes": {"type": "int", "min": 0, "max": 1440},
+    # v0.24 截图保留策略（设置-截图存储在线修改）
+    "screenshot_max_per_device": {"type": "int", "min": 1, "max": 1000},
+    "screenshot_retention_days": {"type": "int", "min": 1, "max": 3650},
+    "screenshot_total_max": {"type": "int", "min": 1, "max": 100000},
+    "screenshot_cleanup_on_release": {"type": "bool"},
 }
 
 RUNTIME_KEYS = frozenset(RUNTIME_SPECS)
@@ -100,7 +105,14 @@ def set_runtime_value(session: Session, key: str, value: Any) -> Any:
     normalized, err = validate_runtime_value(key, value)
     if err:
         raise ValueError(err)
-    stored = "true" if isinstance(normalized, bool) else str(normalized)
+    # bool 必须按真实值存 true/false：否则 False 也会被写成一个 "true"，
+    # 导致 allow_apply_when_suspect / heartbeat_required / screenshot_cleanup_on_release
+    # 等开关「关不掉」。
+    stored = (
+        ("true" if normalized else "false")
+        if isinstance(normalized, bool)
+        else str(normalized)
+    )
     row = session.get(Setting, key)
     if row is None:
         session.add(Setting(key=key, value=stored, updated_at=utcnow()))

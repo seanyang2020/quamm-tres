@@ -21,6 +21,9 @@ required_minor / required_patch，device 补 firmware_version；flash_job 为全
 
 0.23.0 引入：芯片/浮点能力。product_type 补 chip_model / float_abi / has_fpu 三列
 （inspect 判列后 ALTER ADD，幂等），默认 auto / 0，供设备截图选浮点 ABI。
+
+0.24.0 引入：截图元数据表 screenshot_record 为全新表（create_all 自动建，无需
+ALTER）。此处仅做幂等兜底：inspect 判表，缺表则补建；老库升级不丢任何数据。
 """
 from __future__ import annotations
 
@@ -100,6 +103,19 @@ def migrate(session: Session) -> None:
     _backfill_db_project_names(session)
     _ensure_columns(session, "lease", _LEASE_COLUMNS)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_CHIP_COLUMNS)
+    _ensure_screenshot_table(session)
+
+
+def _ensure_screenshot_table(session: Session) -> None:
+    """v0.24 幂等兜底：screenshot_record 是全新表，create_all 已负责建表；
+    这里用 inspect 判表，仅在缺表时补建（新表无需 ALTER、不涉及加列）。"""
+    from app import models  # noqa: F401 确保 ScreenshotRecord 注册到 Base.metadata
+    from app.db import Base
+
+    engine = session.get_bind()
+    if "screenshot_record" in inspect(engine).get_table_names():
+        return
+    Base.metadata.tables["screenshot_record"].create(bind=engine, checkfirst=True)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:

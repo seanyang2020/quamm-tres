@@ -3,6 +3,63 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.24.0] - 2026-11-09
+
+### 新增
+- 设备截图的 Web 预览增强与图片生命周期管理（截图可管理、可列历史、有保留策略）：
+  - 新增 `ScreenshotRecord` 模型（`screenshot_record` 表）：shot_id(shot_+hex 主键) /
+    device_id(可空+索引) / file_name(唯一) / bytes / quality / rotate / float_abi /
+    bin / created_by(可空) / captured_at(UTC+索引)。`create_all` 自动建表，
+    `migrations._ensure_screenshot_table` 用 inspect 判表做幂等兜底（新表无需 ALTER，
+    缺表补建，老库升级不丢数据）
+  - `app/screenshot.py` 每次成功截图后写一条记录（显式 commit），并新增领域函数
+    `list_screenshots()` / `delete_screenshot()`（删 DB 行同时删文件，文件缺失不报错）
+  - 新模块 `app/screenshot_lifecycle.py`：提供 serialize / stats / delete_device_screenshots /
+    prune_device / prune_global；所有删除都「删 DB 行 + 删文件 + 写 audit
+    （action=screenshot_prune，detail 含删除数量/原因）」
+  - 在线可改配置（`config.py` 默认 + `runtime_config.py` 白名单）：
+    `screenshot_max_per_device=10`、`screenshot_retention_days=14`、
+    `screenshot_total_max=500`（按总条数）、`screenshot_cleanup_on_release=true`
+  - 保留策略：每次截图后对该设备只保留最新 N 条（prune_device）；全局 prune 按
+    captured_at 删超期、总数超上限时最旧先删（prune_global）；worker 每小时周期
+    调用全局 prune（best-effort，独立任务不阻塞）
+  - 换用户/释放时清理：`leasing._reclaim()` 物理闸门清理附近 best-effort 删除该
+    device_id 全部截图（记录+文件+audit），try/except 包裹只记警告，绝不影响释放
+    主流程（用 commit=False 挂外层事务，失败不污染释放事务）
+  - REST（admin cookie）：`GET /api/screenshot-records`（按 device_id 列历史）、
+    `GET /api/screenshot-records/stats`（总数/占用空间/设备数）、
+    `DELETE /api/screenshot-records/{shot_id}`（单删）、
+    `POST /api/screenshot-records/prune`（立即执行全局 prune）；
+    `POST /api/devices/{device_id}/screenshot` 与 MCP `res_screenshot` 传 created_by
+  - 前端 `web/src/App.vue`：截图对话框展示 captured_at(本地时区)/quality/rotate/
+    float_abi/bin/bytes，加「下载」(`<a download>` 指向 GET 图片)、「重新截图」(loading)、
+    旋转选择(0/90/180/270)；截图 URL 用 `apiUrl()` + `new URL(..., window.location.href)`
+    生成绝对地址，兼容公网隧道 / Caddy 子路径；设备表加「截图记录」入口（历史缩略图 +
+    点开预览 + 单张删除）；设置加「截图存储」块（总数/占用空间、保留策略表单、立即清理）
+
+### 修复
+- `app/runtime_config.py` `set_runtime_value()`：bool 值原来无论 True/False 都存成
+  `"true"`，导致 `allow_apply_when_suspect` / `heartbeat_required` /
+  `screenshot_cleanup_on_release` 等开关「关不掉」。改为按真实值存 true/false
+
+### 确认（不改变默认行为）
+- `app/db_source.py` 只读核对：`XOSADB2UPDATE_PATH=/home/scm/bin/xosadb2update`
+  存在且可执行；`upgrade()` 默认 `update_args='-f -a -e data'`（保留 data 区）未变；
+  probe/versions 只读函数可调用。未对真实设备执行升级，未改默认
+
+### 验证
+- `scripts/verify_screenshot_lifecycle.py` 对 172.16.10.246 实机截图 3 张：记录入库、
+  per-device prune 只保留最新 N=2、单删/全局 prune/统计通过（临时 SQLite 库，不污染线上）
+- `tests/test_screenshot_lifecycle.py` 13 项单测全通过（prune/清理/释放整合/rotate 透传）
+- 全量 `pytest tests/ -q`：17 failed / 70 passed；17 项为仓库既存失败（干净 HEAD
+  同名单 17/57），无新增回归；新增 13 项单测全通过
+- 前端 `cd web && npm run build` 通过；Python 全模块导入 + py_compile 通过
+
+### 备注
+- 设备端 vendor 二进制 `xosscreen -r 90/180/270` 在本机实测 Segmentation fault
+  （旋转是二进制自身 bug，非本系统逻辑）；实机验证统一用 rotate=0，前端仍按所选
+  rotate 调用 API，rotate 取值的接收/透传由 mocked 单测覆盖
+
 ## [0.23.0] - 2026-11-09
 
 ### 新增

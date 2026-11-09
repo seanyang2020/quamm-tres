@@ -32,11 +32,21 @@ const devices = ref([])
 const deviceSearch = ref('')
 const selectedDeviceType = ref(null)
 const detailStatusTab = ref('all')
-// v0.23 设备截图预览
+// v0.23 截图预览 / v0.24 截图生命周期（元数据、重新截图、历史、存储管理）
 const screenshotVisible = ref(false)
 const screenshotUrl = ref('')
 const screenshotMeta = ref(null)
 const screenshotBusy = ref('')
+const screenshotRotate = ref(0)            // 重新截图所选旋转 0/90/180/270
+const screenshotDeviceId = ref('')         // 当前预览/重新截图对应的设备
+const retaking = ref(false)
+const screenshotHistoryVisible = ref(false)
+const screenshotHistoryDevice = ref('')
+const screenshotHistory = ref([])
+const screenshotHistoryLoading = ref(false)
+const screenshotStats = ref(null)
+const screenshotStatsLoading = ref(false)
+const rotateOptions = [0, 90, 180, 270]
 const classifiedDevices = computed(() => devices.value.filter((d) => d.model_class))
 const deviceTotals = computed(() => {
   const list = classifiedDevices.value
@@ -107,6 +117,10 @@ const settingsForm = ref({
   heartbeat_required: true,
   heartbeat_interval_minutes: 75,
   heartbeat_miss_grace_minutes: 10,
+  screenshot_max_per_device: 10,
+  screenshot_retention_days: 14,
+  screenshot_total_max: 500,
+  screenshot_cleanup_on_release: true,
 })
 const settingsSaving = ref(false)
 
@@ -253,8 +267,14 @@ const ptCreateRules = computed(() => {
 })
 
 const API_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
+// 把相对 BASE_URL（'./' 或 '/quamm/'）拼成绝对地址：公网隧道 / Caddy 子路径下，
+// fetch / <img> / <a download> 都能正确解析，不依赖当前 URL 是否带尾斜杠。
+function apiUrl(path) {
+  const rel = API_BASE ? API_BASE + path : path
+  return new URL(rel, window.location.href).href
+}
 async function api(path, opts) {
-  const r = await fetch(API_BASE + path, { credentials: 'include', ...opts })
+  const r = await fetch(apiUrl(path), { credentials: 'include', ...opts })
   if (!r.ok) {
     let detail = String(r.status)
     try {
@@ -273,15 +293,30 @@ async function loadDashboard() { dashboard.value = await api('/api/dashboard') }
 async function loadDevices() {
   devices.value = await api('/api/devices')
 }
-// v0.23：管理员对设备截图，成功后用 el-image 弹窗预览
+// UTC ISO -> 本地时区可读时间
+function formatLocal(iso) {
+  if (!iso) return '-'
+  const d = new Date(iso)
+  return isNaN(d.getTime()) ? iso : d.toLocaleString()
+}
+function humanBytes(n) {
+  if (n == null) return '-'
+  if (n < 1024) return n + ' B'
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB'
+  return (n / 1024 / 1024).toFixed(2) + ' MB'
+}
+const downloadName = computed(() => (screenshotMeta.value && screenshotMeta.value.file_name) || 'screenshot.jpg')
+
+// v0.24：管理员对设备截图，成功后用 el-image 弹窗预览（含元数据/下载/重新截图/旋转）
 async function takeScreenshot(row) {
   screenshotBusy.value = row.device_id
   try {
     const r = await api('/api/devices/' + encodeURIComponent(row.device_id) + '/screenshot', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality: 60, rotate: 0 }),
+      body: JSON.stringify({ quality: 60, rotate: screenshotRotate.value }),
     })
-    screenshotUrl.value = API_BASE + '/api/screenshots/' + encodeURIComponent(r.file_name)
+    screenshotDeviceId.value = row.device_id
+    screenshotUrl.value = apiUrl('/api/screenshots/' + encodeURIComponent(r.file_name))
     screenshotMeta.value = r
     screenshotVisible.value = true
     ElMessage.success('截图成功：' + r.file_name)
@@ -290,6 +325,77 @@ async function takeScreenshot(row) {
   } finally {
     screenshotBusy.value = ''
   }
+}
+
+// 重新截图：按当前所选 rotate 调用 POST，刷新 el-image 与元数据
+async function retakeScreenshot() {
+  if (!screenshotDeviceId.value) { ElMessage.error('缺少设备 ID，无法重新截图'); return }
+  retaking.value = true
+  try {
+    const r = await api('/api/devices/' + encodeURIComponent(screenshotDeviceId.value) + '/screenshot', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ quality: 60, rotate: screenshotRotate.value }),
+    })
+    screenshotUrl.value = apiUrl('/api/screenshots/' + encodeURIComponent(r.file_name))
+    screenshotMeta.value = r
+    ElMessage.success('重新截图成功：' + r.file_name)
+    if (screenshotHistoryVisible.value) loadScreenshotHistory(screenshotDeviceId.value)
+  } catch (e) {
+    ElMessage.error(e.message || '重新截图失败')
+  } finally {
+    retaking.value = false
+  }
+}
+
+// 截图历史（设备表入口）
+async function openScreenshotHistory(row) {
+  screenshotHistoryDevice.value = row.device_id
+  screenshotHistoryVisible.value = true
+  await loadScreenshotHistory(row.device_id)
+}
+async function loadScreenshotHistory(deviceId) {
+  screenshotHistoryLoading.value = true
+  try {
+    const r = await api('/api/screenshot-records?device_id=' + encodeURIComponent(deviceId) + '&limit=200')
+    screenshotHistory.value = r.items || []
+  } catch (e) { ElMessage.error(e.message) } finally { screenshotHistoryLoading.value = false }
+}
+function previewScreenshotRecord(rec) {
+  screenshotDeviceId.value = rec.device_id || ''
+  screenshotRotate.value = rec.rotate || 0
+  screenshotUrl.value = apiUrl('/api/screenshots/' + encodeURIComponent(rec.file_name))
+  screenshotMeta.value = rec
+  screenshotVisible.value = true
+}
+async function deleteScreenshotRecord(rec) {
+  try {
+    await ElMessageBox.confirm('确定删除这张截图？删除后不可恢复。', '删除截图', { type: 'warning' })
+  } catch (e) { return }
+  try {
+    await api('/api/screenshot-records/' + encodeURIComponent(rec.shot_id), { method: 'DELETE' })
+    ElMessage.success('已删除')
+    await loadScreenshotHistory(screenshotHistoryDevice.value)
+    loadScreenshotStats()
+    if (screenshotMeta.value && screenshotMeta.value.file_name === rec.file_name) {
+      screenshotVisible.value = false
+      screenshotUrl.value = ''
+      screenshotMeta.value = null
+    }
+  } catch (e) { ElMessage.error(e.message) }
+}
+
+// 设置-截图存储
+async function loadScreenshotStats() {
+  try { screenshotStats.value = await api('/api/screenshot-records/stats') } catch (e) { /* ignore */ }
+}
+async function runScreenshotPrune() {
+  screenshotStatsLoading.value = true
+  try {
+    const r = await api('/api/screenshot-records/prune', { method: 'POST' })
+    ElMessage.success('清理完成：保留期删除 ' + r.retention_deleted + ' 张，总数上限删除 ' + r.total_deleted + ' 张，剩余 ' + r.remaining + ' 张')
+    loadScreenshotStats()
+    if (screenshotHistoryVisible.value) loadScreenshotHistory(screenshotHistoryDevice.value)
+  } catch (e) { ElMessage.error(e.message) } finally { screenshotStatsLoading.value = false }
 }
 function goDevices() {
   active.value = 'devices'
@@ -317,6 +423,10 @@ function syncSettingsForm(data) {
     heartbeat_required: !!data.heartbeat_required,
     heartbeat_interval_minutes: data.heartbeat_interval_minutes,
     heartbeat_miss_grace_minutes: data.heartbeat_miss_grace_minutes,
+    screenshot_max_per_device: data.screenshot_max_per_device,
+    screenshot_retention_days: data.screenshot_retention_days,
+    screenshot_total_max: data.screenshot_total_max,
+    screenshot_cleanup_on_release: !!data.screenshot_cleanup_on_release,
   }
 }
 async function loadSettings() {
@@ -379,6 +489,7 @@ function switchPage(key) {
   else if (key === 'credentials') loadCredentials()
   else if (key === 'settings') {
     loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback()
+    if (me.value && me.value.role === 'admin') loadScreenshotStats()
   }
 }
 
@@ -397,7 +508,7 @@ async function boot() {
   } catch (e) { needsSetup.value = false }
   if (!needsSetup.value) {
     try {
-      const r = await fetch(API_BASE + '/api/auth/me', { credentials: 'include' })
+      const r = await fetch(apiUrl('/api/auth/me'), { credentials: 'include' })
       me.value = r.ok ? await r.json() : null
     } catch (e) { me.value = null }
   }
@@ -975,9 +1086,10 @@ const legendRole = [
               </template>
             </el-table-column>
             <el-table-column prop="adb_address" label="ADB 地址" width="160" />
-            <el-table-column v-if="me.role === 'admin'" label="操作" width="90" fixed="right">
+            <el-table-column v-if="me.role === 'admin'" label="操作" width="180" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
+                <el-button size="small" @click="openScreenshotHistory(row)">截图记录</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1435,6 +1547,39 @@ const legendRole = [
               </el-table-column>
             </el-table>
           </el-tab-pane>
+
+          <!-- v0.24 截图存储管理：概况 + 保留策略 + 立即清理 -->
+          <el-tab-pane v-if="me.role === 'admin'" label="截图存储" name="screenshots">
+            <h3 style="margin-top: 0">截图存储概况</h3>
+            <el-descriptions :column="3" border size="small" style="max-width: 700px; margin-bottom: 14px">
+              <el-descriptions-item label="截图总数">{{ screenshotStats ? screenshotStats.count : '-' }} 张</el-descriptions-item>
+              <el-descriptions-item label="占用空间">{{ humanBytes(screenshotStats ? screenshotStats.total_bytes : null) }}</el-descriptions-item>
+              <el-descriptions-item label="涉及设备">{{ screenshotStats ? screenshotStats.devices : '-' }} 台</el-descriptions-item>
+            </el-descriptions>
+            <div style="margin-bottom: 16px">
+              <el-button @click="loadScreenshotStats">刷新统计</el-button>
+              <el-button type="warning" :loading="screenshotStatsLoading" @click="runScreenshotPrune">立即清理</el-button>
+              <span style="margin-left: 10px; color: #909399; font-size: 12px">按保留天数与总数上限删除最旧截图，删除写入审计（screenshot_prune）</span>
+            </div>
+            <h3>保留策略</h3>
+            <el-form v-if="settings" :model="settingsForm" label-width="220px" style="max-width: 640px">
+              <el-form-item label="每台设备最多保留（张）">
+                <el-input-number v-model="settingsForm.screenshot_max_per_device" :min="1" :max="1000" />
+              </el-form-item>
+              <el-form-item label="全局保留天数（天）">
+                <el-input-number v-model="settingsForm.screenshot_retention_days" :min="1" :max="3650" />
+              </el-form-item>
+              <el-form-item label="全局最多保留（张）">
+                <el-input-number v-model="settingsForm.screenshot_total_max" :min="1" :max="100000" />
+              </el-form-item>
+              <el-form-item label="释放/换用户时清空该设备截图">
+                <el-switch v-model="settingsForm.screenshot_cleanup_on_release" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存策略</el-button>
+              </el-form-item>
+            </el-form>
+          </el-tab-pane>
         </el-tabs>
 
         <el-dialog v-model="editDialog" title="编辑联系人" width="440px">
@@ -1497,16 +1642,6 @@ const legendRole = [
             <el-button @click="ptCreateDialog = false">取消</el-button>
             <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">新增</el-button>
           </template>
-        </el-dialog>
-
-        <!-- v0.23 设备截图预览 -->
-        <el-dialog v-model="screenshotVisible" title="设备截图" width="520px">
-          <div v-if="screenshotMeta" style="margin-bottom: 8px; color: #606266; font-size: 12px">
-            {{ screenshotMeta.device_id || screenshotMeta.ip }} · {{ screenshotMeta.float_abi }} / {{ screenshotMeta.bin }} · {{ screenshotMeta.bytes }} bytes
-          </div>
-          <el-image v-if="screenshotUrl" :src="screenshotUrl" fit="contain"
-                    style="width: 100%; max-height: 60vh" :preview-src-list="[screenshotUrl]" />
-          <template #footer><el-button type="primary" @click="screenshotVisible = false">关闭</el-button></template>
         </el-dialog>
       </div>
 
@@ -1660,6 +1795,69 @@ const legendRole = [
           <el-button type="primary" :loading="sending" @click="confirmSend">确认发送邮件</el-button>
         </template>
       </el-dialog>
+
+      <!-- 全局弹窗：v0.24 设备截图预览（元数据 / 下载 / 重新截图 / 旋转） -->
+      <el-dialog v-model="screenshotVisible" title="设备截图" width="600px">
+        <template v-if="screenshotMeta">
+          <el-descriptions :column="2" border size="small" style="margin-bottom: 12px">
+            <el-descriptions-item label="设备">{{ screenshotMeta.device_id || screenshotMeta.ip || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="截图时间（本地）">{{ formatLocal(screenshotMeta.captured_at) }}</el-descriptions-item>
+            <el-descriptions-item label="质量 quality">{{ screenshotMeta.quality }}</el-descriptions-item>
+            <el-descriptions-item label="旋转 rotate">{{ screenshotMeta.rotate }}°</el-descriptions-item>
+            <el-descriptions-item label="浮点 ABI">{{ screenshotMeta.float_abi }}</el-descriptions-item>
+            <el-descriptions-item label="二进制 bin">{{ screenshotMeta.bin }}</el-descriptions-item>
+            <el-descriptions-item label="大小">{{ screenshotMeta.bytes }} bytes（{{ humanBytes(screenshotMeta.bytes) }}）</el-descriptions-item>
+            <el-descriptions-item label="来源">{{ screenshotMeta.created_by || '-' }}</el-descriptions-item>
+          </el-descriptions>
+          <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap">
+            <span style="font-size: 13px; color: #606266">旋转</span>
+            <el-select v-model="screenshotRotate" style="width: 100px">
+              <el-option v-for="r in rotateOptions" :key="r" :label="r + '°'" :value="r" />
+            </el-select>
+            <el-button type="primary" size="small" :loading="retaking" @click="retakeScreenshot">重新截图</el-button>
+            <a v-if="screenshotUrl" :href="screenshotUrl" :download="downloadName" class="shot-download">
+              <el-button size="small">下载</el-button>
+            </a>
+          </div>
+          <el-image v-if="screenshotUrl" :key="screenshotUrl" :src="screenshotUrl" fit="contain"
+                    style="width: 100%; max-height: 55vh" :preview-src-list="[screenshotUrl]" />
+        </template>
+        <template #footer><el-button @click="screenshotVisible = false">关闭</el-button></template>
+      </el-dialog>
+
+      <!-- 全局弹窗：v0.24 该设备截图历史（缩略图 + 预览 + 单张删除） -->
+      <el-dialog v-model="screenshotHistoryVisible" :title="'截图记录 · ' + screenshotHistoryDevice" width="720px">
+        <el-table :data="screenshotHistory" border size="small" v-loading="screenshotHistoryLoading" max-height="420">
+          <el-table-column label="缩略图" width="120">
+            <template #default="{ row }">
+              <div style="cursor: pointer" @click="previewScreenshotRecord(row)">
+                <el-image :src="apiUrl('/api/screenshots/' + encodeURIComponent(row.file_name))"
+                          fit="cover" style="width: 96px; height: 64px" />
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="时间（本地）" width="200">
+            <template #default="{ row }">{{ formatLocal(row.captured_at) }}</template>
+          </el-table-column>
+          <el-table-column label="文件" min-width="170" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.file_name }}</template>
+          </el-table-column>
+          <el-table-column label="质量/旋转" width="120">
+            <template #default="{ row }">q{{ row.quality }} · {{ row.rotate }}°</template>
+          </el-table-column>
+          <el-table-column label="大小" width="100">
+            <template #default="{ row }">{{ humanBytes(row.bytes) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" link type="primary" @click="previewScreenshotRecord(row)">预览</el-button>
+              <el-button size="small" link type="danger" @click="deleteScreenshotRecord(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!screenshotHistory.length && !screenshotHistoryLoading" description="该设备暂无截图记录" />
+        <template #footer><el-button @click="screenshotHistoryVisible = false">关闭</el-button></template>
+      </el-dialog>
     </el-main>
   </el-container>
 </template>
@@ -1684,4 +1882,5 @@ const legendRole = [
 .ov-num { font-size: 30px; line-height: 1.2; margin-top: 6px; font-weight: 600; }
 .cat-card { cursor: pointer; transition: box-shadow .2s, transform .2s; }
 .cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); transform: translateY(-2px); }
+.shot-download { display: inline-block; text-decoration: none; }
 </style>

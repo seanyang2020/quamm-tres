@@ -18,6 +18,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app import screenshot  # noqa: E402
+from app.db import init_db  # noqa: E402
+
+# v0.24：截图成功后会写 screenshot_record，独立进程需先确保表存在（幂等）。
+init_db()
 
 
 def _jpeg_dimensions(data: bytes) -> tuple[int, int] | None:

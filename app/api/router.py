@@ -370,7 +370,8 @@ def device_screenshot(
         raise HTTPException(status_code=400, detail="quality/rotate 须为整数")
     try:
         return screenshot.capture_screenshot(
-            device_id=device_id, quality=quality, rotate=rotate, session=session
+            device_id=device_id, quality=quality, rotate=rotate,
+            session=session, created_by=identity.email,
         )
     except catalog.DomainError as e:
         raise HTTPException(status_code=400, detail=e.message)
@@ -393,6 +394,57 @@ def get_screenshot(
     if target.parent != base or not target.is_file():
         raise HTTPException(status_code=404, detail="截图不存在")
     return FileResponse(str(target), media_type="image/jpeg")
+
+
+# ---------- 截图记录管理（v0.24，管理员） ----------
+
+@router.get("/screenshot-records")
+def list_screenshot_records(
+    device_id: str | None = None,
+    limit: int = 200,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """列出截图历史（最新在前），可按 device_id 过滤。"""
+    return {
+        "items": screenshot.list_screenshots(
+            session, device_id=device_id, limit=limit
+        )
+    }
+
+
+@router.get("/screenshot-records/stats")
+def screenshot_stats(
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """截图存储统计：总条数 / 占用空间(bytes) / 涉及设备数。"""
+    from app import screenshot_lifecycle
+
+    return screenshot_lifecycle.stats(session)
+
+
+@router.delete("/screenshot-records/{shot_id}")
+def remove_screenshot_record(
+    shot_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """删除单张截图（记录 + 文件）。"""
+    if not screenshot.delete_screenshot(session, shot_id=shot_id, actor=identity.email):
+        raise HTTPException(status_code=404, detail="截图记录不存在")
+    return {"shot_id": shot_id, "deleted": True}
+
+
+@router.post("/screenshot-records/prune")
+def prune_screenshot_records(
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """管理员「立即清理」：执行全局 prune（保留期 + 总数上限）。"""
+    from app import screenshot_lifecycle
+
+    return screenshot_lifecycle.prune_global(session, actor=identity.email)
 
 
 @router.get("/feedback")

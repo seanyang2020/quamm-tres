@@ -365,3 +365,24 @@ class AgentFeedback(Base):
     admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
+
+class ScreenshotRecord(Base):
+    """设备截图元数据（v0.24）：一行对应 app/var/screenshots 下的一个 jpg。
+
+    全新表，由 init_db() 的 create_all 自动建；migrations._ensure_screenshot_table
+    用 inspect 判表做幂等兜底（新表无需 ALTER，不涉及加列）。
+    """
+
+    __tablename__ = "screenshot_record"
+
+    shot_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # shot_+hex
+    device_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    file_name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality: Mapped[int] = mapped_column(Integer, nullable=False)
+    rotate: Mapped[int] = mapped_column(Integer, nullable=False)
+    float_abi: Mapped[str] = mapped_column(String(8), nullable=False)
+    bin: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, index=True)

@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # 设备网络（worker 网段发现用，一期预留）
     device_network: str = ""
 
+    # 截图保留策略（v0.24，可在「设置-截图存储」在线修改，运行时 KV 覆盖此处默认）
+    screenshot_max_per_device: int = 10       # 每台设备最多保留的最新截图条数
+    screenshot_retention_days: int = 14       # 全局保留天数（超过即删）
+    screenshot_total_max: int = 500           # 全局最多保留的截图总条数
+    screenshot_cleanup_on_release: bool = True  # 换用户/释放时清空该设备截图
+
     # 固件下载 / 刷机（v0.14，复用现成工具，不重新实现）
     xos_base_url: str = "http://172.16.1.201/Daily/XOS"  # DB 目录根（末尾无 /）
     dbxostest_path: str = "/home/scm/bin/dbxostest.py"   # 下载 + 刷写编排器

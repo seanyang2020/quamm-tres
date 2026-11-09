@@ -236,6 +236,22 @@ def _reclaim(session: Session, lease: Lease, new_state: str, end_reason: str, ac
         except Exception:  # noqa: BLE001
             logger.warning("device lock cleanup failed for %s (%s)", addr, lease.lease_id)
 
+    # v0.24 换用户/释放时清空该设备全部截图（best-effort，与 devicelock 清理同级别）。
+    # commit=False：删除/审计挂在外层事务上，由释放主流程统一 commit；任何异常只记警告，
+    # 绝不影响释放主流程（老库/缺表/磁盘异常都不会让 release 失败）。
+    try:
+        if bool(get_runtime_value(session, "screenshot_cleanup_on_release")):
+            from app import screenshot_lifecycle
+
+            screenshot_lifecycle.delete_device_screenshots(
+                session, lease.device_id, actor=actor, reason="release", commit=False
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "screenshot cleanup on release failed for %s (%s)",
+            lease.device_id, lease.lease_id,
+        )
+
 
 def apply(
     session: Session,

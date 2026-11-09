@@ -538,6 +538,7 @@ def res_screenshot(
             quality=quality,
             rotate=rotate,
             session=session,
+            created_by=(auth.credential.agent_label or auth.email),
         )
 
     return _guard(run)

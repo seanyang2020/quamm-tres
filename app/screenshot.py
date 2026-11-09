@@ -20,10 +20,13 @@ illegal instruction）：
 """
 from __future__ import annotations
 
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger("quamm-tres.screenshot")
 
 VENDOR_DIR = Path(__file__).resolve().parent / "vendor"
 SOFT_BIN = "xosdbg"      # 软浮点
@@ -177,9 +180,12 @@ def _resolve_float_abi(
 
 # ---------------- 目标解析（延迟导入，避免顶层依赖 SQLAlchemy） ----------------
 
-def _own_session_if_needed(device_id: str | None, session):
-    """有 device_id 且未传入 session 时，惰性开一个会话用于查库。"""
-    if session is not None or not device_id:
+def _own_session_if_needed(session):
+    """未传入 session 时惰性开一个会话：查库目标 + 写截图记录都需要会话。
+
+    返回 (session, 需要调用方关闭的自有会话或 None)。
+    """
+    if session is not None:
         return session, None
     from app.db import SessionLocal
 
@@ -284,6 +290,78 @@ def _capture_once(
     return "ok", True
 
 
+def _write_record(session, result: dict, created_by: str | None) -> None:
+    """v0.24：截图成功后把元数据写入 screenshot_record（显式 commit，项目约定）。"""
+    from app.models import ScreenshotRecord
+    from app.utils import new_id, utcnow
+
+    rec = ScreenshotRecord(
+        shot_id=new_id("shot_", 8),
+        device_id=result["device_id"],
+        file_name=result["file_name"],
+        bytes=result["bytes"],
+        quality=result["quality"],
+        rotate=result["rotate"],
+        float_abi=result["float_abi"],
+        bin=result["bin"],
+        created_by=created_by,
+        captured_at=utcnow(),
+    )
+    session.add(rec)
+    session.commit()
+
+
+def list_screenshots(session, device_id: str | None = None, limit: int = 200) -> list[dict]:
+    """领域函数：列出截图记录（最新在前），可按 device_id 过滤。"""
+    from app.models import ScreenshotRecord
+    from app.screenshot_lifecycle import serialize
+
+    q = session.query(ScreenshotRecord)
+    if device_id:
+        q = q.filter(ScreenshotRecord.device_id == device_id)
+    rows = q.order_by(ScreenshotRecord.captured_at.desc()).limit(limit).all()
+    return [serialize(r) for r in rows]
+
+
+def delete_screenshot(
+    session,
+    shot_id: str | None = None,
+    file_name: str | None = None,
+    actor: str = "system",
+) -> bool:
+    """领域函数：按 shot_id 或 file_name 删一条记录 + 磁盘文件（文件缺失不报错）。"""
+    from app.domain import audit
+    from app.models import ScreenshotRecord
+
+    if shot_id:
+        rec = session.get(ScreenshotRecord, shot_id)
+    elif file_name:
+        rec = (
+            session.query(ScreenshotRecord)
+            .filter(ScreenshotRecord.file_name == file_name)
+            .first()
+        )
+    else:
+        return False
+    if rec is None:
+        return False
+    # 删文件：仅接受安全文件名，文件缺失/OSError 都不报错
+    if _SAFE_FILENAME_RE.fullmatch(rec.file_name):
+        try:
+            (SCREENSHOT_DIR / rec.file_name).unlink(missing_ok=True)
+        except OSError:
+            pass
+    session.delete(rec)
+    # 与 prune 一致：所有删除写 audit（action=screenshot_prune，detail 含数量/原因）
+    audit.record(
+        session, actor=actor, action="screenshot_prune",
+        device_id=rec.device_id,
+        detail={"count": 1, "reason": "manual_delete"},
+    )
+    session.commit()
+    return True
+
+
 def capture_screenshot(
     device_id: str | None = None,
     ip: str | None = None,
@@ -292,6 +370,7 @@ def capture_screenshot(
     rotate: int = 0,
     framebuffer: str = "/dev/fb0",
     session=None,
+    created_by: str | None = None,
     timeout: int = ADB_TIMEOUT,
 ) -> dict:
     """对设备截图并保存到主机，返回文件路径与元数据。
@@ -299,9 +378,10 @@ def capture_screenshot(
     device_id（从库读 ip/port + 机型浮点配置）或直接 ip/port 二选一。
     返回 {device_id, ip, float_abi, bin, local_path, file_name, bytes,
            quality, rotate, captured_at, float_source}。
+    v0.24：成功后写一条 screenshot_record 记录，并按设备做保留策略 prune。
     """
     quality, rotate = int(quality), int(rotate)
-    session, own_session = _own_session_if_needed(device_id, session)
+    session, own_session = _own_session_if_needed(session)
     try:
         host, port, product_config = _resolve_target(device_id, ip, port, session)
         _validate(host, port, quality, rotate, framebuffer)
@@ -342,7 +422,7 @@ def capture_screenshot(
         finally:
             _disconnect(addr, timeout)
 
-        return {
+        result = {
             "device_id": device_id,
             "ip": host,
             "float_abi": float_abi,
@@ -355,6 +435,19 @@ def capture_screenshot(
             "captured_at": datetime.now(timezone.utc).isoformat(),
             "float_source": float_source,
         }
+        # v0.24：截图成功后元数据入库（显式 commit）；随后 best-effort 按设备做保留策略，
+        # 只保留最新 N 条。清理失败只记警告，绝不影响已成功的截图返回。
+        _write_record(session, result, created_by)
+        if result["device_id"]:
+            try:
+                from app import screenshot_lifecycle
+
+                screenshot_lifecycle.prune_device(
+                    session, result["device_id"], actor=created_by or "system"
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("per-device screenshot prune failed for %s", result["device_id"])
+        return result
     finally:
         if own_session is not None:
             own_session.close()
