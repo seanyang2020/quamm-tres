@@ -36,6 +36,10 @@ def _guard(fn, *args, **kwargs):
         auth = require_auth()
         session = SessionLocal()
         try:
+            # 中间件解析身份后已关闭其会话，credential/principal 处于游离态；
+            # 合并到当前会话，否则对 agent_label 等字段的修改不会被提交。
+            auth.credential = session.merge(auth.credential)
+            auth.principal = session.merge(auth.principal)
             return fn(session, auth, *args, **kwargs)
         finally:
             session.close()
@@ -273,6 +277,8 @@ def res_device_register(
     auth = require_auth()
     session = SessionLocal()
     try:
+        # 合并游离凭据，保证 agent_label 回写能被提交。
+        auth.credential = session.merge(auth.credential)
         result = catalog.device_register(
             session, form_id, position_code, owner,
             actor_email=auth.email, model_class=model_class, note=note, agent_info=agent_info,
