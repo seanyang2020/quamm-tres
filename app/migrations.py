@@ -41,6 +41,10 @@ _DEVICE_COLUMNS = {
     "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
     "firmware_version": "VARCHAR(64)",
     "register_agent": "VARCHAR(128)",
+    # v0.26 共享范围与名单
+    "share_scope": "VARCHAR(16) NOT NULL DEFAULT 'shared'",
+    "allowed_emails": "TEXT",
+    "allowed_agent_labels": "TEXT",
 }
 
 # credential 表新增列（v0.11）-> DDL 片段

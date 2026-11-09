@@ -22,7 +22,9 @@ from app.constants import (
 )
 from app.config import settings
 from app.domain import audit, flash
-from app.domain import devicelock
+from app.domain import device_acl, devicelock
+from app.domain import device_recovery
+from app.domain.probe import probe_device
 from app.domain.catalog import DomainError
 from app.domain.queueing import cancel, enqueue, find_head, position
 from app.domain.notices import create_notice
@@ -117,11 +119,67 @@ def _resolve_target(
     )
 
 
+def _try_recover_for_apply(session: Session, device: Device,
+                           principal: Principal, agent_label: str) -> None:
+    """显式申请 pending 设备：重新探测，必要时敲门拉起 adbd；再据 ACL 裁决。"""
+    # mock 设备无敲门能力，直接按就绪性处理
+    if device.source != "real":
+        return
+    if not bool(get_runtime_value(session, "pending_auto_recover_enabled")):
+        return
+
+    def probe_now():
+        return probe_device(
+            session, device.ip, device.adb_port,
+            source="real", timeout=settings.probe_timeout_seconds,
+        )
+
+    r1 = probe_now()
+    if not r1.reachable_l3:
+        eventcode = str(get_runtime_value(session, "pending_knock_eventcode"))
+        wait_to = int(get_runtime_value(session, "pending_knock_timeout"))
+        knock = device_recovery.knock_recover(
+            device.ip, eventcode, adb_port=device.adb_port,
+            wait_timeout=wait_to, use_cooldown=False,  # 显式申请不受冷却限制
+        )
+        audit.record(
+            session, actor=principal.email, action="apply_knock_recover",
+            device_id=device.device_id, detail=knock,
+        )
+        if knock.get("adb_ready"):
+            r1 = probe_now()
+
+    if r1.reachable_l3:
+        device.status = DeviceStatus.AVAILABLE
+        device.health_level = r1.health_level
+        device.consecutive_failures = 0
+        device.last_seen_at = utcnow()
+        device.last_probe_at = utcnow()
+        if r1.firmware_version:
+            device.firmware_version = r1.firmware_version
+        audit.record(
+            session, actor=principal.email, action="apply_recover_ready",
+            device_id=device.device_id, detail={"health": r1.health_level},
+        )
+        session.commit()
+    else:
+        raise DomainError(
+            "DEVICE_NOT_READY",
+            f"设备 {device.device_id} 已尝试重新探测与敲门但仍未就绪，请稍后重试或联系现场处理",
+            {"device_id": device.device_id, "ip": device.ip,
+             "retry": "稍后重新调用 res_apply", "suggestion": "仍失败则现场检查供电/网络"},
+        )
+
+
 def _find_available(
     session: Session,
     target_type: str,
     target_code: str,
     product: ProductType | None = None,
+    *,
+    email: str | None = None,
+    agent_label: str | None = None,
+    is_admin: bool = False,
 ) -> tuple[Device | None, bool, dict | None]:
     """按可用池口径找设备，并做 v0.14 固件版本门禁。
 
@@ -145,6 +203,11 @@ def _find_available(
     else:
         q = q.filter(Device.model_class == target_code)
     candidates = q.order_by(Device.created_at.asc()).all()
+    # v0.26：按共享范围过滤无权访问的设备
+    candidates = [
+        d for d in candidates
+        if device_acl.can_use_device(session, d, email, agent_label, is_admin)
+    ]
     if not candidates:
         return None, False, None
 
@@ -303,11 +366,31 @@ def apply(
         if existing is not None:
             return {"state": "GRANTED", "lease": _lease_dict(existing)}
 
+    # v0.26：指定设备先做 ACL 裁决；若处于 pending/未就绪，再重新探测 + 敲门拉起，不直接拒绝。
+    if target_type == "device":
+        target_device = session.get(Device, target_code)
+        if target_device is not None:
+            if not device_acl.can_use_device(
+                session, target_device, principal.email, agent_info, auth.is_admin
+            ):
+                raise DomainError(
+                    "ACCESS_DENIED",
+                    f"设备 {target_device.device_id} 当前为 "
+                    f"{target_device.share_scope or 'shared'} 模式，你不在允许名单内，无法申请",
+                    device_acl.serialize_acl(target_device),
+                )
+            if not (
+                target_device.status == DeviceStatus.AVAILABLE
+                and target_device.health_level == HealthLevel.L3
+            ):
+                _try_recover_for_apply(session, target_device, principal, agent_info)
+
     gate_product = (
         session.get(ProductType, target_code) if target_type == "product" else None
     )
     device, had_candidates, verdict = _find_available(
-        session, target_type, target_code, gate_product
+        session, target_type, target_code, gate_product,
+        email=principal.email, agent_label=agent_info, is_admin=auth.is_admin,
     )
     if device is None and had_candidates:
         # 有可用设备但固件版本全部不满足：不排队，明确报无兼容设备

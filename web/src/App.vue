@@ -156,7 +156,7 @@ const deviceAddProbing = ref(false)
 const deviceAddSaving = ref(false)
 const deviceAddForm = ref({ ip: '', port: 5555, hint_model: '' })
 const deviceAddProbe = ref(null)
-const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', note: '' })
+const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] })
 // 设备发现模式
 const deviceAddMode = ref('ip')
 const discoveryNetworks = ref('')
@@ -168,7 +168,7 @@ function openDeviceAdd() {
   deviceAddMode.value = 'ip'
   deviceAddProbe.value = null
   deviceAddForm.value = { ip: '', port: 5555, hint_model: '' }
-  deviceAddConfirm.value = { position_code: '', owner: '', model_class: '', note: '' }
+  deviceAddConfirm.value = { position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
   discoveryNetworks.value = ''
   discoveryResults.value = []
   deviceAddVisible.value = true
@@ -234,12 +234,67 @@ async function submitDeviceRegister() {
         owner: deviceAddConfirm.value.owner,
         model_class: deviceAddConfirm.value.model_class || null,
         note: deviceAddConfirm.value.note || null,
+        share_scope: deviceAddConfirm.value.share_scope,
+        allowed_emails: deviceAddConfirm.value.allowed_emails,
+        allowed_agent_labels: deviceAddConfirm.value.allowed_agent_labels,
       }),
     })
     ElMessage.success('设备已保存：' + (r.device_id || r.device?.device_id || ''))
     deviceAddVisible.value = false
     loadDevices()
   } catch (e) { ElMessage.error(e.message) } finally { deviceAddSaving.value = false }
+}
+
+// v0.26 设备编辑与共享
+const deviceEditVisible = ref(false)
+const deviceEditSaving = ref(false)
+const deviceEditRow = ref(null)
+function canEditDevice(row) {
+  return !!me.value && (me.value.role === 'admin' || row.registered_by === me.value.email)
+}
+function openDeviceEdit(row) {
+  if (!contacts.value.length) loadContacts()
+  deviceEditRow.value = {
+    device_id: row.device_id,
+    display_name: row.display_name || '',
+    owner: row.owner || '',
+    position_code: row.position_code || '',
+    model_class: row.model_class || '',
+    ip: row.ip || '',
+    adb_port: row.adb_port || 5555,
+    mac: row.mac || '',
+    share_scope: row.share_scope || 'shared',
+    allowed_emails: Array.isArray(row.allowed_emails) ? [...row.allowed_emails] : [],
+    allowed_agent_labels: Array.isArray(row.allowed_agent_labels) ? [...row.allowed_agent_labels] : [],
+  }
+  deviceEditVisible.value = true
+}
+async function submitDeviceEdit() {
+  const f = deviceEditRow.value
+  const changes = {
+    display_name: f.display_name, owner: f.owner, position_code: f.position_code,
+    share_scope: f.share_scope,
+  }
+  if (f.share_scope === 'restricted') {
+    changes.allowed_emails = f.allowed_emails
+    changes.allowed_agent_labels = f.allowed_agent_labels
+  }
+  if (me.value.role === 'admin') {
+    changes.model_class = f.model_class || null
+    changes.ip = f.ip
+    changes.adb_port = Number(f.adb_port)
+    changes.mac = f.mac
+  }
+  deviceEditSaving.value = true
+  try {
+    await api('/api/devices/' + encodeURIComponent(f.device_id), {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(changes),
+    })
+    ElMessage.success('设备已更新')
+    deviceEditVisible.value = false
+    loadDevices()
+  } catch (e) { ElMessage.error(e.message) } finally { deviceEditSaving.value = false }
 }
 
 const productTypes = ref([])
@@ -1190,11 +1245,22 @@ const legendRole = [
             <el-table-column prop="adb_address" label="ADB" min-width="110" show-overflow-tooltip>
               <template #default="{ row }"><span class="mono">{{ row.adb_address }}</span></template>
             </el-table-column>
-            <el-table-column v-if="me.role === 'admin'" label="操作" width="140" fixed="right">
+            <el-table-column label="共享" min-width="80">
               <template #default="{ row }">
-                <el-button link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
-                <el-button link size="small" @click="openScreenshotHistory(row)">记录</el-button>
-                <el-button link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
+                <el-tooltip v-if="row.share_scope === 'restricted'"
+                  :content="(row.allowed_emails || []).concat(row.allowed_agent_labels || []).join('，') || '受限'" placement="top">
+                  <el-tag size="small" type="warning">受限</el-tag>
+                </el-tooltip>
+                <el-tag v-else-if="row.share_scope === 'private'" size="small" type="danger">独享</el-tag>
+                <el-tag v-else size="small" type="success">公共</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="200" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
+                <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
+                <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
+                <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1894,6 +1960,25 @@ const legendRole = [
                 <el-option v-for="t in enabledProductTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
               </el-select>
             </el-form-item>
+            <el-form-item label="共享方式">
+              <el-radio-group v-model="deviceAddConfirm.share_scope">
+                <el-radio value="shared">公共（任何人可申请）</el-radio>
+                <el-radio value="private">个人独享（仅自己）</el-radio>
+                <el-radio value="restricted">指定名单</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <template v-if="deviceAddConfirm.share_scope === 'restricted'">
+              <el-form-item label="允许用户">
+                <el-select v-model="deviceAddConfirm.allowed_emails" multiple filterable allow-create
+                  default-first-option placeholder="选择或输入邮箱，回车添加" style="width: 100%">
+                  <el-option v-for="c in contacts" :key="c.email" :label="c.email" :value="c.email" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="允许 Agent">
+                <el-select v-model="deviceAddConfirm.allowed_agent_labels" multiple filterable allow-create
+                  default-first-option placeholder="输入 Agent 名，回车添加" style="width: 100%" />
+              </el-form-item>
+            </template>
             <el-form-item label="备注">
               <el-input v-model="deviceAddConfirm.note" type="textarea" :rows="2" />
             </el-form-item>
@@ -1905,6 +1990,48 @@ const legendRole = [
           <el-button v-if="deviceAddStep === 2" @click="deviceAddStep = 1">上一步</el-button>
           <el-button v-if="deviceAddStep === 1 && deviceAddMode === 'ip'" type="primary" :loading="deviceAddProbing" @click="submitDeviceProbe">探测</el-button>
           <el-button v-else-if="deviceAddStep === 2" type="primary" :loading="deviceAddSaving" @click="submitDeviceRegister">确认注册</el-button>
+        </template>
+      </el-dialog>
+
+      <!-- v0.26 设备编辑 -->
+      <el-dialog v-model="deviceEditVisible" title="编辑设备" width="720px" :close-on-click-modal="false">
+        <el-form v-if="deviceEditRow" label-width="110px" class="settings-grid-form">
+          <el-form-item label="名称"><el-input v-model="deviceEditRow.display_name" /></el-form-item>
+          <el-form-item label="责任人"><el-input v-model="deviceEditRow.owner" /></el-form-item>
+          <el-form-item label="位置"><el-input v-model="deviceEditRow.position_code" /></el-form-item>
+          <el-form-item v-if="me.role === 'admin'" label="机型">
+            <el-select v-model="deviceEditRow.model_class" clearable style="width: 100%">
+              <el-option v-for="t in enabledProductTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
+            </el-select>
+          </el-form-item>
+          <template v-if="me.role === 'admin'">
+            <el-form-item label="IP"><el-input v-model="deviceEditRow.ip" /></el-form-item>
+            <el-form-item label="ADB 端口"><el-input-number v-model="deviceEditRow.adb_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="MAC"><el-input v-model="deviceEditRow.mac" /></el-form-item>
+          </template>
+          <el-form-item label="共享方式" class="settings-grid-full">
+            <el-radio-group v-model="deviceEditRow.share_scope">
+              <el-radio value="shared">公共（任何人可申请）</el-radio>
+              <el-radio value="private">个人独享（仅自己）</el-radio>
+              <el-radio value="restricted">指定名单</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <template v-if="deviceEditRow.share_scope === 'restricted'">
+            <el-form-item label="允许用户" class="settings-grid-full">
+              <el-select v-model="deviceEditRow.allowed_emails" multiple filterable allow-create
+                default-first-option placeholder="选择或输入邮箱，回车添加" style="width: 100%">
+                <el-option v-for="c in contacts" :key="c.email" :label="c.email" :value="c.email" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="允许 Agent" class="settings-grid-full">
+              <el-select v-model="deviceEditRow.allowed_agent_labels" multiple filterable allow-create
+                default-first-option placeholder="输入 Agent 名，回车添加" style="width: 100%" />
+            </el-form-item>
+          </template>
+        </el-form>
+        <template #footer>
+          <el-button @click="deviceEditVisible = false">取消</el-button>
+          <el-button type="primary" :loading="deviceEditSaving" @click="submitDeviceEdit">保存</el-button>
         </template>
       </el-dialog>
 

@@ -12,7 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState, RegisterChannel, is_claimable
-from app.domain import audit
+import json
+from app.domain import audit, device_acl
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
 from app.models import Device, Lease, ProductType, QueueEntry
@@ -230,6 +231,7 @@ def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
         "project_name": d.project_name,
         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "last_probe_at": d.last_probe_at.isoformat() if d.last_probe_at else None,
+        "share_scope": d.share_scope or "shared",
     }
     if not for_agent:
         data.update(
@@ -246,6 +248,8 @@ def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
                 "board_dt": d.board_dt,
                 "storage_type": d.storage_type,
                 "has_wifi": d.has_wifi,
+                "allowed_emails": device_acl.allowed_emails(d),
+                "allowed_agent_labels": device_acl.allowed_agent_labels(d),
             }
         )
     return data
@@ -406,6 +410,9 @@ def device_register(
     model_class: str | None = None,
     note: str | None = None,
     agent_info: str | None = None,
+    share_scope: str | None = None,
+    allowed_emails: list[str] | None = None,
+    allowed_agent_labels: list[str] | None = None,
 ) -> dict:
     form = form_store.get(form_id)
     if form is None:
@@ -514,6 +521,8 @@ def device_register(
         device.status = DeviceStatus.PENDING
 
     device.last_probe_at = now
+    # v0.26：共享范围与允许名单（注册即可定）
+    _apply_share(device, share_scope, allowed_emails, allowed_agent_labels)
     # v0.23：探测得到芯片/浮点信息时自动回填机型字典（best-effort，不阻塞注册）。
     _backfill_product_chip(session, final_model, probe.get("extra") or {})
     audit.record(
@@ -647,3 +656,116 @@ def _retire_device(session: Session, d: Device, actor_email: str) -> None:
     d.status = DeviceStatus.RETIRED
     d.retired_at = utcnow()
     audit.record(session, actor=actor_email, action="unregister", device_id=d.device_id)
+
+
+# ---------- v0.26 共享策略与设备编辑 ----------
+
+def _norm_str_list(values) -> list[str]:
+    if not values:
+        return []
+    if isinstance(values, str):
+        values = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for v in values:
+        item = str(v).strip()
+        key = item.lower()
+        if item and key not in seen:
+            seen.add(key)
+            out.append(item)
+    return out
+
+
+def _apply_share(device: Device, share_scope, emails, labels) -> None:
+    scope = (share_scope or "shared").strip()
+    if scope not in device_acl.SHARE_SCOPES:
+        raise DomainError("VALIDATION_ERROR", f"非法共享模式：{share_scope}")
+    emails = _norm_str_list(emails)
+    labels = _norm_str_list(labels)
+    for e in emails:
+        if "@" not in e:
+            raise DomainError("VALIDATION_ERROR", f"邮箱格式不正确：{e}")
+    if scope in ("shared", "private"):
+        emails, labels = [], []
+    device.share_scope = scope
+    device.allowed_emails = json.dumps(emails) if emails else None
+    device.allowed_agent_labels = json.dumps(labels) if labels else None
+
+
+def device_update(
+    session: Session,
+    device_id: str,
+    actor_email: str,
+    is_admin: bool,
+    changes: dict,
+) -> dict:
+    """编辑设备。管理员可改全部；注册者可改基础信息与共享策略，不能改身份/机型/IP。"""
+    d = session.get(Device, device_id)
+    if d is None:
+        raise DomainError("NOT_FOUND", f"device {device_id} not found")
+    if not is_admin and d.registered_by != actor_email:
+        raise DomainError("FORBIDDEN", "只有注册人或管理员可以编辑该设备")
+
+    def take(key):
+        return changes[key] if key in changes else None
+
+    if is_admin:
+        if take("model_class") is not None:
+            mc = str(take("model_class")).strip() or None
+            if mc is not None and session.get(ProductType, mc) is None:
+                raise DomainError("UNKNOWN_MODEL", f"机型 {mc} 不在机型字典中")
+            d.model_class = mc
+        if take("ip") is not None:
+            d.ip = str(take("ip")).strip() or None
+        if take("adb_port") is not None:
+            d.adb_port = int(take("adb_port"))
+        if take("mac") is not None:
+            d.mac = str(take("mac")).strip() or None
+
+    if take("display_name") is not None:
+        d.display_name = str(take("display_name")).strip() or None
+    if take("owner") is not None:
+        d.owner = " ".join(str(take("owner")).split())
+    if take("position_code") is not None:
+        d.position_code = " ".join(str(take("position_code")).split())
+
+    old_scope = d.share_scope or "shared"
+    if take("share_scope") is not None or take("allowed_emails") is not None or take("allowed_agent_labels") is not None:
+        _apply_share(
+            d,
+            take("share_scope") or old_scope,
+            take("allowed_emails") or [],
+            take("allowed_agent_labels") or [],
+        )
+
+    # 收紧共享时，取消该设备上不再符合资格的 QUEUED 排队并通知。
+    from app.models import QueueEntry
+    from app.constants import QueueState
+    for entry in (
+        session.query(QueueEntry)
+        .filter(
+            QueueEntry.target_type == "device",
+            QueueEntry.target_code == d.device_id,
+            QueueEntry.state == QueueState.QUEUED,
+        )
+        .all()
+    ):
+        principal = entry.principal
+        ok = device_acl.can_use_device(
+            session, d,
+            principal.email if principal else None,
+            None, is_admin=False,
+        )
+        if not ok:
+            entry.state = QueueState.CANCELLED
+            audit.record(
+                session, actor=actor_email, action="queue_cancel_share_change",
+                device_id=d.device_id, detail={"entry_id": entry.entry_id},
+            )
+
+    audit.record(
+        session, actor=actor_email, action="device_update",
+        device_id=d.device_id, detail={"fields": sorted(changes.keys())},
+    )
+    session.commit()
+    return _public_device(d, session, for_agent=False)

@@ -282,6 +282,26 @@ def device_detail(device_id: str, session: Session = Depends(get_session)):
         raise HTTPException(status_code=404, detail=e.message)
 
 
+@router.put("/devices/{device_id}")
+def web_device_update(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """编辑设备：管理员可改全部；注册者可改基础信息与共享策略。"""
+    try:
+        return catalog.device_update(
+            session,
+            device_id=device_id,
+            actor_email=identity.email,
+            is_admin=(identity.role == "admin"),
+            changes=payload,
+        )
+    except catalog.DomainError as e:
+        raise _domain_http(e)
+
+
 @router.delete("/devices/{device_id}")
 def delete_device_route(
     device_id: str,
@@ -344,6 +364,9 @@ def web_device_register(
             model_class=(str(payload.get("model_class") or "").strip() or None),
             note=(str(payload.get("note") or "").strip() or None),
             agent_info="web-console",
+            share_scope=(str(payload.get("share_scope") or "").strip() or None),
+            allowed_emails=payload.get("allowed_emails") or None,
+            allowed_agent_labels=payload.get("allowed_agent_labels") or None,
         )
     except catalog.DomainError as e:
         raise HTTPException(status_code=400, detail=e.message)
@@ -1582,7 +1605,7 @@ def send_credentials(
 # ---- v0.25：编译服务器（账号级私有，一账号一台，自助配置 + 自动探测）----
 def _domain_http(exc: DomainError) -> HTTPException:
     code = getattr(exc, "code", "")
-    if code == "FORBIDDEN":
+    if code in ("FORBIDDEN", "ACCESS_DENIED"):
         status = 403
     elif code == "NOT_FOUND":
         status = 404

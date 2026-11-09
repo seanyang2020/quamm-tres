@@ -303,8 +303,15 @@ def res_device_register(
     owner: str,
     model_class: str | None = None,
     note: str | None = None,
+    share_scope: str | None = None,
+    allowed_emails: list[str] | None = None,
+    allowed_agent_labels: list[str] | None = None,
 ) -> dict:
     """提交注册表（两段式第二步，agent_info 为必填）。位置编号与责任人缺失会拒绝。
+
+    可选共享设置：share_scope=shared（默认公共）/private（个人独享）/restricted（指定名单）；
+    restricted 时用 allowed_emails（用户邮箱）与 allowed_agent_labels（Agent 名）给出允许名单。
+    
 
     agent_info（必填）：调用方 Agent 名称/版本（如 WorkBuddy/1.2、豆包/1.0），写入审计并
     回写到当前凭据的 agent_label，便于在凭据页识别该用户使用的 Agent。
@@ -317,6 +324,8 @@ def res_device_register(
         result = catalog.device_register(
             session, form_id, position_code, owner,
             actor_email=auth.email, model_class=model_class, note=note, agent_info=agent_info,
+            share_scope=share_scope, allowed_emails=allowed_emails,
+            allowed_agent_labels=allowed_agent_labels,
         )
         # 用解析后的 agent_info（可能回退自 probe 暂存）回写凭据，避免显式入参为空时漏写。
         resolved_label = str(result.get("agent_info") or "").strip()[:128] or None
@@ -343,6 +352,31 @@ def res_device_confirm(flash_id: str, code: str) -> dict:
         return catalog.device_confirm(flash_id, code)
     except DomainError as e:
         return _err(e)
+
+
+@mcp.tool()
+def res_device_update(
+    device_id: str,
+    changes: dict,
+) -> dict:
+    """编辑设备（管理员可改全部；注册者可改 display_name/owner/position_code/共享策略）。
+
+    changes 为字段字典，常用键：share_scope（shared/private/restricted）、
+    allowed_emails（邮箱数组）、allowed_agent_labels（Agent 名数组）、display_name、
+    owner、position_code；管理员还可改 model_class/ip/adb_port/mac。
+    非注册人且非管理员返回 FORBIDDEN。
+    """
+    auth = require_auth()
+    session = SessionLocal()
+    try:
+        return catalog.device_update(
+            session, device_id, actor_email=auth.email,
+            is_admin=auth.is_admin, changes=changes,
+        )
+    except DomainError as e:
+        return _err(e)
+    finally:
+        session.close()
 
 
 @mcp.tool()

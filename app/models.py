@@ -101,6 +101,13 @@ class Device(Base):
     # v0.19：注册该设备的 Agent 名称（agent_info），设备页直接可见
     register_agent: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # v0.26 设备共享范围与允许名单（名单为 JSON 字符串数组）
+    share_scope: Mapped[str] = mapped_column(
+        String(16), default="shared", server_default="shared", nullable=False
+    )
+    allowed_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
+    allowed_agent_labels: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     adb_port: Mapped[int] = mapped_column(Integer, default=5555, nullable=False)
     android_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
