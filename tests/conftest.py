@@ -52,6 +52,9 @@ class Db:
         """以某人的身份直接调用 MCP 工具函数（真实接口层，跳过 HTTP JSON-RPC）。"""
         from app.security import set_auth
 
+        # v0.18 起申请/注册强制带 agent_info；测试夹具统一注入，避免逐用例改造。
+        if fn.__name__ in ("res_apply", "res_device_register") and "agent_info" not in kwargs:
+            kwargs["agent_info"] = "pytest-agent/1.0"
         with set_auth(self.auth(email)):
             return fn(**kwargs)
 
@@ -66,13 +69,20 @@ def register_device(db: Db, email: str, dev, position_code: str, owner: str) -> 
     """通过真实接口（res_device_probe -> res_device_register）注册一台模拟设备。"""
     from app.mcp.server import res_device_probe, res_device_register
 
-    probe = db.call(email, res_device_probe, ip=dev.ip, port=dev.port)
+    probe = db.call(
+        email,
+        res_device_probe,
+        ip=dev.ip,
+        port=dev.port,
+        agent_info="pytest-agent/1.0",
+    )
     return db.call(
         email,
         res_device_register,
         form_id=probe["form_id"],
         position_code=position_code,
         owner=owner,
+        agent_info="pytest-agent/1.0",
     )
 
 

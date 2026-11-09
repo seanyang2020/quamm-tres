@@ -119,6 +119,7 @@ def res_apply(
     purpose: str | None = None,
     expected_minutes: int | None = None,
     priority: int = 0,
+    agent_info: str | None = None,
 ) -> dict:
     """申请设备（两种方式二选一）。
 
@@ -126,6 +127,7 @@ def res_apply(
       全被占则进该机型的等待队列（同机型的人共用一个队列）。
     - device_id="xxx"：指定具体某台设备（兼容旧用法）。
     - target="xxx"：旧单参数用法（device_id 或 type_code），保留兼容历史客户端。
+    - agent_info（必填）：调用方 Agent 名称/版本，如 "WorkBuddy/1.2"；缺失会被拒绝。
 
     返回 GRANTED（含 adb_address）或 QUEUED（含 ticket_id 与位次）。
     """
@@ -137,6 +139,7 @@ def res_apply(
         purpose=purpose,
         expected_minutes=expected_minutes,
         priority=priority,
+        agent_info=agent_info,
     )
 
 

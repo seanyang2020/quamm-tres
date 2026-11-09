@@ -369,6 +369,13 @@ def device_register(
     agent_info = _clean_agent_info(agent_info) or _clean_agent_info(
         getattr(form, "agent_info", None)
     )
+    # v0.18 硬门禁：注册必须自报 Agent 身份，缺失直接拒绝。
+    if not agent_info:
+        raise DomainError(
+            "AGENT_INFO_REQUIRED",
+            "设备注册必须带 agent_info（调用方 Agent 名称/版本），请升级接入客户端后重试",
+            {"required_field": "agent_info"},
+        )
 
     if not position_code or not owner:
         missing = []

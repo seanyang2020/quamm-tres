@@ -34,6 +34,14 @@ from app.utils import new_lease_id, utcnow
 logger = logging.getLogger("quamm-tres.leasing")
 
 
+def _clean_agent_info(value) -> str | None:
+    """调用方 Agent 自报身份（如 WorkBuddy/豆包，可带版本），截断到 128 字符。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:128] or None
+
+
 def _ttl_minutes(session: Session, expected_minutes: int | None) -> int:
     lease_max = int(get_runtime_value(session, "lease_max_minutes"))
     lease_ttl = int(get_runtime_value(session, "lease_ttl_minutes"))
@@ -239,9 +247,21 @@ def apply(
     purpose: str | None = None,
     expected_minutes: int | None = None,
     priority: int = 0,
+    agent_info: str | None = None,
 ) -> dict:
     principal = auth.principal
     credential_id = auth.credential.id
+
+    # v0.18 硬门禁：申请必须自报 Agent 身份（如 WorkBuddy/豆包，可带版本），缺失直接拒绝。
+    agent_info = _clean_agent_info(agent_info)
+    if not agent_info:
+        raise DomainError(
+            "AGENT_INFO_REQUIRED",
+            "申请设备必须带 agent_info（调用方 Agent 名称/版本），请升级接入客户端后重试",
+            {"required_field": "agent_info", "agent_contract_version": AGENT_CONTRACT_VERSION},
+        )
+    # 回写到凭据，看板/凭据页可识别该 token 用的是哪个 Agent。
+    auth.credential.agent_label = agent_info
 
     active = count_active_leases(session, principal.id)
     if active >= principal.quota:
