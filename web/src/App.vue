@@ -1196,39 +1196,6 @@ const legendRole = [
           </el-tab-pane>
         </el-tabs>
 
-        <el-dialog v-model="previewVisible" title="凭据预览（尚未发送）" width="920px" :close-on-click-modal="false" @closed="closePreview">
-          <template v-if="preview">
-            <div style="margin-bottom: 12px">
-              <el-button type="primary" plain @click="copyMcpConfig">拷贝 MCP 配置 JSON</el-button>
-              <span style="margin-left: 12px; color: #909399">共 {{ preview.count }} 人 · 有效期 {{ preview.valid_days }} 天 · 批次 {{ preview.batch_id }}（30 分钟内可发送）</span>
-            </div>
-            <el-table :data="preview.results" border max-height="320">
-              <el-table-column prop="name" label="姓名" width="120" />
-              <el-table-column label="邮箱" width="220">
-                <template #default="{ row }">
-                  <span v-if="row.has_email !== false && row.email">{{ row.email }}</span>
-                  <el-tag v-else type="info" size="small">仅生成，不发邮件</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="role" label="权限" width="80" />
-              <el-table-column label="token">
-                <template #default="{ row }"><span class="mono">{{ row.token }}</span></template>
-              </el-table-column>
-              <el-table-column label="操作" width="110">
-                <template #default="{ row }"><el-button size="small" @click="copyToken(row.token)">拷贝 token</el-button></template>
-              </el-table-column>
-            </el-table>
-
-            <h3 style="margin-top: 16px">邮件正文预览</h3>
-            <p style="margin: 4px 0"><strong>主题：</strong>{{ preview.results[0].subject }}</p>
-            <pre class="mail-preview">{{ preview.results[0].body }}</pre>
-          </template>
-          <template #footer>
-            <el-button @click="closePreview">仅生成不发邮件</el-button>
-            <el-button type="primary" :loading="sending" @click="confirmSend">确认发送邮件</el-button>
-          </template>
-        </el-dialog>
-
         <el-dialog v-model="editDialog" title="编辑联系人" width="440px">
           <el-form label-width="70px">
             <el-form-item label="邮箱"><el-input v-model="editRow.email" disabled /></el-form-item>
@@ -1273,6 +1240,40 @@ const legendRole = [
           </template>
         </el-dialog>
       </div>
+
+      <!-- 全局弹窗：凭据预览（接入申请页与设置页都可能触发，故放在页面条件之外） -->
+      <el-dialog v-model="previewVisible" title="凭据预览（尚未发送）" width="920px" :close-on-click-modal="false" @closed="closePreview">
+        <template v-if="preview">
+          <div style="margin-bottom: 12px">
+            <el-button type="primary" plain @click="copyMcpConfig">拷贝 MCP 配置 JSON</el-button>
+            <span style="margin-left: 12px; color: #909399">共 {{ preview.count }} 人 · 有效期 {{ preview.valid_days }} 天 · 批次 {{ preview.batch_id }}（30 分钟内可发送）</span>
+          </div>
+          <el-table :data="preview.results" border max-height="320">
+            <el-table-column prop="name" label="姓名" width="120" />
+            <el-table-column label="邮箱" width="220">
+              <template #default="{ row }">
+                <span v-if="row.has_email !== false && row.email">{{ row.email }}</span>
+                <el-tag v-else type="info" size="small">仅生成，不发邮件</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="role" label="权限" width="80" />
+            <el-table-column label="token">
+              <template #default="{ row }"><span class="mono">{{ row.token }}</span></template>
+            </el-table-column>
+            <el-table-column label="操作" width="110">
+              <template #default="{ row }"><el-button size="small" @click="copyToken(row.token)">拷贝 token</el-button></template>
+            </el-table-column>
+          </el-table>
+
+          <h3 style="margin-top: 16px">邮件正文预览</h3>
+          <p style="margin: 4px 0"><strong>主题：</strong>{{ preview.results[0].subject }}</p>
+          <pre class="mail-preview">{{ preview.results[0].body }}</pre>
+        </template>
+        <template #footer>
+          <el-button @click="closePreview">仅生成不发邮件</el-button>
+          <el-button type="primary" :loading="sending" @click="confirmSend">确认发送邮件</el-button>
+        </template>
+      </el-dialog>
     </el-main>
   </el-container>
 </template>
