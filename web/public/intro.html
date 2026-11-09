@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quamm TRES · 系统介绍 v0.19</title>
+<style>
+  :root{--ink:#1f2937;--accent:#2563eb;--accent2:#1e3a8a;--line:#e5e7eb;--bg:#f8fafc;--ok:#059669;--warn:#d97706;--danger:#dc2626;}
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg);line-height:1.65;}
+  header{background:linear-gradient(135deg,#1e3a8a,#2563eb);color:#fff;padding:34px 44px;}
+  header h1{margin:0 0 6px;font-size:28px;}
+  header p{margin:0;opacity:.92;font-size:15px;}
+  main{max-width:1080px;margin:0 auto;padding:24px 22px 70px;}
+  section{background:#fff;border:1px solid var(--line);border-radius:12px;padding:22px 26px;margin:18px 0;box-shadow:0 1px 3px rgba(0,0,0,.05);}
+  h2{color:var(--accent);border-left:5px solid var(--accent);padding-left:10px;margin:4px 0 16px;font-size:20px;}
+  h3{font-size:15px;margin:18px 0 8px;color:var(--accent2);}
+  table{border-collapse:collapse;width:100%;margin:10px 0;}
+  th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;font-size:14px;}
+  th{background:#f1f5f9;}
+  ul{margin:8px 0;padding-left:22px;}
+  .tag{display:inline-block;background:#dbeafe;color:#1d4ed8;border-radius:999px;padding:2px 10px;font-size:12px;margin-right:6px;}
+  .tag.warn{background:#fef3c7;color:#92400e;}
+  .tag.danger{background:#fee2e2;color:#991b1b;}
+  .tag.ok{background:#d1fae5;color:#065f46;}
+  /* 通用流程图：flex 盒子 + 箭头 */
+  .flow{display:flex;flex-wrap:wrap;align-items:stretch;gap:0;margin:10px 0;overflow-x:auto;padding-bottom:6px;}
+  .node{border:1.5px solid var(--accent);background:#eff6ff;border-radius:10px;padding:12px 14px;min-width:118px;max-width:180px;
+        display:flex;flex-direction:column;justify-content:center;text-align:center;font-size:13.5px;font-weight:600;}
+  .node small{font-weight:400;color:#475569;margin-top:3px;}
+  .node.grp{border-color:#64748b;background:#f8fafc;}
+  .node.dev{border-color:var(--ok);background:#ecfdf5;}
+  .node.warn{border-color:var(--warn);background:#fffbeb;}
+  .arrow{display:flex;align-items:center;padding:0 10px;color:var(--accent);font-size:20px;font-weight:700;}
+  .arrow.down{writing-mode:vertical-rl;padding:8px 0;}
+  .row{display:flex;gap:14px;flex-wrap:wrap;}
+  .col{flex:1;min-width:240px;border:1px dashed var(--line);border-radius:10px;padding:14px;background:#fbfdff;}
+  .col h4{margin:0 0 8px;font-size:14px;color:var(--accent2);}
+  .pill{display:inline-block;border:1px solid var(--line);border-radius:8px;padding:6px 10px;margin:3px 4px 3px 0;font-size:13px;background:#f8fafc;}
+  .back{display:inline-block;margin:18px 0 0;color:#fff;background:rgba(255,255,255,.18);border-radius:8px;padding:8px 14px;text-decoration:none;font-size:14px;}
+  .back:hover{background:rgba(255,255,255,.3);}
+  .muted{color:#64748b;font-size:13px;}
+  .state{display:flex;flex-wrap:wrap;align-items:center;gap:6px;}
+  .state .node{min-width:100px;}
+  .er{display:flex;flex-wrap:wrap;gap:10px;}
+  .er .ent{border:1.5px solid #64748b;background:#f8fafc;border-radius:10px;padding:10px 12px;font-size:13px;min-width:120px;}
+  .er .ent b{color:var(--accent2);}
+  .er .rel{align-self:center;color:#64748b;font-weight:700;}
+</style>
+</head>
+<body>
+<header>
+  <h1>Quamm TRES · 测试资源分配管理系统</h1>
+  <p>版本 0.19.0（pre-release）｜FastAPI + SQLite + Vue3 + MCP｜14 台真实设备已接入</p>
+  <a class="back" href="./index.html">← 返回 TRES 控制台</a>
+</header>
+<main>
+
+  <section>
+    <h2>1. 系统定位</h2>
+    <p>Quamm TRES 统一管理公司 ADB 测试设备，解决<b>设备占用不透明、闲置难回收、凭据失控</b>三类问题。
+       AI Agent 经 <b>MCP</b> 申请、续约、心跳、释放设备；管理员与用户经 <b>Web</b> 查看占用、巡检与凭据。
+       数据库是唯一事实源，后台 Worker 用服务器时钟持续对账，重启不丢租约。</p>
+    <div>
+      <span class="tag">一套 rr_ 凭据 · Web/MCP 两用</span>
+      <span class="tag">admin / user 两档权限</span>
+      <span class="tag">逻辑 + 物理双闸门防闲置</span>
+      <span class="tag ok">凭据全生命周期可管</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. 总体架构</h2>
+    <div class="flow">
+      <div class="node grp">接入方<small>AI Agent / 浏览器</small></div>
+      <div class="arrow">→</div>
+      <div class="node">接入层 :9100<small>MCP /mcp/ · Web API</small></div>
+      <div class="arrow">→</div>
+      <div class="node">应用层<small>领域模块 + Worker + runtime_config</small></div>
+      <div class="arrow">→</div>
+      <div class="node">SQLite<small>13 张表</small></div>
+    </div>
+    <div class="row">
+      <div class="col"><h4>领域模块</h4>
+        <span class="pill">leasing 租约</span><span class="pill">catalog 设备注册</span>
+        <span class="pill">devicelock 物理锁</span><span class="pill">credentials 凭据</span>
+        <span class="pill">flash 刷机</span>
+      </div>
+      <div class="col"><h4>后台 Worker</h4>
+        <span class="pill">租约/心跳对账（10s）</span><span class="pill">巡检（30min）</span>
+        <span class="pill">凭据到期提醒（每日）</span><span class="pill">offer 超时回收</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 部署拓扑与入口</h2>
+    <div class="flow">
+      <div class="node">WSL Ubuntu<small>uvicorn + worker</small></div>
+      <div class="arrow">→</div>
+      <div class="node">直连<small>127.0.0.1:9100</small></div>
+      <div class="arrow">→</div>
+      <div class="node">局域网<small>172.16.10.25:9100</small></div>
+      <div class="arrow">→</div>
+      <div class="node">Caddy /quamm/</div>
+      <div class="arrow">→</div>
+      <div class="node">cpolar 公网<small>隧道地址重启会变</small></div>
+    </div>
+    <table>
+      <tr><th>入口</th><th>地址</th><th>用途</th></tr>
+      <tr><td>直连</td><td>http://127.0.0.1:9100</td><td>本机调试</td></tr>
+      <tr><td>局域网</td><td>http://172.16.10.25:9100</td><td>局域网管理</td></tr>
+      <tr><td>Caddy</td><td>https://127.0.0.1:18080/quamm/</td><td>统一网关（自签）</td></tr>
+      <tr><td>cpolar</td><td>公网隧道</td><td>外网 / 移动端</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>4. 申请 → 心跳 → 锁 → 回收</h2>
+    <div class="flow">
+      <div class="node">res_apply<small>必带 agent_info</small></div>
+      <div class="arrow">→</div>
+      <div class="node">发租约 + 心跳契约<small>含锁路径</small></div>
+      <div class="arrow">→</div>
+      <div class="node dev">adb connect + 写 RAMFS 锁<small>主机时钟</small></div>
+      <div class="arrow">→</div>
+      <div class="node warn">每 75 分钟 res_heartbeat<small>续约，受 24h 上限</small></div>
+      <div class="arrow">→</div>
+      <div class="node dev">超时/到期 → 删锁 + 断 ADB</div>
+    </div>
+    <p class="muted">Agent 自维护锁、缺失即补；遇到 foreign lock 不自行删除，由服务端裁决。</p>
+  </section>
+
+  <section>
+    <h2>5. 租约状态机</h2>
+    <div class="state">
+      <div class="node">OFFERED</div><div class="arrow">→</div>
+      <div class="node">GRANTED</div><div class="arrow">→</div>
+      <div class="node warn">EXPIRING</div><div class="arrow">→</div>
+      <div class="node">GRANTED<small>心跳/续约恢复</small></div>
+    </div>
+    <div class="state" style="margin-top:10px">
+      <div class="node">OFFERED → RELEASED<small>offer 超时</small></div>
+      <div class="arrow">→</div>
+      <div class="node">EXPIRING → EXPIRED<small>超宽限</small></div>
+      <div class="arrow">→</div>
+      <div class="node dev">回收 + 删锁 + 断 ADB</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>6. 防闲置两道闸门</h2>
+    <p><span class="tag">逻辑闸门</span>Worker 每 10 秒用服务器时钟比对：TTL 到期或心跳超时即强制回收，不依赖 Agent 自觉。</p>
+    <p><span class="tag danger">物理闸门</span>回收时校验锁 holder/lease 匹配后删除 RAMFS 锁并 adb disconnect，旧 Agent 物理上无法继续操作。</p>
+    <table>
+      <tr><th>参数</th><th>默认</th><th>参数</th><th>默认</th></tr>
+      <tr><td>租约 TTL</td><td>90 分钟</td><td>心跳间隔</td><td>75 分钟</td></tr>
+      <tr><td>到期宽限</td><td>10 分钟</td><td>心跳宽限</td><td>10 分钟</td></tr>
+      <tr><td>累计硬上限</td><td>24 小时</td><td>offer 窗</td><td>60 秒</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>7. 凭据生命周期（v0.19 重点）</h2>
+    <div class="flow">
+      <div class="node">发放 issue<small>有效期 90 天</small></div>
+      <div class="arrow">→</div>
+      <div class="node warn">吊销 revoke<small>级联强制回收活跃租约</small></div>
+      <div class="arrow">→</div>
+      <div class="node">恢复 restore<small>清空吊销时间</small></div>
+    </div>
+    <div class="row">
+      <div class="col"><h4>普通删除 delete</h4>
+        <p class="muted">仍有租约引用时以 <b>409 CREDENTIAL_IN_USE</b> 拒绝，保护历史。</p>
+      </div>
+      <div class="col"><h4>强制删除 force-delete（管理员）</h4>
+        <p class="muted">先回收活跃租约，再硬删凭据并级联删除关联租约 / 排队条目，全程留审计。Web 与 MCP 均支持。</p>
+      </div>
+    </div>
+    <p class="muted">已吊销凭据在 Web 单独的「已吊销」标签页展示，不占用有效凭据主表。</p>
+  </section>
+
+  <section>
+    <h2>8. 数据模型（核心实体）</h2>
+    <div class="er">
+      <div class="ent"><b>product_type</b><br/>机型字典/元数据</div><span class="rel">1—N</span>
+      <div class="ent"><b>device</b><br/>设备/指纹/register_agent</div><span class="rel">1—N</span>
+      <div class="ent"><b>lease</b><br/>租约/心跳</div>
+    </div>
+    <div class="er" style="margin-top:10px">
+      <div class="ent"><b>principal</b><br/>人员/管理员标志</div><span class="rel">1—N</span>
+      <div class="ent"><b>credential</b><br/>凭据/agent_label</div><span class="rel">1—N</span>
+      <div class="ent"><b>lease</b></div>
+    </div>
+    <div class="er" style="margin-top:10px">
+      <div class="ent"><b>queue_entry</b></div>
+      <div class="ent"><b>audit_event</b></div>
+      <div class="ent"><b>flash_job</b></div>
+      <div class="ent"><b>patrol_run</b></div>
+      <div class="ent"><b>notice</b></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>9. 当前试用状态</h2>
+    <ul>
+      <li>5 个真实机型、14 台真机（全 real），无 mock 残留。</li>
+      <li>申请/注册的 agent_info 为 MCP schema 级必填，凭据与设备均可显示 Agent 名。</li>
+      <li>凭据支持吊销（级联回收）、恢复、普通删除、管理员强制删除。</li>
+      <li>各入口均 200、前端 hash 一致；scripts/run_selftest.sh 可一键自检。</li>
+    </ul>
+    <p class="muted">本页面随版本持续维护，源码位于 web/public/intro.html。</p>
+  </section>
+
+</main>
+</body>
+</html>

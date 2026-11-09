@@ -11,6 +11,7 @@ const pages = [
   { key: 'credentials', label: '凭据' },
   { key: 'audit', label: '审计' },
   { key: 'settings', label: '设置' },
+  { key: 'intro', label: '系统介绍' },
 ]
 const active = ref('dashboard')
 const settingsTab = ref('system')
@@ -216,6 +217,7 @@ async function loadAudit() {
 }
 
 function switchPage(key) {
+  if (key === 'intro') { window.open('intro.html', '_blank'); return }
   active.value = key
   if (key === 'dashboard') loadDashboard()
   else if (key === 'devices') loadDevices()
