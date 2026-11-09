@@ -276,6 +276,8 @@ def res_device_probe(
     hint_model: str | None = None,
     hint_position: str | None = None,
     agent_info: str | None = None,
+    source: str | None = None,
+    timeout: int | None = None,
 ) -> dict:
     """探测设备 IP 并出注册表（两段式第一步）。返回 form_id，30 分钟有效。
 
@@ -288,6 +290,8 @@ def res_device_probe(
         hint_model=hint_model,
         hint_position=hint_position,
         agent_info=agent_info,
+        source=source,
+        timeout=timeout,
     )
 
 

@@ -337,6 +337,7 @@ def device_probe(
     probe = {
         "ip": ip,
         "adb_port": port,
+        "source": source or settings.probe_backend,
         "level": result.level,
         "mac": result.mac,
         "sn": result.sn,
@@ -465,6 +466,7 @@ def device_register(
         device = existing
         device.ip = probe.get("ip") or device.ip
         device.adb_port = probe.get("adb_port") or device.adb_port
+        device.source = probe.get("source") or device.source
         device.android_version = probe.get("android_version") or device.android_version
         device.position_code = position_code
         device.owner = owner
@@ -488,6 +490,7 @@ def device_register(
             registered_by=actor_email,
             register_channel=RegisterChannel.MCP_AGENT,
             register_agent=agent_info,
+            source=probe.get("source") or "real",
             ip=probe.get("ip"),
             adb_port=probe.get("adb_port", 5555),
             android_version=probe.get("android_version"),

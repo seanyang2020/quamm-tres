@@ -43,6 +43,19 @@
 - 前端：「编译服务器」tab 对所有登录用户开放，标题改为「我的编译服务器（账号私有）」，无配置时才显示
   「添加我的编译服务器」按钮，机型编辑/新增对话框移除编译服务器选择器。
 
+### 修复：MCP 注册的真实设备因 source=mock 被误判 offline
+- 现象：adb 能连上（如 172.16.60.198），设备页却显示 offline/L0。根因：`Device.source` 列默认
+  `mock`，而 MCP 注册路径（`catalog.device_register`）新建设备时未写 source，导致巡检按 mock 后端
+  走 HTTP /probe（真机不提供该端点），连续失败达阈值后判 offline；此前的健康修复只改状态不改 source，
+  下一轮巡检又被打回。
+- 修复：`catalog.device_probe` 在探测结果中记录实际后端 source；`device_register` 新建/更新设备时
+  持久化该 source（已有设备重新注册也会校正）。MCP `res_device_probe` 新增可选 source/timeout 参数
+  （默认沿用全局后端，保持 mock 测试契约；真实设备可显式 source="real"，Web 手工添加与设备发现路径
+  已强制 real）。
+- 数据修复：对两台 source 误标为 mock 的真机（dev_997b70adae/172.16.60.198、
+  dev_080989bb98/172.16.60.249）重新真实探测确证 L3 后，更正 source=real、状态 available、
+  清零连续失败并写审计；全量巡检后稳定保持 available（L3 总数 4→6）。
+
 ## [0.24.0] - 2026-11-09
 
 ### 新增
