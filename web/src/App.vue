@@ -1648,7 +1648,7 @@ const legendRole = [
                 <template #default="{ row }">{{ row.username }}@{{ row.host }}:{{ row.port }}</template>
               </el-table-column>
               <el-table-column label="认证" width="110">
-                <template #default="{ row }"><el-tag size="small">{{ row.auth_mode === 'key' ? '密钥' : '密码' }}</el-tag><span v-if="row.secret_mask" style="margin-left:6px;color:#909399">{{ row.secret_mask }}</span></template>
+                <template #default="{ row }"><el-tag size="small">{{ row.auth_mode === 'key' ? '密钥' : row.auth_mode === 'agent' ? '免密' : '密码' }}</el-tag><span v-if="row.secret_mask" style="margin-left:6px;color:#909399">{{ row.secret_mask }}</span></template>
               </el-table-column>
               <el-table-column label="状态" width="110">
                 <template #default="{ row }"><el-tag :type="bsTagType(row.status)" size="small">{{ row.status }}</el-tag></template>
@@ -1750,9 +1750,13 @@ const legendRole = [
               <el-radio-group v-model="bsRow.auth_mode">
                 <el-radio value="password">密码（默认）</el-radio>
                 <el-radio value="key">密钥（推荐）</el-radio>
+                <el-radio value="agent">免密（本机已配置）</el-radio>
               </el-radio-group>
             </el-form-item>
-            <el-form-item :label="bsRow.auth_mode === 'key' ? '私钥/留空生成' : '密码'">
+            <el-form-item v-if="bsRow.auth_mode === 'agent'" label=" ">
+              <span style="color:#909399;font-size:12px;line-height:1.5">复用运行 TRES 服务的本机已配置免密（~/.ssh 默认密钥 / agent / config），无需填写或保存任何凭据。</span>
+            </el-form-item>
+            <el-form-item v-if="bsRow.auth_mode !== 'agent'" :label="bsRow.auth_mode === 'key' ? '私钥/留空生成' : '密码'">
               <el-input v-model="bsRow.secret" type="textarea" :rows="3" :placeholder="bsRow.auth_mode === 'key' ? '粘贴现有 OpenSSH 私钥；留空则自动生成 ed25519' : 'SSH 登录密码，加密保管'" show-password />
             </el-form-item>
             <el-form-item label="工作根目录"><el-input v-model="bsRow.work_root" placeholder="home 下目录，默认 tres-auto" /></el-form-item>

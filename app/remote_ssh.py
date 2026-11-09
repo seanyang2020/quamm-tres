@@ -55,7 +55,18 @@ def run_remote(
     key_path: str | None = None
     args: list[str] = []
     try:
-        if auth_mode == "key":
+        if auth_mode == "agent":
+            # 复用运行 TRES 服务的本机已配置免密（~/.ssh 默认密钥/agent/config），不存任何凭据
+            args = [
+                "ssh", "-p", str(port),
+                "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "BatchMode=yes",
+                "-o", "ConnectTimeout=10",
+                "-o", "LogLevel=ERROR",
+                f"{username}@{host}",
+                remote_cmd,
+            ]
+        elif auth_mode == "key":
             if not secret:
                 return SshResult(1, "", "缺少私钥")
             fd, key_path = tempfile.mkstemp(prefix="tres_key_", suffix=".pem")

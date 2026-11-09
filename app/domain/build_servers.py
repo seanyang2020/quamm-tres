@@ -53,8 +53,8 @@ def create_build_server(db, *, actor: str, principal_id: int, name: str, host: s
     name, host, username = name.strip(), host.strip(), username.strip()
     if not name or not host or not username:
         raise DomainError("VALIDATION_ERROR", "名称/主机/用户名不能为空")
-    if auth_mode not in ("password", "key"):
-        raise DomainError("VALIDATION_ERROR", "auth_mode 仅支持 password/key")
+    if auth_mode not in ("password", "key", "agent"):
+        raise DomainError("VALIDATION_ERROR", "auth_mode 仅支持 password/key/agent")
     # 一账号一台
     if db.query(BuildServer).filter(BuildServer.principal_id == principal_id).first():
         raise DomainError(
@@ -98,9 +98,12 @@ def update_build_server(db, *, actor: str, principal_id: int, is_admin: bool,
     if work_root is not None and work_root.strip():
         row.work_root = work_root.strip()
     if auth_mode is not None:
-        if auth_mode not in ("password", "key"):
-            raise DomainError("VALIDATION_ERROR", "auth_mode 仅支持 password/key")
+        if auth_mode not in ("password", "key", "agent"):
+            raise DomainError("VALIDATION_ERROR", "auth_mode 仅支持 password/key/agent")
         row.auth_mode = auth_mode
+        if auth_mode == "agent":
+            row.secret_encrypted = None
+            row.public_key = None
     # 仅当显式传入非空 secret 才重新加密；留空沿用原密钥
     if secret:
         row.secret_encrypted = encrypt_secret(secret)
