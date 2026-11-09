@@ -14,7 +14,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from app.config import settings
 from app.db import SessionLocal, init_db
-from app.domain import leasing, patrol
+from app.domain import leasing, patrol, credentials
 from app.domain.probe import setup_prober_from_settings
 from app.seed import seed_product_types
 
@@ -55,6 +55,19 @@ def _patrol_job() -> None:
         session.close()
 
 
+def _credential_expiry_job() -> None:
+    session = SessionLocal()
+    try:
+        result = credentials.credential_expiry_scan(session)
+        if result["notified"]:
+            logger.info("credential expiry notice: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("credential expiry scan failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
@@ -64,8 +77,17 @@ def run_worker() -> None:
     scheduler = BackgroundScheduler()
     scheduler.add_job(_lease_scan_job, "interval", seconds=settings.lease_scan_seconds, id="lease_scan")
     scheduler.add_job(_patrol_job, "interval", minutes=settings.patrol_interval_minutes, id="patrol")
+    scheduler.add_job(_credential_expiry_job, "interval", hours=24, id="credential_expiry")
     scheduler.start()
     logger.info("worker started (lease_scan=%ss, patrol=%smin)", settings.lease_scan_seconds, settings.patrol_interval_minutes)
+
+    # 重启后立即对账：DB 是状态唯一事实源，停机期间到期/心跳超时的租约立刻回收，
+    # 有效租约保持 GRANTED；不依赖 TTL 猜测或 Agent 重新上报。
+    try:
+        _lease_scan_job()
+        logger.info("startup reconciliation done")
+    except Exception:  # noqa: BLE001
+        logger.exception("startup reconciliation failed")
 
     try:
         import time

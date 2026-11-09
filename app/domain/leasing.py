@@ -13,7 +13,13 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState
+from app.constants import (
+    AGENT_CONTRACT_VERSION,
+    DeviceStatus,
+    HealthLevel,
+    LeaseState,
+    QueueState,
+)
 from app.config import settings
 from app.domain import audit, flash
 from app.domain import devicelock
@@ -309,7 +315,10 @@ def apply(
                 "state": "GRANTED",
                 "lease": _lease_dict(lease, device),
                 "renew_hint": "长任务请到期前调 res_renew 续约",
+                "agent_contract_version": AGENT_CONTRACT_VERSION,
                 "heartbeat": {
+                    "tool": "res_heartbeat",
+                    "how_to": "每 interval_minutes 内调用一次 res_heartbeat(lease_id, agent_info)，超时未心跳将被强制回收",
                     "required": bool(get_runtime_value(session, "heartbeat_required")),
                     "interval_minutes": int(get_runtime_value(session, "heartbeat_interval_minutes")),
                     "miss_grace_minutes": int(get_runtime_value(session, "heartbeat_miss_grace_minutes")),

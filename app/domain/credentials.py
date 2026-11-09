@@ -14,7 +14,8 @@ from sqlalchemy.orm import Session
 from app import mailer
 from app.domain import audit
 from app.domain.catalog import DomainError
-from app.models import Contact, Credential, Principal
+from app.domain.notices import create_notice
+from app.models import Contact, Credential, Notice, Principal
 from app.runtime_config import get_runtime_value
 from app.utils import hash_token, new_token, token_prefix, utcnow
 
@@ -134,3 +135,53 @@ def issue_credential(
             result["mail_error"] = str(e)
 
     return result
+
+
+def credential_expiry_scan(session: Session, warn_days: int = 7) -> dict:
+    """扫描即将到期（默认 7 天内）的有效凭据，通知持有人与管理员。
+
+    24 小时内对同一凭据已发过到期提醒则跳过（避免重复通知）；
+    已吊销凭据不参与。worker 每日跑一次。
+    """
+    now = utcnow()
+    horizon = now + timedelta(days=warn_days)
+    creds = (
+        session.query(Credential)
+        .filter(Credential.revoked_at.is_(None), Credential.expires_at <= horizon)
+        .all()
+    )
+    admin_emails = [
+        p.email for p in session.query(Principal).filter(Principal.is_admin.is_(True)).all()
+    ]
+    notified, skipped = [], []
+    for c in creds:
+        marker = f"credential:{c.id}"
+        recent = (
+            session.query(Notice)
+            .filter(
+                Notice.event_type == "credential_expiring",
+                Notice.created_at >= now - timedelta(hours=24),
+                Notice.body.contains(marker),
+            )
+            .first()
+        )
+        if recent is not None:
+            skipped.append(c.id)
+            continue
+        holder = c.principal.email if c.principal else None
+        recipients = list(dict.fromkeys([*( [holder] if holder else []), *admin_emails]))
+        days_left = max(0, (c.expires_at - now).days)
+        create_notice(
+            session,
+            "credential_expiring",
+            title=f"凭据即将到期：{c.token_prefix}（{days_left} 天后）",
+            body=(
+                f"{marker} 凭据 {c.token_prefix}（角色 {c.role}）将于 {c.expires_at.isoformat()} 到期，"
+                f"剩余约 {days_left} 天。请联系管理员重新发放，到期后 MCP/Web 将无法继续使用。"
+            ),
+            recipients=recipients,
+            severity="warn",
+        )
+        notified.append(c.id)
+    session.commit()
+    return {"warn_days": warn_days, "notified": notified, "skipped": skipped, "checked": len(creds)}
