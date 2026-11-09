@@ -15,6 +15,7 @@ from app.domain import catalog, credentials, flash, leasing
 from app.domain.catalog import DomainError
 from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
+from app.roadmap import list_roadmap
 from app.utils import utcnow
 
 mcp = FastMCP(
@@ -234,6 +235,18 @@ def res_health() -> dict:
         }
     finally:
         session.close()
+
+
+@mcp.tool()
+def res_roadmap(include_released: bool = False, include_pending: bool = True) -> dict:
+    """查看路线图与后续逐步释放的能力（todo/backlog）。
+
+    - 默认返回待发布/进行中项，并附带待拍板项；
+    - include_released=true 时同时列出已发布能力；
+    - include_pending=false 时隐藏待拍板项。
+    每项含 id、标题、描述、状态（planned/in_progress/pending_decision/released）、类别与计划版本。
+    """
+    return list_roadmap(include_released=include_released, include_pending=include_pending)
 
 
 # ---------- 设备注册（B 域） ----------

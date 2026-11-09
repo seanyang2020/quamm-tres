@@ -5,15 +5,14 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 const pages = [
   { key: 'dashboard', label: '看板' },
   { key: 'devices', label: '设备' },
-  { key: 'leases', label: '占用' },
-  { key: 'queue', label: '排队' },
-  { key: 'anomaly', label: '异常/待修复' },
+  { key: 'scheduling', label: '资源调度' },
+  { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
-  { key: 'audit', label: '审计' },
   { key: 'settings', label: '设置' },
 ]
 const active = ref('dashboard')
 const settingsTab = ref('system')
+const schedulingTab = ref('leases')
 
 // ---- 认证状态 ----
 const booting = ref(true)
@@ -219,12 +218,20 @@ function switchPage(key) {
   active.value = key
   if (key === 'dashboard') loadDashboard()
   else if (key === 'devices') loadDevices()
-  else if (key === 'leases') loadLeases()
+  else if (key === 'scheduling') {
+    loadLeases(); loadQueue(); loadAnomalies(); loadNotices(); loadPatrol()
+  }
+  else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
-  else if (key === 'queue') loadQueue()
-  else if (key === 'anomaly') { loadAnomalies(); loadNotices(); loadPatrol() }
-  else if (key === 'audit') loadAudit()
-  else if (key === 'settings') { loadSettings(); loadProductTypes(); loadContacts(); loadSmtp() }
+  else if (key === 'settings') {
+    loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit()
+  }
+}
+
+// 从看板等入口跳到资源调度并指定子标签
+function goScheduling(tab) {
+  schedulingTab.value = tab
+  switchPage('scheduling')
 }
 
 // ---- 启动 / 登录 ----
@@ -675,7 +682,7 @@ const legendRole = [
         <span class="title-version">v{{ versionInfo ? versionInfo.version : '—' }}</span>
       </div>
       <el-menu :default-active="active" @select="switchPage" style="flex: 1">
-        <el-menu-item v-for="p in pages" :key="p.key" :index="p.key">{{ p.label }}</el-menu-item>
+        <el-menu-item v-for="p in pages.filter(x => !x.admin || me.role === 'admin')" :key="p.key" :index="p.key">{{ p.label }}</el-menu-item>
       </el-menu>
       <div class="user-box">
         <div style="font-weight: 600">{{ me.name || me.email }}</div>
@@ -695,8 +702,8 @@ const legendRole = [
           <el-col :span="4"><el-card class="dash-card" @click="goDevices('available')"><div class="dash-label">可用</div><div class="dash-num" style="color: #67c23a">{{ dashboard.available }}</div></el-card></el-col>
           <el-col :span="4"><el-card class="dash-card" @click="goDevices('occupied')"><div class="dash-label">占用</div><div class="dash-num" style="color: #e6a23c">{{ dashboard.by_status.occupied || 0 }}</div></el-card></el-col>
           <el-col :span="4"><el-card class="dash-card" @click="goDevices('offline')"><div class="dash-label">离线</div><div class="dash-num" style="color: #f56c6c">{{ dashboard.by_status.offline || 0 }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="active = 'leases'"><div class="dash-label">活跃租约</div><div class="dash-num">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="active = 'queue'"><div class="dash-label">排队中</div><div class="dash-num">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="goScheduling('leases')"><div class="dash-label">活跃租约</div><div class="dash-num">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="goScheduling('queue')"><div class="dash-label">排队中</div><div class="dash-num">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
         </el-row>
         <p v-if="dashboard && dashboard.last_patrol" style="color: #909399">
           上次巡检：{{ dashboard.last_patrol.ended_at }}（L3 {{ dashboard.last_patrol.l3_count }} / suspect {{ dashboard.last_patrol.suspect_count }} / offline {{ dashboard.last_patrol.offline_count }}）
@@ -783,9 +790,11 @@ const legendRole = [
         <el-empty v-if="!deviceGroups.length" description="没有符合条件的设备" />
       </div>
 
-      <!-- 占用（申请人 email + name） -->
-      <div v-else-if="active === 'leases'">
-        <h2>占用</h2>
+      <!-- 资源调度：占用 / 排队 / 异常 -->
+      <div v-else-if="active === 'scheduling'">
+        <h2>资源调度</h2>
+        <el-tabs v-model="schedulingTab">
+          <el-tab-pane label="占用" name="leases">
         <el-table :data="leases" border>
           <el-table-column prop="lease_id" label="租约" width="140" />
           <el-table-column prop="display_name" label="设备" />
@@ -801,11 +810,9 @@ const legendRole = [
             </template>
           </el-table-column>
         </el-table>
-      </div>
+          </el-tab-pane>
 
-      <!-- 排队 -->
-      <div v-else-if="active === 'queue'">
-        <h2>排队</h2>
+          <el-tab-pane label="排队" name="queue">
         <h3>按机型组</h3>
         <el-table :data="queueData ? queueData.by_model : []" border>
           <el-table-column prop="target_code" label="机型" />
@@ -844,11 +851,9 @@ const legendRole = [
           <el-table-column label="offer 倒计时" width="130"><template #default="{ row }">{{ offerCountdown(row) }}</template></el-table-column>
           <el-table-column prop="joined_at" label="入队时间" width="200" />
         </el-table>
-      </div>
+          </el-tab-pane>
 
-      <!-- 异常 / 待修复 -->
-      <div v-else-if="active === 'anomaly'">
-        <h2>异常 / 待修复</h2>
+          <el-tab-pane label="异常/待修复" name="anomaly">
         <h3>offline 设备（连续失败轮次）</h3>
         <el-table :data="anomalies ? anomalies.offline : []" border>
           <el-table-column prop="device_id" label="ID" width="140" />
@@ -892,6 +897,59 @@ const legendRole = [
           <el-table-column prop="l3_count" label="L3" width="80" />
           <el-table-column prop="suspect_count" label="suspect" width="100" />
           <el-table-column prop="offline_count" label="offline" width="100" />
+        </el-table>
+          </el-tab-pane>
+        </el-tabs>
+      </div>
+
+      <!-- 接入申请（发接入凭据，管理员） -->
+      <div v-else-if="active === 'onboarding'">
+        <h2>接入申请</h2>
+        <p style="color:#909399">为新接入方发放 rr_ 凭据：先预览，再决定是否发邮件；邮件正文含 MCP 配置与接入说明。</p>
+        <el-form label-width="100px" style="max-width: 640px">
+          <el-form-item label="从通讯录选">
+            <el-select v-model="sendForm.emails" multiple filterable placeholder="可多选" style="width: 100%">
+              <el-option v-for="c in contacts" :key="c.email" :label="(c.name || c.email) + ' <' + c.email + '>'" :value="c.email" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="或手填邮箱">
+            <el-input v-model="sendForm.manual_emails" type="textarea" :rows="2" placeholder="多个邮箱用逗号 / 换行分隔" />
+          </el-form-item>
+          <el-form-item label="仅姓名（不发邮件）">
+            <div style="width: 100%">
+              <div style="display: flex; gap: 8px; margin-bottom: 8px">
+                <el-input v-model="holderDraft.name" placeholder="姓名" style="width: 160px" />
+                <el-input v-model="holderDraft.note" placeholder="备注（可选）" style="flex: 1" />
+                <el-button @click="addManualHolder">添加</el-button>
+              </div>
+              <el-tag
+                v-for="(h, idx) in sendForm.manual_holders"
+                :key="idx"
+                closable
+                style="margin: 0 6px 6px 0"
+                @close="removeManualHolder(idx)"
+              >{{ h.name }}{{ h.note ? '（' + h.note + '）' : '' }}</el-tag>
+              <div v-if="!sendForm.manual_holders.length" style="color: #909399; font-size: 12px">可添加无邮箱条目：只生成 token，确认发送时跳过发信</div>
+            </div>
+          </el-form-item>
+          <el-form-item label="权限">
+            <el-select v-model="sendForm.role" style="width: 160px">
+              <el-option label="user（普通）" value="user" />
+              <el-option label="admin（管理员）" value="admin" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="备注"><el-input v-model="sendForm.note" placeholder="可选，写入凭据备注与邮件" /></el-form-item>
+          <el-form-item label="有效期">
+            <el-input-number v-model="sendForm.valid_days" :min="1" :max="3650" /> <span style="margin-left: 8px">天</span>
+          </el-form-item>
+          <el-form-item><el-button type="primary" :loading="generating" @click="generateCredentials">生成凭据（预览）</el-button></el-form-item>
+        </el-form>
+        <el-table v-if="sendResults.length" :data="sendResults" border style="margin-top: 12px">
+          <el-table-column prop="email" label="邮箱" width="240" />
+          <el-table-column prop="role" label="权限" width="80" />
+          <el-table-column label="token" width="220"><template #default="{ row }"><span class="mono">{{ row.token }}</span></template></el-table-column>
+          <el-table-column label="发送结果" width="100"><template #default="{ row }"><el-tag :type="row.sent ? 'success' : 'danger'">{{ row.sent ? '成功' : '失败' }}</el-tag></template></el-table-column>
+          <el-table-column prop="error" label="错误" />
         </el-table>
       </div>
 
@@ -938,24 +996,7 @@ const legendRole = [
         </el-tabs>
       </div>
 
-      <!-- 审计 -->
-      <div v-else-if="active === 'audit'">
-        <h2>审计</h2>
-        <div style="margin-bottom: 12px">
-          <el-select v-model="auditAction" placeholder="按动作筛选（全部）" clearable @change="filterAudit" style="width: 240px">
-            <el-option v-for="a in (audit ? audit.actions : [])" :key="a" :label="a" :value="a" />
-          </el-select>
-        </div>
-        <el-table :data="audit ? audit.events : []" border>
-          <el-table-column prop="created_at" label="时间" width="200" />
-          <el-table-column prop="actor" label="主体" width="180" />
-          <el-table-column prop="action" label="动作" width="160" />
-          <el-table-column prop="object" label="对象" width="150" />
-          <el-table-column label="详情"><template #default="{ row }">{{ row.detail ? JSON.stringify(row.detail) : '-' }}</template></el-table-column>
-        </el-table>
-      </div>
-
-      <!-- 设置：系统 + 通讯录 + 发凭据 + SMTP -->
+      <!-- 设置：系统 + 设备类型 + 通讯录 + SMTP + 介绍 + 审计 -->
       <div v-else-if="active === 'settings'">
         <h2>设置</h2>
         <el-tabs v-model="settingsTab">
@@ -1118,55 +1159,6 @@ const legendRole = [
             </el-form>
           </el-tab-pane>
 
-          <el-tab-pane v-if="me.role === 'admin'" label="发接入凭据" name="send">
-            <h3>发接入凭据（先预览，再决定是否发邮件）</h3>
-            <el-form label-width="100px" style="max-width: 640px">
-              <el-form-item label="从通讯录选">
-                <el-select v-model="sendForm.emails" multiple filterable placeholder="可多选" style="width: 100%">
-                  <el-option v-for="c in contacts" :key="c.email" :label="(c.name || c.email) + ' <' + c.email + '>'" :value="c.email" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="或手填邮箱">
-                <el-input v-model="sendForm.manual_emails" type="textarea" :rows="2" placeholder="多个邮箱用逗号 / 换行分隔" />
-              </el-form-item>
-              <el-form-item label="仅姓名（不发邮件）">
-                <div style="width: 100%">
-                  <div style="display: flex; gap: 8px; margin-bottom: 8px">
-                    <el-input v-model="holderDraft.name" placeholder="姓名" style="width: 160px" />
-                    <el-input v-model="holderDraft.note" placeholder="备注（可选）" style="flex: 1" />
-                    <el-button @click="addManualHolder">添加</el-button>
-                  </div>
-                  <el-tag
-                    v-for="(h, idx) in sendForm.manual_holders"
-                    :key="idx"
-                    closable
-                    style="margin: 0 6px 6px 0"
-                    @close="removeManualHolder(idx)"
-                  >{{ h.name }}{{ h.note ? '（' + h.note + '）' : '' }}</el-tag>
-                  <div v-if="!sendForm.manual_holders.length" style="color: #909399; font-size: 12px">可添加无邮箱条目：只生成 token，确认发送时跳过发信</div>
-                </div>
-              </el-form-item>
-              <el-form-item label="权限">
-                <el-select v-model="sendForm.role" style="width: 160px">
-                  <el-option label="user（普通）" value="user" />
-                  <el-option label="admin（管理员）" value="admin" />
-                </el-select>
-              </el-form-item>
-              <el-form-item label="备注"><el-input v-model="sendForm.note" placeholder="可选，写入凭据备注与邮件" /></el-form-item>
-              <el-form-item label="有效期">
-                <el-input-number v-model="sendForm.valid_days" :min="1" :max="3650" /> <span style="margin-left: 8px">天</span>
-              </el-form-item>
-              <el-form-item><el-button type="primary" :loading="generating" @click="generateCredentials">生成凭据（预览）</el-button></el-form-item>
-            </el-form>
-            <el-table v-if="sendResults.length" :data="sendResults" border style="margin-top: 12px">
-              <el-table-column prop="email" label="邮箱" width="240" />
-              <el-table-column prop="role" label="权限" width="80" />
-              <el-table-column label="token" width="220"><template #default="{ row }"><span class="mono">{{ row.token }}</span></template></el-table-column>
-              <el-table-column label="发送结果" width="100"><template #default="{ row }"><el-tag :type="row.sent ? 'success' : 'danger'">{{ row.sent ? '成功' : '失败' }}</el-tag></template></el-table-column>
-              <el-table-column prop="error" label="错误" />
-            </el-table>
-          </el-tab-pane>
-
           <el-tab-pane v-if="me.role === 'admin'" label="SMTP 配置" name="smtp">
             <h3>SMTP 配置</h3>
             <el-form v-if="smtp" label-width="100px" style="max-width: 560px">
@@ -1187,6 +1179,20 @@ const legendRole = [
           <el-tab-pane label="系统介绍" name="intro">
             <iframe src="intro.html" title="系统介绍"
               style="width:100%;height:78vh;border:1px solid var(--el-border-color);border-radius:10px;"></iframe>
+          </el-tab-pane>
+          <el-tab-pane v-if="me.role === 'admin'" label="审计" name="audit">
+            <div style="margin-bottom: 12px">
+              <el-select v-model="auditAction" placeholder="按动作筛选（全部）" clearable @change="filterAudit" style="width: 240px">
+                <el-option v-for="a in (audit ? audit.actions : [])" :key="a" :label="a" :value="a" />
+              </el-select>
+            </div>
+            <el-table :data="audit ? audit.events : []" border>
+              <el-table-column prop="created_at" label="时间" width="200" />
+              <el-table-column prop="actor" label="主体" width="180" />
+              <el-table-column prop="action" label="动作" width="160" />
+              <el-table-column prop="object" label="对象" width="150" />
+              <el-table-column label="详情"><template #default="{ row }">{{ row.detail ? JSON.stringify(row.detail) : '-' }}</template></el-table-column>
+            </el-table>
           </el-tab-pane>
         </el-tabs>
 
