@@ -594,6 +594,7 @@ async function boot() {
     loadHealthInfo()
     loadProductTypes()
     loadBuildServers()
+    loadDevices()
   }
 }
 onMounted(boot)
