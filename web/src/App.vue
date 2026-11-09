@@ -241,7 +241,7 @@ async function submitDeviceRegister() {
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
-const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false })
+const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null })
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
@@ -253,7 +253,7 @@ const ptCreateSaving = ref(false)
 const ptCreateRow = ref({
   type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
   defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
-  chip_model: '', float_abi: 'auto', has_fpu: false,
+  chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null,
 })
 const ptCreateRules = computed(() => {
   const req = { required: true, message: '该字段默认必填（可勾选底部「允许不完整」放开）', trigger: 'blur' }
@@ -446,6 +446,63 @@ async function saveSettings() {
   } catch (e) { ElMessage.error(e.message) } finally { settingsSaving.value = false }
 }
 async function loadProductTypes() { productTypes.value = await api('/api/product-types') }
+
+// ---- v0.25：编译服务器（SSH 凭据 Fernet 加密，服务端集中执行）----
+const buildServers = ref([])
+const bsDialog = ref(false)
+const bsSaving = ref(false)
+const bsRow = ref({ server_id: null, name: '', host: '', port: 22, username: '', auth_mode: 'password', secret: '', work_root: 'tres-auto' })
+const bsProbing = ref('')
+const bsPubKey = ref('')
+const bsPubDialog = ref(false)
+async function loadBuildServers() {
+  try { buildServers.value = await api('/api/build-servers') } catch (e) { buildServers.value = [] }
+}
+function openBsCreate() {
+  bsRow.value = { server_id: null, name: '', host: '', port: 22, username: '', auth_mode: 'password', secret: '', work_root: 'tres-auto' }
+  bsDialog.value = true
+}
+function openBsEdit(row) {
+  bsRow.value = { server_id: row.server_id, name: row.name, host: row.host, port: row.port, username: row.username, auth_mode: row.auth_mode, secret: '', work_root: row.work_root }
+  bsDialog.value = true
+}
+async function saveBs() {
+  const r = bsRow.value
+  if (!r.name || !r.host || !r.username) { ElMessage.warning('名称/主机/用户名必填'); return }
+  bsSaving.value = true
+  try {
+    const body = { name: r.name, host: r.host, port: r.port, username: r.username, auth_mode: r.auth_mode, work_root: r.work_root }
+    if (r.secret) body.secret = r.secret
+    if (r.server_id) {
+      await api('/api/build-servers/' + encodeURIComponent(r.server_id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    } else {
+      await api('/api/build-servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    }
+    ElMessage.success('已保存')
+    bsDialog.value = false
+    loadBuildServers()
+  } catch (e) { ElMessage.error(e.message) } finally { bsSaving.value = false }
+}
+async function deleteBs(row) {
+  try {
+    await ElMessageBox.confirm('确认删除编译服务器「' + row.name + '」？被机型引用时会拒绝。', '确认', { type: 'warning' })
+  } catch (e) { return }
+  try {
+    await api('/api/build-servers/' + encodeURIComponent(row.server_id), { method: 'DELETE' })
+    ElMessage.success('已删除'); loadBuildServers()
+  } catch (e) { ElMessage.error(e.message) }
+}
+async function probeBs(row) {
+  bsProbing.value = row.server_id
+  try {
+    const r = await api('/api/build-servers/' + encodeURIComponent(row.server_id) + '/probe', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) })
+    ElMessage.success('探测完成：' + r.status)
+    loadBuildServers()
+  } catch (e) { ElMessage.error(e.message) } finally { bsProbing.value = '' }
+}
+function showBsPub(row) { bsPubKey.value = row.public_key || ''; bsPubDialog.value = true }
+function bsTagType(status) { return status === 'available' ? 'success' : (status === 'unavailable' ? 'danger' : 'info') }
+
 async function loadContacts() { contacts.value = await api('/api/contacts') }
 async function loadSmtp() { smtp.value = await api('/api/settings/smtp') }
 
@@ -488,7 +545,7 @@ function switchPage(key) {
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
   else if (key === 'settings') {
-    loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback()
+    loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback(); loadBuildServers()
     if (me.value && me.value.role === 'admin') loadScreenshotStats()
   }
 }
@@ -518,6 +575,7 @@ async function boot() {
     loadVersionInfo()
     loadHealthInfo()
     loadProductTypes()
+    if (me.value.role === 'admin') loadBuildServers()
   }
 }
 onMounted(boot)
@@ -793,6 +851,7 @@ function openPtEdit(row) {
     build_cmd: row.build_cmd || '', image_path: row.image_path || '',
     jenkins_url: row.jenkins_url || '', notes: row.notes || '',
     chip_model: row.chip_model || '', float_abi: row.float_abi || 'auto', has_fpu: !!row.has_fpu,
+    build_server_id: row.build_server_id || null,
   }
   ptEditDialog.value = true
 }
@@ -805,7 +864,7 @@ async function savePtEdit() {
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
         jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
         chip_model: ptEditRow.value.chip_model, float_abi: ptEditRow.value.float_abi,
-        has_fpu: ptEditRow.value.has_fpu,
+        has_fpu: ptEditRow.value.has_fpu, build_server_id: ptEditRow.value.build_server_id,
       }),
     })
     ElMessage.success('已保存（' + r.complete_label + '）')
@@ -829,7 +888,7 @@ function resetPtCreate() {
   ptCreateRow.value = {
     type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
     defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
-    chip_model: '', float_abi: 'auto', has_fpu: false,
+    chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null,
   }
   ptAllowIncomplete.value = false
   ptCreateForm.value?.clearValidate?.()
@@ -863,6 +922,7 @@ async function submitPtCreate() {
         defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
         image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
         chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
+        build_server_id: row.build_server_id,
       }),
     })
     ElMessage.success('已新增机型 ' + code)
@@ -1539,6 +1599,41 @@ const legendRole = [
               </el-form-item>
             </el-form>
           </el-tab-pane>
+          <el-tab-pane v-if="me.role === 'admin'" label="编译服务器" name="build-servers">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+              <h3 style="margin:0">编译服务器（SSH 凭据加密保管，服务端集中执行，不下发 agent）</h3>
+              <el-button type="primary" @click="openBsCreate">添加编译服务器</el-button>
+            </div>
+            <p style="color:#909399">添加后点「探测」：端口→认证→工作目录→git→工具链，全通过才具备 SDK 编译升级能力。密钥模式留空密码会自动生成 ed25519，公钥需放到编译机。</p>
+            <el-table :data="buildServers" border>
+              <el-table-column prop="name" label="名称" width="140" />
+              <el-table-column label="主机" width="180">
+                <template #default="{ row }">{{ row.username }}@{{ row.host }}:{{ row.port }}</template>
+              </el-table-column>
+              <el-table-column label="认证" width="110">
+                <template #default="{ row }"><el-tag size="small">{{ row.auth_mode === 'key' ? '密钥' : '密码' }}</el-tag><span v-if="row.secret_mask" style="margin-left:6px;color:#909399">{{ row.secret_mask }}</span></template>
+              </el-table-column>
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }"><el-tag :type="bsTagType(row.status)" size="small">{{ row.status }}</el-tag></template>
+              </el-table-column>
+              <el-table-column label="探测详情" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span v-if="row.probe_detail">
+                    <el-tag v-for="st in row.probe_detail.steps" :key="st.step" :type="st.ok ? 'success' : 'danger'" size="small" style="margin-right:4px">{{ st.step }}</el-tag>
+                  </span>
+                  <span v-else style="color:#c0c4cc">尚未探测</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="280">
+                <template #default="{ row }">
+                  <el-button size="small" :loading="bsProbing === row.server_id" @click="probeBs(row)">探测</el-button>
+                  <el-button v-if="row.public_key" size="small" @click="showBsPub(row)">公钥</el-button>
+                  <el-button size="small" @click="openBsEdit(row)">编辑</el-button>
+                  <el-button size="small" type="danger" plain @click="deleteBs(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-tab-pane>
           <el-tab-pane label="系统介绍" name="intro">
             <div class="intro-toolbar">
               <a class="intro-open" href="intro.html" target="_blank" rel="noopener">在全页面打开系统介绍 ↗</a>
@@ -1560,6 +1655,11 @@ const legendRole = [
         <el-dialog v-model="ptEditDialog" :title="'编辑设备类型 · ' + ptEditRow.type_code" width="640px">
           <el-form label-width="120px">
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
+            <el-form-item label="编译服务器">
+              <el-select v-model="ptEditRow.build_server_id" clearable placeholder="不绑定（不支持 SDK 编译升级）" style="width: 100%">
+                <el-option v-for="b in buildServers" :key="b.server_id" :label="b.name + '（' + b.host + ' · ' + b.status + '）'" :value="b.server_id" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="SDK 获取命令"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
@@ -1586,6 +1686,11 @@ const legendRole = [
             <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
             <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
             <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
+            <el-form-item label="编译服务器">
+              <el-select v-model="ptCreateRow.build_server_id" clearable placeholder="不绑定（不支持 SDK 编译升级）" style="width: 100%">
+                <el-option v-for="b in buildServers" :key="b.server_id" :label="b.name + '（' + b.host + ' · ' + b.status + '）'" :value="b.server_id" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" prop="build_cmd"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
             <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
@@ -1608,6 +1713,31 @@ const legendRole = [
             <el-button @click="ptCreateDialog = false">取消</el-button>
             <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">新增</el-button>
           </template>
+        </el-dialog>
+
+        <el-dialog v-model="bsDialog" :title="bsRow.server_id ? '编辑编译服务器' : '添加编译服务器'" width="560px" :close-on-click-modal="false">
+          <el-form label-width="110px">
+            <el-form-item label="名称"><el-input v-model="bsRow.name" placeholder="如 build01" /></el-form-item>
+            <el-form-item label="主机"><el-input v-model="bsRow.host" placeholder="IP 或域名" /></el-form-item>
+            <el-form-item label="端口"><el-input-number v-model="bsRow.port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="用户名"><el-input v-model="bsRow.username" /></el-form-item>
+            <el-form-item label="认证方式">
+              <el-radio-group v-model="bsRow.auth_mode">
+                <el-radio value="password">密码（默认）</el-radio>
+                <el-radio value="key">密钥（推荐）</el-radio>
+              </el-radio-group>
+            </el-form-item>
+            <el-form-item :label="bsRow.auth_mode === 'key' ? '私钥/留空生成' : '密码'">
+              <el-input v-model="bsRow.secret" type="textarea" :rows="3" :placeholder="bsRow.auth_mode === 'key' ? '粘贴现有 OpenSSH 私钥；留空则自动生成 ed25519' : 'SSH 登录密码，加密保管'" show-password />
+            </el-form-item>
+            <el-form-item label="工作根目录"><el-input v-model="bsRow.work_root" placeholder="home 下目录，默认 tres-auto" /></el-form-item>
+          </el-form>
+          <template #footer><el-button @click="bsDialog = false">取消</el-button><el-button type="primary" :loading="bsSaving" @click="saveBs">保存</el-button></template>
+        </el-dialog>
+
+        <el-dialog v-model="bsPubDialog" title="SSH 公钥（放到编译机 authorized_keys）" width="620px">
+          <el-input v-model="bsPubKey" type="textarea" :rows="6" readonly />
+          <template #footer><el-button type="primary" @click="bsPubDialog = false">知道了</el-button></template>
         </el-dialog>
       </div>
 

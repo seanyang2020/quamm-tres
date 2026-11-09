@@ -3,6 +3,29 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.25.0] - 2026-11-09
+
+### 新增：编译服务器（SSH 凭据加密保管 + 自动探测 + SDK 编译升级）
+- 新增独立「编译服务器」注册表 `build_server` 表（`BuildServer` 模型）：名称/主机/端口/用户名/
+  认证方式(password|key)/加密密钥/公钥/工作根目录/探测状态/探测详情/最近探测时间；机型
+  `ProductType` 新增可空 `build_server_id` 引用（inspect 判列后幂等 ALTER，老库不丢数据）。
+- 凭据静态加密：新模块 `app/secret_crypto.py` 用 Fernet 加密密码或私钥；主密钥取环境变量
+  `QUAMM_MASTER_KEY`，否则首启在 `app/var/master.key` 自动生成（权限 600），主密钥不进数据库；
+  接口只回显掩码（末 4 位），绝不返回明文/密文。
+- 密钥认证优先：key 模式留空私钥时自动生成 ed25519 密钥对（公钥可在界面查看，放编译机
+  authorized_keys）；密码模式用 sshpass，服务端经系统 ssh 集中执行，密钥不下发 agent。
+- 新模块 `app/remote_ssh.py`：TCP 可达性 + ssh/sshpass/密钥远程执行（临时私钥 600、用完即删、
+  StrictHostKeyChecking=accept-new、超时返回 rc=124）。
+- 添加时自动探测（`probe_build_server`）：逐步 tcp→auth→workdir(mkdir -p)→git→工具链，
+  落 probe_detail 与 status，全通过才具备 SDK 编译升级能力。
+- SDK 编译编排 `app/sdk_build.py`：工作目录 `~/<work_root>/<机型>-<IP尾号>`，依次执行机型的
+  sdk_repo_cmd（拉代码）与 build_cmd（编译），返回各步 rc 与日志。
+- 接口：REST 新增 /api/build-servers CRUD + /probe、/api/product-types/{code}/build-server、
+  /api/sdk-build（均管理员 cookie）；MCP 新增 `res_build_servers`（管理员，list/create/update/
+  delete/probe/bind）与 `res_sdk_build_upgrade`（有效凭据可触发，服务端集中执行）。MCP 工具 31→33。
+- 前端：设置新增「编译服务器」tab（系统介绍仍为最后一个 tab），机型编辑/新增对话框可选择绑定
+  编译服务器并查看状态，编译服务器对话框支持密码/密钥两种方式与探测结果展示。
+
 ## [0.24.0] - 2026-11-09
 
 ### 新增

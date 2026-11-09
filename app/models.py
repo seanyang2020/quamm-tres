@@ -72,6 +72,10 @@ class ProductType(Base):
     has_fpu: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
     )
+    # v0.25：编译服务器引用（SSH 凭据集中存在 build_server，机型只引用）
+    build_server_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("build_server.server_id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime())
 
 
@@ -386,3 +390,34 @@ class ScreenshotRecord(Base):
     bin: Mapped[str] = mapped_column(String(16), nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
     captured_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, index=True)
+
+class BuildServer(Base):
+    """编译服务器（v0.25）：SSH 主机 + 加密凭据，供 SDK 拉代码/编译/升级。
+
+    密钥（密码或私钥）经 app.secret_crypto  Fernet 加密后存 secret_encrypted，
+    主密钥不在本库；接口只回显掩码，服务端经 remote_ssh 集中使用、不下发 agent。
+    """
+
+    __tablename__ = "build_server"
+
+    server_id: Mapped[str] = mapped_column(String(32), primary_key=True)  # bs_+hex
+    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
+    host: Mapped[str] = mapped_column(String(128), nullable=False)
+    port: Mapped[int] = mapped_column(Integer, default=22, server_default="22", nullable=False)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    auth_mode: Mapped[str] = mapped_column(
+        String(8), default="password", server_default="password", nullable=False
+    )  # password / key
+    secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    public_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    work_root: Mapped[str] = mapped_column(
+        String(128), default="tres-auto", server_default="tres-auto", nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", nullable=False
+    )  # unknown / available / unavailable
+    probe_detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_probe_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+

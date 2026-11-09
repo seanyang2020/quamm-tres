@@ -80,6 +80,11 @@ _PRODUCT_TYPE_CHIP_COLUMNS = {
     "has_fpu": "BOOLEAN NOT NULL DEFAULT 0",
 }
 
+# product_type 表新增列（v0.25 编译服务器引用，可空）-> DDL 片段
+_PRODUCT_TYPE_BUILD_COLUMNS = {
+    "build_server_id": "VARCHAR(32)",
+}
+
 # v0.14：当前 5 个真实机型的 DB 工程名（用 dbxostest.py -ls + 设备 /etc/fw_version
 # 构建号对照确认）。只回填空值，不覆盖人工修改。
 _DB_PROJECT_BACKFILL = {
@@ -104,6 +109,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "lease", _LEASE_COLUMNS)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_CHIP_COLUMNS)
     _ensure_screenshot_table(session)
+    _ensure_columns(session, "product_type", _PRODUCT_TYPE_BUILD_COLUMNS)
 
 
 def _ensure_screenshot_table(session: Session) -> None:

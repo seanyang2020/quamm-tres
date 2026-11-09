@@ -33,6 +33,9 @@ from app.db import get_session
 from app.domain import catalog, credentials, feedback, leasing, patrol
 from app import discovery
 from app.domain.queueing import position as queue_position
+from app.domain import build_servers as buildsvc
+from app.domain.catalog import DomainError
+from app import sdk_build
 from app.models import (
     AuditEvent,
     Contact,
@@ -1556,3 +1559,126 @@ def send_credentials(
             item["error"] = str(e)
         results.append(item)
     return {"count": len(results), "results": results}
+
+# ---- v0.25：编译服务器（SSH 凭据加密保管 + 自动探测）----
+def _domain_http(exc: DomainError) -> HTTPException:
+    code = getattr(exc, "code", "")
+    status = 409 if code in ("BUILD_SERVER_NAME_TAKEN", "BUILD_SERVER_IN_USE") else 400
+    return HTTPException(status_code=status, detail={"code": code, "message": exc.message, "detail": exc.detail})
+
+
+@router.get("/build-servers")
+def list_build_servers(
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    return buildsvc.list_build_servers(session)
+
+
+@router.post("/build-servers")
+def create_build_server_route(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return buildsvc.create_build_server(
+            session,
+            actor=identity.email,
+            name=payload.get("name", ""),
+            host=payload.get("host", ""),
+            port=int(payload.get("port") or 22),
+            username=payload.get("username", ""),
+            auth_mode=payload.get("auth_mode", "password"),
+            secret=payload.get("secret") or None,
+            work_root=payload.get("work_root") or "tres-auto",
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.put("/build-servers/{server_id}")
+def update_build_server_route(
+    server_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return buildsvc.update_build_server(
+            session, actor=identity.email, server_id=server_id,
+            name=payload.get("name"), host=payload.get("host"),
+            port=payload.get("port"), username=payload.get("username"),
+            auth_mode=payload.get("auth_mode"), secret=payload.get("secret") or None,
+            work_root=payload.get("work_root"),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.delete("/build-servers/{server_id}")
+def delete_build_server_route(
+    server_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return buildsvc.delete_build_server(session, actor=identity.email, server_id=server_id)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/build-servers/{server_id}/probe")
+def probe_build_server_route(
+    server_id: str,
+    payload: dict = Body(default={}),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return buildsvc.probe_build_server(
+            session, server_id=server_id, subdir=(payload or {}).get("subdir")
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/product-types/{type_code}/build-server")
+def bind_build_server_route(
+    type_code: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    pt = session.get(ProductType, type_code)
+    if pt is None:
+        raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
+    server_id = (payload.get("build_server_id") or None)
+    if server_id and session.get(_build_server_model(), server_id) is None:
+        raise HTTPException(status_code=400, detail="编译服务器不存在")
+    pt.build_server_id = server_id
+    session.commit()
+    return {"type_code": type_code, "build_server_id": server_id}
+
+
+def _build_server_model():
+    from app.models import BuildServer
+    return BuildServer
+
+
+@router.post("/sdk-build")
+def sdk_build_route(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return sdk_build.run_sdk_build(
+            session,
+            type_code=payload.get("type_code", ""),
+            ip_suffix=payload.get("ip_suffix") or None,
+            timeout=int(payload.get("timeout") or 1800),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
