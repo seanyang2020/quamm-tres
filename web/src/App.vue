@@ -94,6 +94,9 @@ const settingsForm = ref({
   lease_max_minutes: 240,
   offer_window_seconds: 60,
   credential_valid_days: 90,
+  heartbeat_required: true,
+  heartbeat_interval_minutes: 75,
+  heartbeat_miss_grace_minutes: 10,
 })
 const settingsSaving = ref(false)
 
@@ -180,6 +183,9 @@ function syncSettingsForm(data) {
     lease_max_minutes: data.lease_max_minutes,
     offer_window_seconds: data.offer_window_seconds,
     credential_valid_days: data.credential_valid_days,
+    heartbeat_required: !!data.heartbeat_required,
+    heartbeat_interval_minutes: data.heartbeat_interval_minutes,
+    heartbeat_miss_grace_minutes: data.heartbeat_miss_grace_minutes,
   }
 }
 async function loadSettings() {
@@ -896,6 +902,15 @@ const legendRole = [
               </el-form-item>
               <el-form-item label="offer 窗口（秒）">
                 <el-input-number v-model="settingsForm.offer_window_seconds" :min="5" :max="3600" />
+              </el-form-item>
+              <el-form-item label="要求心跳">
+                <el-switch v-model="settingsForm.heartbeat_required" />
+              </el-form-item>
+              <el-form-item label="心跳间隔（分钟）">
+                <el-input-number v-model="settingsForm.heartbeat_interval_minutes" :min="1" :max="1440" />
+              </el-form-item>
+              <el-form-item label="心跳超时宽限（分钟）">
+                <el-input-number v-model="settingsForm.heartbeat_miss_grace_minutes" :min="1" :max="1440" />
               </el-form-item>
               <el-form-item label="凭据有效期（天）">
                 <el-input-number v-model="settingsForm.credential_valid_days" :min="1" :max="3650" />
