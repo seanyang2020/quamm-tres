@@ -3,6 +3,24 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.28.1] - 2026-11-09
+
+### 修正：手动探测结果立即生效（探不到即降级为不可用）
+- 问题：对一台 `available` 设备手动点「探测」，返回 L0 后状态仍停在 `available`，
+  人工确认的失败结论没有落地（旧逻辑把 available 的单次失败一律交给巡检阈值）。
+- `catalog._apply_probe_result` 改为返回 `(promoted, demoted)`，新增 `manual` 语义：
+  人工探测（单台/批量均算人工）探不到且原状态为 `available`、**无活跃租约**时，
+  立即把设备置为 `offline`，不再等 `patrol_fail_threshold`。
+- 有活跃租约（`GRANTED`/`EXPIRING`/`RESERVED`）的设备不动状态，只更新健康度与失败
+  计数，接口返回 `note` 说明「探测失败只更新健康度，状态保持 X」，避免破坏租约状态机。
+- 单台接口返回新增 `demoted` / `note`，批量返回新增 `demoted`（含降级台数），审计 detail
+  同步记录 `demoted` / `held_by_lease`。前端提示改为「探测失败：L0，已置为不可用（offline）」。
+- 后台巡检逻辑不变（仍按失败阈值判 offline），防止短暂抖动把整池翻掉。
+- 附带修状态标签可见性：表格重建时 `el-tag` 可能卡在 transition 起始态（opacity 0 /
+  scaleX 0）导致状态列显示空白，加兜底样式强制可见，避免状态不可判读。
+- 测试：`tests/test_pending_probe.py` 新增 2 项（available + L0 → offline、available + L3
+  不降级），全套 6 项通过。
+
 ## [0.28.0] - 2026-11-09
 
 ### 新增：pending 设备自动恢复探测与手动探测（单体 / 批量）

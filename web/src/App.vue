@@ -474,8 +474,9 @@ async function probeOne(row) {
   try {
     const r = await api(`/api/devices/${row.device_id}/probe`, { method: 'POST' })
     if (r.promoted) ElMessage.success(`探测成功：${r.level}，已转正为可用`)
+    else if (r.demoted) ElMessage.warning(`探测失败：${r.level}，已置为不可用（${r.status}）`)
     else if (r.level === 'L3') ElMessage.success(`探测成功：${r.level}，状态 ${r.status}`)
-    else ElMessage.warning(`探测完成：${r.level || '失败'}，仍为 ${r.status}`)
+    else ElMessage.warning(r.note || `探测完成：${r.level || '失败'}，仍为 ${r.status}`)
     await loadDevices()
   } catch (e) { ElMessage.error(e.message) } finally { probeBusy.value = '' }
 }
@@ -492,7 +493,8 @@ async function probeBatch(scope) {
       body: JSON.stringify({ device_ids: ids, limit: 20 }),
     })
     const more = targets.length > ids.length ? `（仅前 ${ids.length} 台，共 ${targets.length} 台）` : ''
-    ElMessage.success(`探测 ${r.scanned} 台，转正 ${r.promoted} 台，未通过 ${r.failed} 台${more}`)
+    const dg = r.demoted ? `，降级 ${r.demoted} 台` : ''
+    ElMessage.success(`探测 ${r.scanned} 台，转正 ${r.promoted} 台${dg}，未通过 ${r.failed} 台${more}`)
     await loadDevices()
   } catch (e) { ElMessage.error(e.message) } finally { probeBatchBusy.value = '' }
 }
@@ -2298,6 +2300,13 @@ const legendRole = [
 .shot-download { display: inline-block; text-decoration: none; }
 .shot-preview { width: 100%; height: 52vh; display: block; }
 .device-table { font-size: 12px; }
+/* v0.28.1：状态标签在表格重建时可能卡在 transition 起始态（opacity 0 / scaleX 0），
+   导致状态列看起来空白。这里兜底强制可见，动画只影响观感、不影响判读。 */
+.el-tag {
+  opacity: 1 !important;
+  transform: none !important;
+}
+
 .device-table-wrap { width: 100%; overflow-x: auto; }
 .device-table :deep(.el-table__cell) { padding: 3px 0; }
 .device-table :deep(.cell) { font-size: 12px; line-height: 1.4; padding-left: 6px; padding-right: 6px; }

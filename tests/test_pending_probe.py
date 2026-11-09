@@ -153,3 +153,78 @@ def test_pending_probe_skips_locked_and_other_models(db, monkeypatch):
         assert calls == ["10.10.0.9"]
     finally:
         s.close()
+
+def _add_device(db, *, device_id, status, model="QM102V", ip="10.10.0.7", health="L3",
+                failures=0, source="real"):
+    s = db.session()
+    try:
+        _ensure_product(s, model)
+        d = Device(
+            device_id=device_id,
+            display_name=f"dev-{device_id}",
+            model_class=model,
+            position_code=f"302-R8-{device_id[-3:]}",
+            owner="owner@corp.com",
+            status=status,
+            health_level=health,
+            ip=ip,
+            adb_port=5555,
+            source=source,
+            consecutive_failures=failures,
+            registered_by="admin@corp.com",
+            register_channel="web_manual",
+            created_at=datetime(2026, 1, 1),
+        )
+        s.add(d)
+        s.commit()
+    finally:
+        s.close()
+
+
+def _l0_probe(host, port=5555, timeout=5, source=None):
+    return ProbeResult(level=HealthLevel.L0)
+
+
+def test_manual_probe_demotes_available_to_offline(db, monkeypatch):
+    """人工探测失败：available 立即降级为 offline，不等巡检阈值。"""
+    from app.domain.catalog import device_probe_registered
+
+    _add_device(db, device_id="dev_manual01", status=DeviceStatus.AVAILABLE)
+    monkeypatch.setattr("app.domain.catalog.probe_device", _l0_probe)
+
+    s = db.session()
+    try:
+        r = device_probe_registered(
+            s, "dev_manual01", actor_email="admin@corp.com", is_admin=True
+        )
+        assert r["demoted"] is True, r
+        assert r["status"] == DeviceStatus.OFFLINE
+        assert r["level"] == HealthLevel.L0
+        d = s.get(Device, "dev_manual01")
+        assert d.status == DeviceStatus.OFFLINE
+        assert d.health_level == HealthLevel.L0
+        assert d.consecutive_failures == 1
+    finally:
+        s.close()
+
+
+def test_manual_probe_keeps_available_when_probe_ok(db, monkeypatch):
+    """人工探测成功：available 保持 available，健康度刷新为 L3、失败计数清零。"""
+    from app.domain.catalog import device_probe_registered
+
+    _add_device(db, device_id="dev_manual02", status=DeviceStatus.AVAILABLE,
+                health="L1", failures=2)
+    monkeypatch.setattr("app.domain.catalog.probe_device", _l3_probe)
+
+    s = db.session()
+    try:
+        r = device_probe_registered(
+            s, "dev_manual02", actor_email="admin@corp.com", is_admin=True
+        )
+        assert r["demoted"] is False and r["promoted"] is False, r
+        d = s.get(Device, "dev_manual02")
+        assert d.status == DeviceStatus.AVAILABLE
+        assert d.health_level == HealthLevel.L3
+        assert d.consecutive_failures == 0
+    finally:
+        s.close()

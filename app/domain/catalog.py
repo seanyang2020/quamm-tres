@@ -338,28 +338,51 @@ def device_info(session: Session, device_id: str, for_agent: bool = True) -> dic
 
 # ---------- v0.28：已注册设备手动探测（单体 / 批量待检·离线） ----------
 
-def _apply_probe_result(device: Device, result, *, actor_email: str) -> bool:
-    """把一次探测结果写回设备；返回是否由「不可用」转正为 available。"""
+def _has_active_lease(session: Session, device_id: str) -> bool:
+    return (
+        session.query(Lease)
+        .filter(Lease.device_id == device_id, Lease.state.in_(LeaseState.ACTIVE))
+        .first()
+        is not None
+    )
+
+
+def _apply_probe_result(
+    device: Device, result, *, actor_email: str,
+    session: Session | None = None, manual: bool = False,
+) -> tuple[bool, bool]:
+    """把一次探测结果写回设备；返回 (是否转正为 available, 是否降级为 offline)。
+
+    manual=True 表示人工点「探测」触发，结果立即生效：探不到就把 available 直接
+    置 offline（不等巡检失败阈值），但**有活跃租约的设备只更新健康度**，不动状态，
+    避免破坏租约状态机。后台巡检仍走自己的阈值逻辑，不走这里。
+    """
     before_status = device.status
     device.last_probe_at = utcnow()
     probed_version = (result.extra or {}).get("firmware_version")
     if probed_version:
         device.firmware_version = probed_version
+    promoted = demoted = False
     if result.reachable_l3:
         device.health_level = HealthLevel.L3
         device.consecutive_failures = 0
         device.last_seen_at = utcnow()
-        # 只有原本不可用、且没被占用的设备才转正；occupied/维护中/锁定设备只更新健康度
+        # 只有原本不可用、且没被锁定的设备才转正；occupied/维护中/锁定设备只更新健康度
         if (
             before_status in (DeviceStatus.PENDING, DeviceStatus.OFFLINE)
             and not bool(device.locked)
         ):
             device.status = DeviceStatus.AVAILABLE
+            promoted = True
     else:
-        # 探测失败只更新健康度与失败计数；available 不因单次失败直接降级（交给巡检阈值）
         device.health_level = result.level
         device.consecutive_failures = (device.consecutive_failures or 0) + 1
-    return before_status != device.status and device.status == DeviceStatus.AVAILABLE
+        if manual and before_status == DeviceStatus.AVAILABLE:
+            has_lease = _has_active_lease(session, device.device_id) if session is not None else False
+            if not has_lease:
+                device.status = DeviceStatus.OFFLINE
+                demoted = True
+    return promoted, demoted
 
 
 def device_probe_registered(
@@ -378,17 +401,28 @@ def device_probe_registered(
         d.ip, d.adb_port or 5555,
         timeout=settings.probe_timeout_seconds, source=d.source,
     )
-    promoted = _apply_probe_result(d, result, actor_email=actor_email)
+    promoted, demoted = _apply_probe_result(
+        d, result, actor_email=actor_email, session=session, manual=True
+    )
+    held_by_lease = (not demoted) and (not result.reachable_l3) and _has_active_lease(
+        session, d.device_id
+    )
     audit.record(
         session, actor=actor_email, action="device_probe", device_id=d.device_id,
-        detail={"level": result.level, "promoted": promoted, "source": d.source, "manual": True},
+        detail={"level": result.level, "promoted": promoted, "demoted": demoted,
+                "held_by_lease": held_by_lease, "source": d.source, "manual": True},
     )
     session.commit()
+    note = ""
+    if held_by_lease:
+        note = "该设备有活跃租约，探测失败只更新健康度，状态保持 " + str(d.status)
     return {
         "device_id": d.device_id,
         "level": result.level,
         "status": d.status,
         "promoted": promoted,
+        "demoted": demoted,
+        "note": note,
         "consecutive_failures": d.consecutive_failures,
         "last_probe_at": d.last_probe_at.isoformat() if d.last_probe_at else None,
     }
@@ -428,7 +462,7 @@ def device_probe_batch(
 
     by_id = {d.device_id: d for d in rows}
     out = []
-    promoted = failed = 0
+    promoted = demoted = failed = 0
     for device_id, result in results:
         d = by_id.get(device_id)
         if d is None:
@@ -437,9 +471,13 @@ def device_probe_batch(
             failed += 1
             out.append({"device_id": device_id, "level": None, "status": d.status, "promoted": False})
             continue
-        was_promoted = _apply_probe_result(d, result, actor_email=actor_email)
+        was_promoted, was_demoted = _apply_probe_result(
+            d, result, actor_email=actor_email, session=session, manual=True
+        )
         if was_promoted:
             promoted += 1
+        if was_demoted:
+            demoted += 1
         if not result.reachable_l3:
             failed += 1
         out.append({
@@ -447,14 +485,17 @@ def device_probe_batch(
             "level": result.level,
             "status": d.status,
             "promoted": was_promoted,
+            "demoted": was_demoted,
         })
     audit.record(
         session, actor=actor_email, action="device_probe_batch",
-        detail={"scanned": len(rows), "promoted": promoted, "failed": failed,
-                "statuses": statuses or [], "device_ids": device_ids or []},
+        detail={"scanned": len(rows), "promoted": promoted, "demoted": demoted,
+                "failed": failed, "statuses": statuses or [],
+                "device_ids": device_ids or []},
     )
     session.commit()
-    return {"scanned": len(rows), "promoted": promoted, "failed": failed, "results": out}
+    return {"scanned": len(rows), "promoted": promoted, "demoted": demoted,
+            "failed": failed, "results": out}
 
 
 # ---------- 注册 ----------
