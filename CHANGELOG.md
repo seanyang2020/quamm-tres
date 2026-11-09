@@ -3,6 +3,21 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.21.0] - 2026-11-09
+
+### 新增
+- 吸纳 dbxostest.py 核心能力，新增 app/db_source.py（标准库实现，无 CLI/邮件/报告外围）：
+  - 智能适配提供的 DB 目录：支持源别名 daily/release、完整 http(s) URL、可多级 project_path
+  - 探测 DB 目录可用性并判定层级（group 源根 / project 含数字版本 / version 含包）
+  - 整数 DB 版本发现：指定版本优先，其次 latest/，再 HTML 解析，二分查找兜底稀疏版本
+  - 列出/下载 CURRENT*.tar.gz 包、解压并定位 qmimages/script.ini
+  - 读取设备当前 DB 版本（adb shell /.DB_*）
+  - 经 xosadb2update 执行 DB 版本升级（默认 -f -a -e data，保留 data）
+- MCP 新增 5 个工具（25→30）：res_db_probe、res_db_versions、res_db_device_version、
+  res_db_prepare（下载+解压，需凭据）、res_db_upgrade（端到端升级，需凭据）
+- 实测：源根 71 工程；嵌套工程 XOS_SDK_Daily/10xv_lv 版本 131，latest 包
+  CURRENT-build_J131_261109.tar.gz 下载（47.7MB）、解压、script.ini 定位均通过
+
 ## [0.20.0] - 2026-11-09
 
 ### 新增

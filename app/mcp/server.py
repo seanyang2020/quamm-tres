@@ -13,6 +13,7 @@ from app.constants import AGENT_CONTRACT_VERSION, AGENT_REQUIRED_FIELDS, get_ver
 from app.db import SessionLocal
 from app.domain import catalog, credentials, feedback, flash, leasing
 from app.domain.catalog import DomainError
+from app import db_source
 from app.models import Credential, Device, Lease, Notice, PatrolRun, Principal, QueueEntry
 from app.security import AuthError, require_auth
 from app.roadmap import list_roadmap
@@ -395,6 +396,120 @@ def res_flash_status(job_id: str) -> dict:
 def res_firmware_status(device_id: str) -> dict:
     """查询设备固件版本是否满足机型要求（semver X.Y.Z 门禁与升级建议）。"""
     return _guard_ro(flash.firmware_status, device_id)
+
+
+# ---------- DB 构建源（吸纳 dbxostest） ----------
+
+def _call(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except DomainError as e:
+        return _err(e)
+
+
+def _resolve_addr(session, device_id: str | None, ip: str | None, port: int | None) -> tuple[str, int]:
+    if device_id:
+        dev = session.get(Device, device_id)
+        if not dev:
+            raise DomainError("DEVICE_NOT_FOUND", f"设备不存在：{device_id}")
+        return dev.ip, (dev.adb_port or 5555)
+    if not ip:
+        raise DomainError("MISSING_TARGET", "需提供 device_id 或 ip")
+    return ip, (port or 5555)
+
+
+@mcp.tool()
+def res_db_probe(source: str = "daily", project_path: str | None = None) -> dict:
+    """探测 DB 目录是否可用并智能适配（source 用 daily/release 或完整 URL；project_path 可多级）。
+
+    返回层级类型 group（源根）/project（含数字版本）/version（含包）、子目录、版本、包清单。
+    """
+    return _call(db_source.probe_directory, source, project_path)
+
+
+@mcp.tool()
+def res_db_versions(source: str = "daily", project_path: str = "",
+                    version: int | None = None) -> dict:
+    """发现工程可用 DB 版本：指定版本优先，其次 latest/，再 HTML 解析，二分兜底；并列出包。"""
+    def run():
+        norm = db_source.normalize_source(source, project_path)
+        if not norm["project_url"]:
+            raise DomainError("MISSING_PROJECT", "需提供 project_path")
+        fv = db_source.find_versions(norm["project_url"], version)
+        fv["packages"] = db_source.list_packages(fv["version_url"])
+        return fv
+    return _call(run)
+
+
+@mcp.tool()
+def res_db_device_version(device_id: str | None = None, ip: str | None = None,
+                          port: int = 5555, project: str | None = None) -> dict:
+    """读取设备当前 DB 版本（adb shell /.DB_*），可按 device_id 或 ip:port 定位。"""
+    try:
+        session = SessionLocal()
+        try:
+            addr, p = _resolve_addr(session, device_id, ip, port)
+            return db_source.device_db_version(addr, p, project)
+        finally:
+            session.close()
+    except DomainError as e:
+        return _err(e)
+
+
+@mcp.tool()
+def res_db_prepare(source: str = "daily", project_path: str = "",
+                   version: int | None = None) -> dict:
+    """下载并解压指定 DB 版本，返回本地包路径与 qmimages/script.ini（下载即落盘，需有效凭据）。"""
+    try:
+        require_auth()
+        norm = db_source.normalize_source(source, project_path)
+        if not norm["project_url"]:
+            raise DomainError("MISSING_PROJECT", "需提供 project_path")
+        fv = db_source.find_versions(norm["project_url"], version)
+        pkg = db_source.list_packages(fv["version_url"])[0]
+        label = project_path.replace("/", "_") + f"_{fv['selected']}"
+        dl = db_source.download_package(pkg["url"], label)
+        ex = db_source.extract_and_find_ini(dl["package"])
+        return {"version": fv["selected"], "strategy": fv["strategy"], **dl, **ex}
+    except DomainError as e:
+        return _err(e)
+    except AuthError as e:
+        return {"error": "AUTH", "message": e.message}
+
+
+@mcp.tool()
+def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: int = 5555,
+                   source: str = "daily", project_path: str = "",
+                   version: int | None = None,
+                   update_args: str = "-f -a -e data") -> dict:
+    """端到端 DB 升级：发现版本→下载 CURRENT*.gz→解压定位 script.ini→xosadb2update。
+
+    需有效凭据；同步执行（数分钟），默认保留 data（-f -a -e data）。可指定 device_id 或 ip。
+    """
+    try:
+        require_auth()
+        session = SessionLocal()
+        try:
+            addr, _ = _resolve_addr(session, device_id, ip, port)
+        finally:
+            session.close()
+        norm = db_source.normalize_source(source, project_path)
+        if not norm["project_url"]:
+            raise DomainError("MISSING_PROJECT", "需提供 project_path")
+        before = db_source.device_db_version(addr, port, project_path or None)
+        fv = db_source.find_versions(norm["project_url"], version)
+        pkg = db_source.list_packages(fv["version_url"])[0]
+        label = project_path.replace("/", "_") + f"_{fv['selected']}"
+        dl = db_source.download_package(pkg["url"], label)
+        ex = db_source.extract_and_find_ini(dl["package"])
+        up = db_source.upgrade(addr, ex["script_ini"], update_args)
+        after = db_source.device_db_version(addr, port, project_path or None)
+        return {"before": before, "target_version": fv["selected"], "package": dl["name"],
+                "upgrade": up, "after": after}
+    except DomainError as e:
+        return _err(e)
+    except AuthError as e:
+        return {"error": "AUTH", "message": e.message}
 
 
 # ---------- 管理 ----------
