@@ -479,6 +479,39 @@ def force_release(session: Session, auth: AuthContext, lease_id: str, reason: st
     return {"lease_id": lease_id, "state": LeaseState.FORCED, "ok": True}
 
 
+def force_release_credential_leases(
+    session: Session, credential_id: int, actor: str, reason: str = "凭据已吊销"
+) -> list[str]:
+    """吊销凭据时级联强制回收其名下全部活跃租约（含物理锁清理 + 通知持有人）。
+
+    由凭据吊销流程调用；非活跃租约不处理。返回被回收的 lease_id 列表。
+    """
+    leases = (
+        session.query(Lease)
+        .filter(Lease.credential_id == credential_id, Lease.state.in_(LeaseState.ACTIVE))
+        .all()
+    )
+    released: list[str] = []
+    for lease in leases:
+        holder_email = lease.principal.email if lease.principal else None
+        _reclaim(session, lease, LeaseState.FORCED, "credential_revoked", actor=actor)
+        if holder_email:
+            create_notice(
+                session,
+                "lease_credential_revoked",
+                title="凭据吊销，租约被强制回收",
+                body=(
+                    f"凭据已吊销，你的租约 {lease.lease_id}（设备 {lease.device_id}）被强制回收。"
+                    f"原因：{reason}"
+                ),
+                recipients=[holder_email],
+                device_id=lease.device_id,
+                severity="warn",
+            )
+        released.append(lease.lease_id)
+    return released
+
+
 def my_leases(session: Session, auth: AuthContext) -> list[dict]:
     leases = (
         session.query(Lease)

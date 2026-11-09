@@ -28,7 +28,7 @@ from app.constants import (
     version_info,
 )
 from app.db import get_session
-from app.domain import catalog, leasing, patrol
+from app.domain import catalog, credentials, leasing, patrol
 from app.domain.queueing import position as queue_position
 from app.models import (
     AuditEvent,
@@ -370,15 +370,33 @@ def credentials(
 @router.post("/credentials/{credential_id}/revoke")
 def revoke_credential(
     credential_id: int,
+    body: dict | None = None,
     identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
     session: Session = Depends(get_session),
 ):
-    c = session.get(Credential, credential_id)
-    if c is None:
-        raise HTTPException(status_code=404, detail="credential not found")
-    c.revoked_at = utcnow()
-    session.commit()
-    return {"id": credential_id, "revoked": True}
+    reason = (body or {}).get("reason") or "管理员吊销"
+    return credentials.revoke_credential(session, credential_id, actor=identity.email, reason=reason)
+
+
+@router.post("/credentials/{credential_id}/restore")
+def restore_credential(
+    credential_id: int,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    return credentials.restore_credential(session, credential_id, actor=identity.email)
+
+
+@router.delete("/credentials/{credential_id}")
+def delete_credential(
+    credential_id: int,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return credentials.delete_credential(session, credential_id, actor=identity.email)
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=409, detail=e.message)
 
 
 @router.post("/credentials/renew")

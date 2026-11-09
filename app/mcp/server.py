@@ -375,6 +375,7 @@ def res_admin(
     name: str | None = None,
     note: str | None = None,
     valid_days: int | None = None,
+    credential_id: int | None = None,
     confirm: bool = False,
     send: bool = False,
 ) -> dict:
@@ -387,6 +388,9 @@ def res_admin(
     - list_credentials：列出全部凭据（token 尾号/有效期/是否吊销）
     - invite：给指定邮箱发邀请函/凭据（email 必填；role=user/admin；send=true 直接 SMTP 发信，
       否则只生成返回 token；已有有效凭据时返回 needs_confirm，confirm=true 才补发）
+    - revoke_credential：吊销凭据并级联强制回收其活跃租约（需 credential_id）
+    - restore_credential：恢复已吊销凭据（需 credential_id）
+    - delete_credential：硬删除凭据（需 credential_id；有租约引用则拒绝）
     """
     auth = require_auth()
     if not auth.is_admin:
@@ -412,6 +416,20 @@ def res_admin(
             if not lease_id:
                 return {"error": "MISSING_FIELD", "message": "force_release 需要 lease_id"}
             return leasing.force_release(session, auth, lease_id, reason or "管理员强制回收")
+        if action == "revoke_credential":
+            if credential_id is None:
+                return {"error": "MISSING_FIELD", "message": "revoke_credential 需要 credential_id"}
+            return credentials.revoke_credential(
+                session, credential_id, actor=auth.email, reason=reason or "管理员吊销"
+            )
+        if action == "restore_credential":
+            if credential_id is None:
+                return {"error": "MISSING_FIELD", "message": "restore_credential 需要 credential_id"}
+            return credentials.restore_credential(session, credential_id, actor=auth.email)
+        if action == "delete_credential":
+            if credential_id is None:
+                return {"error": "MISSING_FIELD", "message": "delete_credential 需要 credential_id"}
+            return credentials.delete_credential(session, credential_id, actor=auth.email)
         if action == "overview":
             from app.constants import is_claimable
 

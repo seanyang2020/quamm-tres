@@ -414,8 +414,45 @@ function copyMcpConfig() {
 
 // ---- 凭据 / 机型 ----
 async function revokeCredential(id) {
-  await api('/api/credentials/' + id + '/revoke', { method: 'POST' })
-  ElMessage.success('已吊销'); loadCredentials()
+  try {
+    const { value: reason } = await ElMessageBox.prompt('请填写吊销原因（将强制回收其名下设备）', '吊销凭据', {
+      confirmButtonText: '吊销并回收', cancelButtonText: '取消',
+      inputValue: '管理员吊销', inputValidator: (v) => !!(v && v.trim()) || '原因不能为空',
+    })
+    await api('/api/credentials/' + id + '/revoke', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: reason.trim() }),
+    })
+    ElMessage.success('已吊销并强制回收其活跃租约'); loadCredentials(); loadLeases()
+  } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
+}
+async function restoreCredential(id) {
+  try {
+    await ElMessageBox.confirm('确认恢复该凭据？恢复后即可重新用于 MCP/Web 登录。', '恢复凭据', {
+      confirmButtonText: '恢复', cancelButtonText: '取消', type: 'warning',
+    })
+    await api('/api/credentials/' + id + '/restore', { method: 'POST' })
+    ElMessage.success('已恢复'); loadCredentials()
+  } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
+}
+async function deleteCredential(id) {
+  try {
+    await ElMessageBox.confirm('确认硬删除该凭据？此操作不可恢复；若仍有租约引用将被拒绝。', '删除凭据', {
+      confirmButtonText: '删除', cancelButtonText: '取消', type: 'error',
+    })
+    await api('/api/credentials/' + id, { method: 'DELETE' })
+    ElMessage.success('已删除'); loadCredentials()
+  } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
+}
+async function forceReleaseLease(leaseId) {
+  try {
+    const { value: reason } = await ElMessageBox.prompt('请填写强制回收原因', '强制回收租约', {
+      confirmButtonText: '强制回收', cancelButtonText: '取消',
+      inputValue: '管理员强制回收', inputValidator: (v) => !!(v && v.trim()) || '原因不能为空',
+    })
+    await api('/api/leases/' + encodeURIComponent(leaseId) + '/force-release?reason=' + encodeURIComponent(reason.trim()), { method: 'POST' })
+    ElMessage.success('已强制回收'); loadLeases(); loadDevices()
+  } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
 }
 async function renewCredential(id) {
   await api('/api/credentials/renew', {
@@ -622,6 +659,7 @@ const legendRole = [
     <el-aside width="200px" style="border-right: 1px solid #eee; display: flex; flex-direction: column">
       <div style="padding: 16px; font-weight: 700">
         <span>Quamm TRES</span>
+        <span class="title-version">v{{ versionInfo ? versionInfo.version : '—' }}</span>
       </div>
       <el-menu :default-active="active" @select="switchPage" style="flex: 1">
         <el-menu-item v-for="p in pages" :key="p.key" :index="p.key">{{ p.label }}</el-menu-item>
@@ -741,6 +779,11 @@ const legendRole = [
           <el-table-column prop="agent_label" label="Agent" width="140" />
           <el-table-column prop="expires_at" label="到期" width="200" />
           <el-table-column prop="state" label="状态" width="100" />
+          <el-table-column v-if="me.role === 'admin'" label="操作" width="120" fixed="right">
+            <template #default="{ row }">
+              <el-button size="small" type="danger" @click="forceReleaseLease(row.lease_id)">强制回收</el-button>
+            </template>
+          </el-table-column>
         </el-table>
       </div>
 
@@ -851,10 +894,16 @@ const legendRole = [
           </el-table-column>
           <el-table-column prop="expires_at" label="到期时间" width="200" />
           <el-table-column prop="created_at" label="创建时间" width="200" />
-          <el-table-column label="操作" width="160">
+          <el-table-column label="操作" width="260" fixed="right">
             <template #default="{ row }">
-              <el-button size="small" @click="renewCredential(row.id)">续期</el-button>
-              <el-button size="small" type="danger" @click="revokeCredential(row.id)">吊销</el-button>
+              <template v-if="row.revoked">
+                <el-button size="small" type="warning" @click="restoreCredential(row.id)">恢复</el-button>
+                <el-button size="small" type="danger" @click="deleteCredential(row.id)">删除</el-button>
+              </template>
+              <template v-else>
+                <el-button size="small" @click="renewCredential(row.id)">续期</el-button>
+                <el-button size="small" type="danger" @click="revokeCredential(row.id)">吊销</el-button>
+              </template>
             </template>
           </el-table-column>
         </el-table>
@@ -1203,4 +1252,5 @@ const legendRole = [
 .dash-label { color: #606266; font-size: 14px; }
 .dash-num { font-size: 28px; line-height: 1.2; }
 .version-foot { padding: 8px 16px; font-size: 11px; color: #b0b3b8; text-align: center; user-select: none; }
+.title-version { margin-left: 6px; font-size: 11px; font-weight: 400; color: #909399; }
 </style>

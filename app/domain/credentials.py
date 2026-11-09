@@ -185,3 +185,69 @@ def credential_expiry_scan(session: Session, warn_days: int = 7) -> dict:
         notified.append(c.id)
     session.commit()
     return {"warn_days": warn_days, "notified": notified, "skipped": skipped, "checked": len(creds)}
+
+
+def revoke_credential(session: Session, credential_id: int, actor: str, reason: str = "管理员吊销") -> dict:
+    """吊销凭据并级联强制回收其名下活跃租约（含物理锁清理）。已吊销则幂等返回。"""
+    from app.domain import leasing
+
+    cred = session.get(Credential, credential_id)
+    if cred is None:
+        raise DomainError("NOT_FOUND", f"credential {credential_id} not found")
+    if cred.revoked:
+        return {"id": credential_id, "revoked": True, "released": [], "idempotent": True}
+    cred.revoked_at = utcnow()
+    released = leasing.force_release_credential_leases(session, credential_id, actor=actor, reason=reason)
+    audit.record(
+        session,
+        actor=actor,
+        action="revoke_credential",
+        detail={"credential_id": credential_id, "target": cred.principal.email if cred.principal else None,
+                "released_leases": released},
+    )
+    session.commit()
+    return {"id": credential_id, "revoked": True, "released": released}
+
+
+def restore_credential(session: Session, credential_id: int, actor: str) -> dict:
+    """恢复已吊销凭据（清空 revoked_at）。未吊销则幂等返回。"""
+    cred = session.get(Credential, credential_id)
+    if cred is None:
+        raise DomainError("NOT_FOUND", f"credential {credential_id} not found")
+    if not cred.revoked:
+        return {"id": credential_id, "revoked": False, "idempotent": True}
+    cred.revoked_at = None
+    audit.record(
+        session,
+        actor=actor,
+        action="restore_credential",
+        detail={"credential_id": credential_id, "target": cred.principal.email if cred.principal else None},
+    )
+    session.commit()
+    return {"id": credential_id, "revoked": False}
+
+
+def delete_credential(session: Session, credential_id: int, actor: str) -> dict:
+    """硬删除凭据。若仍有任何租约引用（FK）则拒绝，需先保留/清理历史租约。"""
+    from app.models import Lease
+
+    cred = session.get(Credential, credential_id)
+    if cred is None:
+        raise DomainError("NOT_FOUND", f"credential {credential_id} not found")
+    lease_count = session.query(Lease).filter(Lease.credential_id == credential_id).count()
+    if lease_count:
+        raise DomainError(
+            "CREDENTIAL_IN_USE",
+            f"凭据仍有 {lease_count} 条租约记录引用，无法删除（为保留历史不允许硬删）",
+            {"lease_count": lease_count},
+        )
+    target = cred.principal.email if cred.principal else None
+    session.delete(cred)
+    audit.record(
+        session,
+        actor=actor,
+        action="delete_credential",
+        detail={"credential_id": credential_id, "target": target},
+    )
+    session.commit()
+    return {"id": credential_id, "deleted": True}
