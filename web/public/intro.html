@@ -67,8 +67,8 @@
 <body>
 <header>
   <h1>Quamm TRES · 测试资源分配管理系统</h1>
-  <p>版本 0.19.1（pre-release）｜FastAPI + SQLite + Vue3 + MCP｜14 台真实设备已接入</p>
-  <a class="back" href="./index.html">← 返回 TRES 控制台</a>
+  <p>版本 0.19.2（pre-release）｜FastAPI + SQLite + Vue3 + MCP｜14 台真实设备已接入</p>
+  <a class="back" id="backLink" href="./index.html" style="display:none;">← 返回 TRES 控制台</a>
 </header>
 <main>
 
@@ -262,5 +262,13 @@
   </section>
 
 </main>
+<script>
+  // 仅在独立全窗口打开时显示「返回控制台」；内嵌于设置页 iframe 时隐藏
+  (function () {
+    var standalone = false;
+    try { standalone = (window.self === window.top); } catch (e) { standalone = false; }
+    if (standalone) { document.getElementById('backLink').style.display = 'inline-block'; }
+  })();
+</script>
 </body>
 </html>
