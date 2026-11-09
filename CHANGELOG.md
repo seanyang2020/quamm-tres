@@ -5,6 +5,13 @@
 
 ## [0.25.0] - 2026-11-09
 
+### 修复：截图预览大图超出弹窗
+- 现象：截图弹窗内 `el-image` 只设了 `max-height:55vh` 而无确定高度，内部 img 按自然尺寸
+  渲染（竖屏图被宽度放大后高度溢出），超出弹窗、遮挡关闭按钮。
+- 修复：给预览容器定高 `height:52vh`、宽 100%，内部 `.el-image__inner` 以
+  `object-fit:contain` 等比缩放，图片始终完整落在弹窗内、居中不裁切；点击仍可全屏查看，
+  下载原图不受影响。
+
 ### 新增：Web 端设备移除（注销）入口
 - 此前只有 MCP 提供 `res_device_unregister`，Web 无对应入口。新增管理员路由
   `DELETE /devices/{device_id}`，复用领域 `catalog.device_unregister`（软注销：状态置 retired、

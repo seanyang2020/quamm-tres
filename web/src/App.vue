@@ -1946,7 +1946,7 @@ const legendRole = [
             </a>
           </div>
           <el-image v-if="screenshotUrl" :key="screenshotUrl" :src="screenshotUrl" fit="contain"
-                    style="width: 100%; max-height: 55vh" :preview-src-list="[screenshotUrl]" />
+                    class="shot-preview" :preview-src-list="[screenshotUrl]" />
         </template>
         <template #footer><el-button @click="screenshotVisible = false">关闭</el-button></template>
       </el-dialog>
@@ -2009,6 +2009,8 @@ const legendRole = [
 .cat-card { cursor: pointer; transition: box-shadow .2s, transform .2s; }
 .cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); transform: translateY(-2px); }
 .shot-download { display: inline-block; text-decoration: none; }
+.shot-preview { width: 100%; height: 52vh; display: block; }
+.shot-preview :deep(.el-image__inner) { width: 100%; height: 100%; object-fit: contain; }
 .settings-grid-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; }
 .settings-grid-form.settings-grid-form .settings-grid-full { grid-column: 1 / -1; }
 .intro-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
