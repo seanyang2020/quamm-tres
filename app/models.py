@@ -189,9 +189,12 @@ class Lease(Base):
     end_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
     adb_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
+    # v0.18：最近一次心跳时间，worker 据此判定 Agent 是否仍在使用
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
     device: Mapped["Device"] = relationship()
     principal: Mapped["Principal"] = relationship()
+    credential: Mapped["Credential"] = relationship(foreign_keys=[credential_id])
 
     # 活跃租约每台设备至多一条（数据库层防并发超发）
     __table_args__ = (

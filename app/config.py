@@ -21,12 +21,19 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./quamm_res.db"
 
     # 租约
-    lease_ttl_minutes: int = 30          # 默认 TTL
+    lease_ttl_minutes: int = 90          # 默认 TTL
     lease_grace_minutes: int = 10        # 宽限期
-    lease_max_minutes: int = 240         # 单次续约累计上限
+    lease_max_minutes: int = 1440        # 单次续约累计上限（24h）
     offer_window_seconds: int = 60       # 队首 offer 确认窗口
     holder_concurrency_limit: int = 2    # 单人并发占用上限
     lease_scan_seconds: int = 10         # 租约到期扫描周期
+
+    # 心跳（v0.18）：Agent 必须周期性确认仍在使用，超时未心跳由 worker 强制回收
+    heartbeat_required: bool = True
+    heartbeat_interval_minutes: int = 75     # 期望心跳间隔（兼容不支持小时内定时器的 Agent）
+    heartbeat_miss_grace_minutes: int = 10   # 超过间隔后的宽限，仍未心跳即回收
+    # 设备侧 RAMFS 文件锁路径（tmpfs，重启清空）；锁由 Agent 用主机时间生成并维护
+    device_lock_path: str = "/tmp/quamm_tres.lock"
 
     # 凭据
     credential_valid_days: int = 90

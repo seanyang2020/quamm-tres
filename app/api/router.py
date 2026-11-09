@@ -302,6 +302,7 @@ def leases(
             "purpose": l.purpose,
             "expires_at": _iso(l.expires_at),
             "adb_address": l.adb_address,
+            "agent_label": l.credential.agent_label if l.credential else None,
         }
         for l in rows
     ]

@@ -8,7 +8,8 @@ from __future__ import annotations
 from fastmcp import FastMCP
 
 from app.config import settings
-from app.constants import get_version
+from app.runtime_config import get_runtime_value
+from app.constants import AGENT_CONTRACT_VERSION, AGENT_REQUIRED_FIELDS, get_version
 from app.db import SessionLocal
 from app.domain import catalog, credentials, flash, leasing
 from app.domain.catalog import DomainError
@@ -136,6 +137,19 @@ def res_renew(lease_id: str, extra_minutes: int = 30) -> dict:
 
 
 @mcp.tool()
+def res_heartbeat(lease_id: str, agent_info: str | None = None) -> dict:
+    """心跳（v0.18，强制）：确认设备仍在使用，同时刷新 TTL。
+
+    应按 res_health 返回的 heartbeat_interval 周期调用；超时未心跳会被 worker 强制回收。
+    agent_info 可带调用方身份（如 WorkBuddy/豆包，可带版本），回写到凭据。
+    """
+    result = _guard(leasing.heartbeat, lease_id, agent_info=agent_info)
+    if isinstance(result, dict) and not result.get("error"):
+        result["contract_version"] = AGENT_CONTRACT_VERSION
+    return result
+
+
+@mcp.tool()
 def res_release(lease_id: str, reason: str | None = None) -> dict:
     """释放租约（幂等，重复释放返回 ok）。"""
     return _guard(leasing.release, lease_id, reason=reason)
@@ -190,6 +204,14 @@ def res_health() -> dict:
         return {
             "status": "ok",
             "version": get_version(),
+            "contract_version": AGENT_CONTRACT_VERSION,
+            "required_fields": list(AGENT_REQUIRED_FIELDS),
+            "heartbeat": {
+                "required": bool(get_runtime_value(session, "heartbeat_required")),
+                "interval_minutes": int(get_runtime_value(session, "heartbeat_interval_minutes")),
+                "miss_grace_minutes": int(get_runtime_value(session, "heartbeat_miss_grace_minutes")),
+            },
+            "device_lock_path": settings.device_lock_path,
             "last_patrol_at": last.ended_at.isoformat() if last and last.ended_at else None,
             "data_age_seconds": fresh,
         }
@@ -205,14 +227,19 @@ def res_device_probe(
     port: int = 5555,
     hint_model: str | None = None,
     hint_position: str | None = None,
+    agent_info: str | None = None,
 ) -> dict:
-    """探测设备 IP 并出注册表（两段式第一步）。返回 form_id，30 分钟有效。"""
+    """探测设备 IP 并出注册表（两段式第一步）。返回 form_id，30 分钟有效。
+
+    agent_info：调用方 Agent 自报身份（如 WorkBuddy/豆包，可带版本），作为备注随表单暂存。
+    """
     return _guard_ro(
         catalog.device_probe,
         ip,
         port=port,
         hint_model=hint_model,
         hint_position=hint_position,
+        agent_info=agent_info,
     )
 
 
@@ -223,15 +250,25 @@ def res_device_register(
     owner: str,
     model_class: str | None = None,
     note: str | None = None,
+    agent_info: str | None = None,
 ) -> dict:
-    """提交注册表（两段式第二步）。位置编号与责任人缺失会拒绝。"""
+    """提交注册表（两段式第二步）。位置编号与责任人缺失会拒绝。
+
+    agent_info：注册时显式填写调用方 Agent 身份（如 WorkBuddy/豆包），写入审计并回写到
+    当前凭据的 agent_label，便于在凭据页识别该用户使用的 Agent。
+    """
     auth = require_auth()
     session = SessionLocal()
     try:
-        return catalog.device_register(
+        result = catalog.device_register(
             session, form_id, position_code, owner,
-            actor_email=auth.email, model_class=model_class, note=note,
+            actor_email=auth.email, model_class=model_class, note=note, agent_info=agent_info,
         )
+        label = str(agent_info).strip()[:128] if agent_info else None
+        if label and auth.credential.agent_label != label:
+            auth.credential.agent_label = label
+            session.commit()
+        return result
     except DomainError as e:
         return _err(e)
     finally:

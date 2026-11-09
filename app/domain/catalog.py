@@ -53,7 +53,16 @@ class _RegistrationForm:
     expires_at: object
     hint_model: str | None = None
     hint_position: str | None = None
+    agent_info: str | None = None
     flash: dict = field(default_factory=dict)
+
+
+def _clean_agent_info(value) -> str | None:
+    """调用方 Agent 自报身份（如 WorkBuddy/豆包），作为备注；截断到 128 字符。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text[:128] or None
 
 
 class FormStore:
@@ -255,6 +264,7 @@ def device_probe(
     hint_model: str | None = None,
     hint_position: str | None = None,
     source: str | None = None,
+    agent_info: str | None = None,
 ) -> dict:
     # source 为空时沿用全局后端；给出时按来源分流（real=真实 XOS ADB）。
     result = probe_device(ip, port or 5555, timeout=settings.probe_timeout_seconds, source=source)
@@ -291,6 +301,7 @@ def device_probe(
         expires_at=now + timedelta(minutes=FORM_TTL_MINUTES),
         hint_model=hint_model,
         hint_position=hint_position,
+        agent_info=_clean_agent_info(agent_info),
     )
     form_store.put(form)
 
@@ -323,10 +334,16 @@ def device_register(
     actor_email: str,
     model_class: str | None = None,
     note: str | None = None,
+    agent_info: str | None = None,
 ) -> dict:
     form = form_store.get(form_id)
     if form is None:
         raise DomainError("FORM_EXPIRED", "表单已失效，请重新调用 res_device_probe")
+
+    # 注册时显式自报优先；未给则回退 probe 阶段暂存的 Agent 身份。
+    agent_info = _clean_agent_info(agent_info) or _clean_agent_info(
+        getattr(form, "agent_info", None)
+    )
 
     if not position_code or not owner:
         missing = []
@@ -415,7 +432,7 @@ def device_register(
         actor=actor_email,
         action="register",
         device_id=device.device_id,
-        detail={"matched_as": matched_as, "model_class": final_model, "level": device.health_level},
+        detail={"matched_as": matched_as, "model_class": final_model, "level": device.health_level, "agent_info": agent_info},
     )
     session.commit()
 
@@ -423,6 +440,7 @@ def device_register(
         "device_id": device.device_id,
         "status": device.status,
         "matched_as": matched_as,
+        "agent_info": agent_info,
         "warnings": warnings,
         "next": "设备已受理；可用 res_list_devices 查询。若为 L3 已入池，申请用 res_apply 指定 device_id 或机型",
     }

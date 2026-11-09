@@ -25,10 +25,14 @@ logger = logging.getLogger("quamm-tres.worker")
 def _lease_scan_job() -> None:
     session = SessionLocal()
     try:
-        expiring, expired = leasing.expire_scan(session)
+        scan = leasing.expire_scan(session)
         offer_timeout = leasing.offer_timeout_scan(session)
-        if expired or offer_timeout:
-            logger.info("lease scan: expiring=%s expired=%s offer_timeout=%s", expiring, expired, offer_timeout)
+        heartbeat_lost = leasing.heartbeat_scan(session)
+        if scan.get("expired") or offer_timeout or heartbeat_lost:
+            logger.info(
+                "lease scan: expiring=%s expired=%s offer_timeout=%s heartbeat_lost=%s",
+                scan.get("expiring"), scan.get("expired"), offer_timeout, heartbeat_lost,
+            )
     except Exception:  # noqa: BLE001
         logger.exception("lease scan failed")
         session.rollback()

@@ -32,11 +32,14 @@ const devices = ref([])
 // v0.17：设备按机型分组 + 关键字搜索 / 机型筛选
 const deviceSearch = ref('')
 const deviceTypeFilter = ref('')
+const deviceStatusFilter = ref('')
 const deviceGroupNames = ref([])
 const filteredDevices = computed(() => {
   const kw = deviceSearch.value.trim().toLowerCase()
   const type = deviceTypeFilter.value
+  const status = deviceStatusFilter.value
   return devices.value.filter((d) => {
+    if (status && d.status !== status) return false
     if (type && d.model_class !== type) return false
     if (!kw) return true
     const hay = [
@@ -67,6 +70,11 @@ const deviceGroups = computed(() => {
     }))
     .sort((a, b) => a.type.localeCompare(b.type))
 })
+function goDevices(status = '') {
+  deviceStatusFilter.value = status
+  deviceSearch.value = ''
+  active.value = 'devices'
+}
 const leases = ref([])
 const credentials = ref([])
 const notices = ref([])
@@ -613,6 +621,7 @@ const legendRole = [
         <el-tag size="small" :type="me.role === 'admin' ? 'danger' : 'info'" style="margin-top: 6px">{{ me.role }}</el-tag>
         <el-button size="small" style="margin-top: 8px; width: 100%" @click="doLogout">退出登录</el-button>
       </div>
+      <div class="version-foot">v{{ versionInfo ? versionInfo.version : '—' }}</div>
     </el-aside>
 
     <el-main>
@@ -620,12 +629,12 @@ const legendRole = [
       <div v-if="active === 'dashboard'">
         <h2>看板</h2>
         <el-row :gutter="12" v-if="dashboard">
-          <el-col :span="4"><el-card><div>设备总数</div><div style="font-size: 28px">{{ dashboard.total_devices }}</div></el-card></el-col>
-          <el-col :span="4"><el-card><div>可用</div><div style="font-size: 28px; color: #67c23a">{{ dashboard.available }}</div></el-card></el-col>
-          <el-col :span="4"><el-card><div>占用</div><div style="font-size: 28px; color: #e6a23c">{{ dashboard.by_status.occupied || 0 }}</div></el-card></el-col>
-          <el-col :span="4"><el-card><div>离线</div><div style="font-size: 28px; color: #f56c6c">{{ dashboard.by_status.offline || 0 }}</div></el-card></el-col>
-          <el-col :span="4"><el-card><div>活跃租约</div><div style="font-size: 28px">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
-          <el-col :span="4"><el-card><div>排队中</div><div style="font-size: 28px">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="goDevices('')"><div class="dash-label">设备总数</div><div class="dash-num">{{ dashboard.total_devices }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="goDevices('available')"><div class="dash-label">可用</div><div class="dash-num" style="color: #67c23a">{{ dashboard.available }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="goDevices('occupied')"><div class="dash-label">占用</div><div class="dash-num" style="color: #e6a23c">{{ dashboard.by_status.occupied || 0 }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="goDevices('offline')"><div class="dash-label">离线</div><div class="dash-num" style="color: #f56c6c">{{ dashboard.by_status.offline || 0 }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="active = 'leases'"><div class="dash-label">活跃租约</div><div class="dash-num">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
+          <el-col :span="4"><el-card class="dash-card" @click="active = 'queue'"><div class="dash-label">排队中</div><div class="dash-num">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
         </el-row>
         <p v-if="dashboard && dashboard.last_patrol" style="color: #909399">
           上次巡检：{{ dashboard.last_patrol.ended_at }}（L3 {{ dashboard.last_patrol.l3_count }} / suspect {{ dashboard.last_patrol.suspect_count }} / offline {{ dashboard.last_patrol.offline_count }}）
@@ -660,6 +669,12 @@ const legendRole = [
                 :label="t"
                 :value="t"
               />
+            </el-select>
+            <el-select v-model="deviceStatusFilter" placeholder="全部状态" clearable style="width: 140px">
+              <el-option label="可用 available" value="available" />
+              <el-option label="占用 occupied" value="occupied" />
+              <el-option label="离线 offline" value="offline" />
+              <el-option label="待检 pending" value="pending" />
             </el-select>
             <el-button size="small" @click="toggleAllDeviceGroups(true)">全部展开</el-button>
             <el-button size="small" @click="toggleAllDeviceGroups(false)">全部收起</el-button>
@@ -712,6 +727,7 @@ const legendRole = [
           <el-table-column prop="email" label="申请人邮箱" width="200" />
           <el-table-column prop="name" label="申请人姓名" width="140" />
           <el-table-column prop="purpose" label="用途" />
+          <el-table-column prop="agent_label" label="Agent" width="140" />
           <el-table-column prop="expires_at" label="到期" width="200" />
           <el-table-column prop="state" label="状态" width="100" />
         </el-table>
@@ -817,6 +833,7 @@ const legendRole = [
           <el-table-column prop="name" label="姓名" width="120" />
           <el-table-column prop="role" label="权限" width="80" />
           <el-table-column prop="token_prefix" label="token 前缀" width="140" />
+          <el-table-column prop="agent_label" label="Agent" width="140" />
           <el-table-column prop="note" label="备注" width="140" />
           <el-table-column label="是否激活" width="100">
             <template #default="{ row }"><el-tag :type="row.active ? 'success' : 'danger'">{{ row.active ? '激活' : '停用' }}</el-tag></template>
@@ -1156,4 +1173,10 @@ const legendRole = [
 .user-box { padding: 12px 16px; border-top: 1px solid #eee; }
 .mono { font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; word-break: break-all; }
 .mail-preview { background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 4px; padding: 12px; max-height: 260px; overflow: auto; font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; white-space: pre-wrap; }
+.dash-card { cursor: pointer; transition: box-shadow .2s, transform .2s; }
+.dash-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.12); transform: translateY(-2px); }
+.dash-card :deep(.el-card__body) { height: 96px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; }
+.dash-label { color: #606266; font-size: 14px; }
+.dash-num { font-size: 28px; line-height: 1.2; }
+.version-foot { padding: 8px 16px; font-size: 11px; color: #b0b3b8; text-align: center; user-select: none; }
 </style>

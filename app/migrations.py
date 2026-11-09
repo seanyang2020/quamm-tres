@@ -60,6 +60,11 @@ _PRODUCT_TYPE_FIRMWARE_COLUMNS = {
     "required_patch": "INTEGER NOT NULL DEFAULT 0",
 }
 
+# lease 表新增列（v0.18 心跳）-> DDL 片段
+_LEASE_COLUMNS = {
+    "last_heartbeat_at": "DATETIME",
+}
+
 # v0.14：当前 5 个真实机型的 DB 工程名（用 dbxostest.py -ls + 设备 /etc/fw_version
 # 构建号对照确认）。只回填空值，不覆盖人工修改。
 _DB_PROJECT_BACKFILL = {
@@ -72,7 +77,7 @@ _DB_PROJECT_BACKFILL = {
 
 
 def migrate(session: Session) -> None:
-    """幂等迁移：补 device/credential/product_type 新列 + 补 is_admin 列 + 修正管理员标志 + 回填管理员 role。"""
+    """幂等迁移：补 device/credential/product_type/lease 新列 + 补 is_admin 列 + 修正管理员标志 + 回填管理员 role。"""
     _ensure_device_columns(session)
     _ensure_columns(session, "credential", _CREDENTIAL_COLUMNS)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_COLUMNS)
@@ -81,6 +86,7 @@ def migrate(session: Session) -> None:
     _backfill_admin_role(session)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_FIRMWARE_COLUMNS)
     _backfill_db_project_names(session)
+    _ensure_columns(session, "lease", _LEASE_COLUMNS)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:

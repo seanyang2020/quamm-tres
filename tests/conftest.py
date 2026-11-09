@@ -6,9 +6,13 @@ import pytest
 from app import models  # noqa: F401
 from app.db import configure, get_session_factory, init_db
 from app.domain.probe import MockProber, set_prober
+from app.domain import devicelock
 from app.models import Credential, Principal
 from app.seed import seed_admin, seed_product_types, seed_tokens
 from app.security import AuthContext
+
+# 单元测试不跑真实 adb 物理闸门（无设备，避免超时拖慢/卡死）
+devicelock.physical_gate_enabled = False
 
 
 class Db:

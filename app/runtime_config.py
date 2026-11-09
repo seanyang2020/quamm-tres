@@ -23,6 +23,9 @@ RUNTIME_SPECS: dict[str, dict[str, Any]] = {
     "lease_max_minutes": {"type": "int", "min": 1, "max": 10080},
     "offer_window_seconds": {"type": "int", "min": 5, "max": 3600},
     "credential_valid_days": {"type": "int", "min": 1, "max": 3650},
+    "heartbeat_required": {"type": "bool"},
+    "heartbeat_interval_minutes": {"type": "int", "min": 1, "max": 1440},
+    "heartbeat_miss_grace_minutes": {"type": "int", "min": 0, "max": 1440},
 }
 
 RUNTIME_KEYS = frozenset(RUNTIME_SPECS)

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 
 from sqlalchemy import func
@@ -13,7 +14,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState
+from app.config import settings
 from app.domain import audit, flash
+from app.domain import devicelock
 from app.domain.catalog import DomainError
 from app.domain.queueing import cancel, enqueue, find_head, position
 from app.domain.notices import create_notice
@@ -21,6 +24,8 @@ from app.models import Device, Lease, Principal, ProductType, QueueEntry
 from app.runtime_config import get_runtime_value
 from app.security import AuthContext
 from app.utils import new_lease_id, utcnow
+
+logger = logging.getLogger("quamm-tres.leasing")
 
 
 def _ttl_minutes(session: Session, expected_minutes: int | None) -> int:
@@ -51,6 +56,7 @@ def _lease_dict(lease: Lease, device: Device | None = None) -> dict:
         "ttl_minutes": lease.ttl_minutes,
         "purpose": lease.purpose,
         "granted_at": lease.granted_at.isoformat() if lease.granted_at else None,
+        "agent_label": lease.credential.agent_label if lease.credential else None,
         "display_name": d.display_name if d else None,
     }
 
@@ -164,6 +170,7 @@ def _offer_to(session: Session, device: Device, entry: QueueEntry) -> Lease:
         expires_at=now + timedelta(seconds=offer_window),
         adb_address=device.adb_address,
         created_at=now,
+        last_heartbeat_at=now,
     )
     session.add(lease)
     session.flush()
@@ -206,6 +213,14 @@ def _reclaim(session: Session, lease: Lease, new_state: str, end_reason: str, ac
             device.retired_at = utcnow()
         else:
             _wake_queue(session, device)
+    # 物理闸门：服务端兜底删设备锁并断开 ADB（best-effort，不依赖 Agent 自觉）
+    addr = lease.adb_address or (device.adb_address if device is not None else None)
+    if addr and devicelock.physical_gate_enabled:
+        try:
+            devicelock.remove_lock(addr, expected_lease_id=lease.lease_id)
+            devicelock.disconnect(addr)
+        except Exception:  # noqa: BLE001
+            logger.warning("device lock cleanup failed for %s (%s)", addr, lease.lease_id)
 
 
 def apply(
@@ -280,6 +295,7 @@ def apply(
             expires_at=now + timedelta(minutes=ttl),
             adb_address=device.adb_address,
             created_at=now,
+            last_heartbeat_at=now,
         )
         device.status = DeviceStatus.OCCUPIED
         session.add(lease)
@@ -293,6 +309,17 @@ def apply(
                 "state": "GRANTED",
                 "lease": _lease_dict(lease, device),
                 "renew_hint": "长任务请到期前调 res_renew 续约",
+                "heartbeat": {
+                    "required": bool(get_runtime_value(session, "heartbeat_required")),
+                    "interval_minutes": int(get_runtime_value(session, "heartbeat_interval_minutes")),
+                    "miss_grace_minutes": int(get_runtime_value(session, "heartbeat_miss_grace_minutes")),
+                    "next_heartbeat_by": (
+                        now + timedelta(
+                            minutes=int(get_runtime_value(session, "heartbeat_interval_minutes"))
+                        )
+                    ).isoformat(),
+                },
+                "device_lock_path": settings.device_lock_path,
             }
             # v0.14：版本门禁只拦 X/Y；未知版本放行但警告，patch 落后仅提示
             state = (verdict or {}).get("state")
@@ -341,6 +368,45 @@ def renew(session: Session, auth: AuthContext, lease_id: str, extra_minutes: int
     audit.record(session, actor=auth.email, action="renew", device_id=lease.device_id, lease_id=lease_id)
     session.commit()
     return {"lease_id": lease_id, "state": lease.state, "expires_at": lease.expires_at.isoformat()}
+
+
+def heartbeat(
+    session: Session, auth: AuthContext, lease_id: str,
+    agent_info: str | None = None,
+) -> dict:
+    """Agent 显式确认仍在使用（v0.18）。心跳即续约：刷新 last_heartbeat_at 并顺延 TTL，
+    受 lease_max 绝对上限约束；宽限期内心跳恢复 GRANTED。
+    """
+    lease = session.get(Lease, lease_id)
+    if lease is None:
+        raise DomainError("NOT_FOUND", f"lease {lease_id} not found")
+    if lease.principal_id != auth.principal.id and not auth.is_admin:
+        raise DomainError("FORBIDDEN", "只能对自己的租约发心跳")
+    if lease.state not in LeaseState.ACTIVE:
+        raise DomainError("INVALID_STATE", f"租约状态 {lease.state} 不可发心跳")
+
+    now = utcnow()
+    lease.last_heartbeat_at = now
+    ttl = int(get_runtime_value(session, "lease_ttl_minutes"))
+    lease_max = int(get_runtime_value(session, "lease_max_minutes"))
+    new_expiry = min(
+        max(lease.expires_at, now + timedelta(minutes=ttl)),
+        now + timedelta(minutes=lease_max),
+    )
+    lease.expires_at = new_expiry
+    lease.state = LeaseState.GRANTED
+    if agent_info and auth.credential.agent_label != str(agent_info)[:128]:
+        auth.credential.agent_label = str(agent_info)[:128]
+    audit.record(
+        session, actor=auth.email, action="heartbeat",
+        device_id=lease.device_id, lease_id=lease_id,
+    )
+    session.commit()
+    return {
+        "lease_id": lease_id, "state": lease.state,
+        "last_heartbeat_at": now.isoformat(),
+        "expires_at": lease.expires_at.isoformat(),
+    }
 
 
 def release(session: Session, auth: AuthContext, lease_id: str, reason: str | None = None) -> dict:
@@ -487,6 +553,42 @@ def expire_scan(session: Session) -> dict:
 
     session.commit()
     return {"expiring": len(expiring), "expired": len(expired)}
+
+
+def heartbeat_scan(session: Session) -> int:
+    """心跳超时扫描（v0.18）：超过 interval+grace 未心跳的活跃租约强制回收。
+
+    不依赖 Agent 自觉，由 worker 周期调用；heartbeat_required 关闭时跳过。
+    """
+    if not bool(get_runtime_value(session, "heartbeat_required")):
+        return 0
+    now = utcnow()
+    interval = int(get_runtime_value(session, "heartbeat_interval_minutes"))
+    grace = int(get_runtime_value(session, "heartbeat_miss_grace_minutes"))
+    cutoff = now - timedelta(minutes=interval + grace)
+    stale = (
+        session.query(Lease)
+        .filter(
+            Lease.state.in_(LeaseState.ACTIVE),
+            Lease.last_heartbeat_at.isnot(None),
+            Lease.last_heartbeat_at <= cutoff,
+        )
+        .all()
+    )
+    for l in stale:
+        _reclaim(session, l, LeaseState.EXPIRED, "heartbeat_lost", actor="system")
+        if l.principal:
+            create_notice(
+                session,
+                "lease_heartbeat_lost",
+                title="心跳超时回收",
+                body=f"你的租约 {l.lease_id}（设备 {l.device_id}）因超时未心跳被强制回收。",
+                recipients=[l.principal.email],
+                device_id=l.device_id,
+                severity="warn",
+            )
+    session.commit()
+    return len(stale)
 
 
 def offer_timeout_scan(session: Session) -> int:

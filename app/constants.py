@@ -12,6 +12,11 @@ _VERSION_FILE = Path(__file__).resolve().parent.parent / "VERSION"
 # 异常/待修复：pending 超过该天数未转正，列为「待清理」
 PENDING_CLEANUP_DAYS = 30
 
+# Agent 接入契约版本（v0.18）：要求 Agent 自报 agent_info 并按窗口发 res_heartbeat。
+# 服务端在 res_health / 心跳响应中回传，Agent 发现落后即触发升级；不升级则心跳超时被回收。
+AGENT_CONTRACT_VERSION = 2
+AGENT_REQUIRED_FIELDS = ("agent_info", "heartbeat")
+
 
 def get_version() -> str:
     """读取根目录 VERSION 文件（单一真源）。缺失/为空即抛错，不静默降级。"""
