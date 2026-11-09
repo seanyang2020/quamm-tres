@@ -6,6 +6,7 @@
 ## [0.24.0] - 2026-11-09
 
 ### 新增
+- 添加设备时若自动探测不到机型，给出提示并允许从「已注册（启用）的设备类型」下拉手动选择填充（IP 直连与设备发现两条路径均生效）
 - 设备截图的 Web 预览增强与图片生命周期管理（截图可管理、可列历史、有保留策略）：
   - 新增 `ScreenshotRecord` 模型（`screenshot_record` 表）：shot_id(shot_+hex 主键) /
     device_id(可空+索引) / file_name(唯一) / bytes / quality / rotate / float_abi /

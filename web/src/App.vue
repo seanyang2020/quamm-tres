@@ -517,6 +517,7 @@ async function boot() {
     loadDashboard()
     loadVersionInfo()
     loadHealthInfo()
+    loadProductTypes()
   }
 }
 onMounted(boot)
@@ -1744,8 +1745,13 @@ const legendRole = [
               <el-input v-model="deviceAddConfirm.owner" placeholder="维护责任人" />
             </el-form-item>
             <el-form-item label="机型">
-              <el-select v-model="deviceAddConfirm.model_class" placeholder="选择机型" clearable style="width: 100%">
-                <el-option v-for="t in productTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
+              <el-alert
+                v-if="!deviceAddProbe?.probe?.model"
+                type="warning" :closable="false" show-icon style="margin-bottom: 8px"
+                title="未自动探测到设备类型，请从已注册机型中选择"
+              />
+              <el-select v-model="deviceAddConfirm.model_class" placeholder="选择已注册机型" clearable style="width: 100%">
+                <el-option v-for="t in enabledProductTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
               </el-select>
             </el-form-item>
             <el-form-item label="备注">
