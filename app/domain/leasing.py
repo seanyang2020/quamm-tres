@@ -197,6 +197,7 @@ def _find_available(
     q = session.query(Device).filter(
         Device.status == DeviceStatus.AVAILABLE,
         Device.health_level.in_(claimable_levels),
+        Device.locked != True,  # noqa: E712  v0.27 手动锁定的设备不进候选池
     )
     if target_type == "device":
         q = q.filter(Device.device_id == target_code)
@@ -378,6 +379,17 @@ def apply(
                     f"设备 {target_device.device_id} 当前为 "
                     f"{target_device.share_scope or 'shared'} 模式，你不在允许名单内，无法申请",
                     device_acl.serialize_acl(target_device),
+                )
+            if bool(target_device.locked):
+                raise DomainError(
+                    "DEVICE_LOCKED",
+                    f"设备 {target_device.device_id} 已被手动锁定，暂不参与分配，"
+                    "请联系设备注册人或管理员解锁",
+                    {
+                        "device_id": target_device.device_id,
+                        "locked_by": target_device.locked_by,
+                        "reason": target_device.locked_reason,
+                    },
                 )
             if not (
                 target_device.status == DeviceStatus.AVAILABLE

@@ -1626,13 +1626,16 @@ def _domain_http(exc: DomainError) -> HTTPException:
 
 @router.get("/build-servers")
 def list_build_servers(
+    include_all: bool = False,
     identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
+    # v0.27 默认按账号隔离；管理员排障时显式 ?all=true 才看全部
     return buildsvc.list_build_servers(
         session,
         principal_id=identity.principal_id,
         is_admin=(identity.role == "admin"),
+        include_all=include_all,
     )
 
 

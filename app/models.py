@@ -108,6 +108,13 @@ class Device(Base):
     allowed_emails: Mapped[str | None] = mapped_column(Text, nullable=True)
     allowed_agent_labels: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # v0.27 手动锁定：锁定后不参与任何分配（人工闸门，与 health/status 无关）
+    locked: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    locked_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    locked_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     adb_port: Mapped[int] = mapped_column(Integer, default=5555, nullable=False)
     android_version: Mapped[str | None] = mapped_column(String(32), nullable=True)

@@ -216,7 +216,8 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
     return result
 
 
-def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
+def _public_device(d: Device, session: Session, for_agent: bool = True,
+                   holder_email: str | None = None) -> dict:
     """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。"""
     allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     data = {
@@ -225,13 +226,16 @@ def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
         "model_class": d.model_class,
         "status": d.status,
         "health_level": d.health_level,
-        "claimable": is_claimable(d.status, d.health_level, allow_suspect),
+        "claimable": bool(not d.locked)
+        and is_claimable(d.status, d.health_level, allow_suspect),
         "adb_address": d.adb_address,
         "position_code": d.position_code,
         "project_name": d.project_name,
         "last_seen_at": d.last_seen_at.isoformat() if d.last_seen_at else None,
         "last_probe_at": d.last_probe_at.isoformat() if d.last_probe_at else None,
         "share_scope": d.share_scope or "shared",
+        "locked": bool(d.locked),
+        "holder_email": holder_email,
     }
     if not for_agent:
         data.update(
@@ -250,6 +254,8 @@ def _public_device(d: Device, session: Session, for_agent: bool = True) -> dict:
                 "has_wifi": d.has_wifi,
                 "allowed_emails": device_acl.allowed_emails(d),
                 "allowed_agent_labels": device_acl.allowed_agent_labels(d),
+                "locked_by": d.locked_by,
+                "locked_reason": d.locked_reason,
             }
         )
     return data
@@ -277,10 +283,25 @@ def list_devices(
         allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
         devices = [
             d for d in devices
-            if is_claimable(d.status, d.health_level, allow_suspect)
+            if is_claimable(d.status, d.health_level, allow_suspect) and not d.locked
         ]
     devices = devices[:limit]
-    return [_public_device(d, session, for_agent=for_agent) for d in devices]
+    holders: dict[str, str] = {}
+    if not for_agent:
+        # Web 视图展示"当前占用者"（活跃租约的 principal 邮箱），便于看清谁占着。
+        from app.models import Lease, Principal
+        from app.constants import LeaseState
+        rows = (
+            session.query(Lease.device_id, Principal.email)
+            .join(Principal, Principal.id == Lease.principal_id)
+            .filter(Lease.state.in_(LeaseState.ACTIVE))
+            .all()
+        )
+        holders = {dev_id: email for dev_id, email in rows}
+    return [
+        _public_device(d, session, for_agent=for_agent, holder_email=holders.get(d.device_id))
+        for d in devices
+    ]
 
 
 def list_positions(session: Session) -> list[dict]:
@@ -728,6 +749,21 @@ def device_update(
         d.owner = " ".join(str(take("owner")).split())
     if take("position_code") is not None:
         d.position_code = " ".join(str(take("position_code")).split())
+
+    if take("locked") is not None:
+        want = bool(take("locked"))
+        if want != bool(d.locked):
+            d.locked = want
+            d.locked_by = actor_email if want else None
+            d.locked_reason = (
+                (" ".join(str(take("locked_reason") or "").split()) or None) if want else None
+            )
+            audit.record(
+                session, actor=actor_email,
+                action="device_lock" if want else "device_unlock",
+                device_id=d.device_id,
+                detail={"locked_by": d.locked_by, "reason": d.locked_reason},
+            )
 
     old_scope = d.share_scope or "shared"
     if take("share_scope") is not None or take("allowed_emails") is not None or take("allowed_agent_labels") is not None:

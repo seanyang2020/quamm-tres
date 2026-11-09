@@ -66,6 +66,20 @@ def create_build_server(db, *, actor: str, principal_id: int, name: str, host: s
     if auth_mode == "key" and not secret:
         secret, public_key = generate_ssh_keypair()
 
+    # v0.27 基础去重提示：同一主机（host+port+username）已被别的账号注册时给出提示。
+    from app.models import Principal
+    dupes = (
+        db.query(BuildServer, Principal.email)
+        .join(Principal, Principal.id == BuildServer.principal_id)
+        .filter(
+            BuildServer.host == host,
+            BuildServer.port == int(port or 22),
+            BuildServer.username == username,
+            BuildServer.principal_id != principal_id,
+        )
+        .all()
+    )
+
     row = BuildServer(
         server_id=_new_id(), principal_id=principal_id, name=name, host=host,
         port=int(port or 22), username=username, auth_mode=auth_mode,
@@ -77,7 +91,17 @@ def create_build_server(db, *, actor: str, principal_id: int, name: str, host: s
                   {"principal_id": principal_id, "name": name, "host": host}))
     db.commit()
     db.refresh(row)
-    return serialize(row)
+    out = serialize(row)
+    if dupes:
+        out["duplicate_host_owners"] = [
+            {"server_id": r.server_id, "owner": email} for r, email in dupes
+        ]
+        out["dedup_hint"] = (
+            f"同一主机 {username}@{host}:{int(port or 22)} 已被 "
+            + "、".join(email for _, email in dupes)
+            + " 注册，请确认是否重复登记"
+        )
+    return out
 
 
 def update_build_server(db, *, actor: str, principal_id: int, is_admin: bool,
@@ -124,9 +148,11 @@ def delete_build_server(db, *, actor: str, principal_id: int, is_admin: bool,
     return {"deleted": server_id}
 
 
-def list_build_servers(db, *, principal_id: int, is_admin: bool = False) -> list[dict]:
+def list_build_servers(db, *, principal_id: int, is_admin: bool = False,
+                       include_all: bool = False) -> list[dict]:
+    """v0.27：默认严格按账号隔离，管理员也只看自己的；排障需显式 include_all=True。"""
     q = db.query(BuildServer)
-    if not is_admin:
+    if not (is_admin and include_all):
         q = q.filter(BuildServer.principal_id == principal_id)
     return [serialize(r) for r in q.order_by(BuildServer.created_at).all()]
 

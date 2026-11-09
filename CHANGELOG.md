@@ -3,6 +3,26 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.27.0] - 2026-11-09
+
+### 新增：编译服务器 token 隔离与去重提示、设备锁定、占用者邮箱
+- 编译服务器 token 隔离：`list_build_servers` 由"管理员不过滤"改为「默认严格按
+  `principal_id` 隔离」，管理员也不再互看；排障需显式 `include_all=true`
+  （REST `GET /build-servers?all=true`、MCP `res_build_servers(..., include_all=true)`）。
+  修复 admin 或本人 token 注册的 SSH 编译服务器对其它管理员 token 可见的问题。
+- 重复登记提示：`create_build_server` 插入后若同 `host+port+username` 已属其它账号，
+  返回 `duplicate_host_owners` 与 `dedup_hint`（不硬拦，不同账号共用一台编译机是合法场景）；
+  Web 端保存时弹二次确认，可选「保留」或「去删除」。
+- 设备锁定：`Device` 新增 `locked` / `locked_by` / `locked_reason` 三列（幂等迁移）。
+  `PUT /api/devices/{id}` 与 MCP `res_device_update` 支持 `locked`/`locked_reason`，
+  管理员或该设备注册者可操作；锁定/解锁写审计 `device_lock`/`device_unlock`。
+  锁定设备不进可用池（`list_devices` 的 `claimable=false`、MCP 可申请列表排除、
+  `_find_available` 过滤），显式申请返回 `DEVICE_LOCKED` 并提示联系注册人或管理员；
+  已在用租约不受影响。
+- 占用者邮箱：Web 设备视图新增 `holder_email`（活跃租约占用人邮箱，`list_devices` 一次
+  批量查询租约 join Principal，避免 N+1）；设备表移除「工程」列，新增「占用者」列，
+  状态列对锁定设备加「锁定」标签（hover 显示原因与操作人）。
+
 ## [0.26.0] - 2026-11-09
 
 ### 新增：设备级访问控制、设备编辑与 pending 申请自动恢复

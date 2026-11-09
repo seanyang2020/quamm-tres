@@ -364,6 +364,7 @@ def res_device_update(
     changes 为字段字典，常用键：share_scope（shared/private/restricted）、
     allowed_emails（邮箱数组）、allowed_agent_labels（Agent 名数组）、display_name、
     owner、position_code；管理员还可改 model_class/ip/adb_port/mac。
+    锁定：locked=true/false（可配 locked_reason），锁定后不参与任何分配（管理员或注册者可操作）。
     非注册人且非管理员返回 FORBIDDEN。
     """
     auth = require_auth()
@@ -750,13 +751,15 @@ def res_build_servers(
     secret: str | None = None,
     work_root: str | None = None,
     subdir: str | None = None,
+    include_all: bool = False,
 ) -> dict:
-    """编译服务器自助管理（任何有效凭据；操作自己的服务器，管理员可操作全部）。
+    """编译服务器自助管理（任何有效凭据；默认只看/只操作本账号自己的服务器）。
 
     密钥 Fernet 加密、只回显掩码，服务端集中执行、不下发明文。一账号一台。
     action: list / create / update / delete / probe
     - create：name/host/username 必填，auth_mode=password|key（key 留空 secret 自动生成 ed25519）
     - probe：逐步 tcp→auth→workdir→git→toolchain，决定当前账号的 sdk.build_upgrade 能力
+    - list：默认严格按账号隔离；管理员排障可传 include_all=true 查看全部
     """
     auth = require_auth()
     principal_id = auth.principal.id
@@ -765,7 +768,8 @@ def res_build_servers(
     try:
         if action == "list":
             return {"items": buildsvc.list_build_servers(
-                session, principal_id=principal_id, is_admin=is_admin)}
+                session, principal_id=principal_id, is_admin=is_admin,
+                include_all=include_all)}
         if action == "create":
             return buildsvc.create_build_server(
                 session, actor=auth.email, principal_id=principal_id,

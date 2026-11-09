@@ -266,6 +266,8 @@ function openDeviceEdit(row) {
     share_scope: row.share_scope || 'shared',
     allowed_emails: Array.isArray(row.allowed_emails) ? [...row.allowed_emails] : [],
     allowed_agent_labels: Array.isArray(row.allowed_agent_labels) ? [...row.allowed_agent_labels] : [],
+    locked: !!row.locked,
+    locked_reason: row.locked_reason || '',
   }
   deviceEditVisible.value = true
 }
@@ -273,7 +275,7 @@ async function submitDeviceEdit() {
   const f = deviceEditRow.value
   const changes = {
     display_name: f.display_name, owner: f.owner, position_code: f.position_code,
-    share_scope: f.share_scope,
+    share_scope: f.share_scope, locked: !!f.locked, locked_reason: f.locked_reason || '',
   }
   if (f.share_scope === 'restricted') {
     changes.allowed_emails = f.allowed_emails
@@ -552,12 +554,21 @@ async function saveBs() {
   try {
     const body = { name: r.name, host: r.host, port: r.port, username: r.username, auth_mode: r.auth_mode, work_root: r.work_root }
     if (r.secret) body.secret = r.secret
+    let resp = null
     if (r.server_id) {
-      await api('/api/build-servers/' + encodeURIComponent(r.server_id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      resp = await api('/api/build-servers/' + encodeURIComponent(r.server_id), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     } else {
-      await api('/api/build-servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      resp = await api('/api/build-servers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
     }
-    ElMessage.success('已保存')
+    if (resp && resp.dedup_hint) {
+      ElMessageBox.confirm(resp.dedup_hint + '。仍要保留这条记录吗？', '疑似重复登记', {
+        type: 'warning', confirmButtonText: '保留', cancelButtonText: '去删除',
+      }).catch(() => {
+        if (resp.server_id) api('/api/build-servers/' + encodeURIComponent(resp.server_id), { method: 'DELETE' }).then(loadBuildServers)
+      })
+    } else {
+      ElMessage.success('已保存')
+    }
     bsDialog.value = false
     loadBuildServers()
   } catch (e) { ElMessage.error(e.message) } finally { bsSaving.value = false }
@@ -1230,7 +1241,6 @@ const legendRole = [
           <el-table :data="detailDevices" border size="small" class="device-table">
             <el-table-column prop="device_id" label="ID" min-width="95" show-overflow-tooltip />
             <el-table-column prop="display_name" label="名称" min-width="90" show-overflow-tooltip />
-            <el-table-column prop="project_name" label="工程" min-width="70" show-overflow-tooltip />
             <el-table-column prop="position_code" label="位置" min-width="70" show-overflow-tooltip />
             <el-table-column prop="owner" label="责任人" min-width="70" show-overflow-tooltip />
             <el-table-column prop="register_agent" label="Agent" min-width="90" show-overflow-tooltip>
@@ -1240,6 +1250,15 @@ const legendRole = [
             <el-table-column label="状态" min-width="75">
               <template #default="{ row }">
                 <el-tag size="small" :type="statusTag[row.status] || 'info'">{{ row.status }}</el-tag>
+                <el-tooltip v-if="row.locked" :content="'已锁定' + (row.locked_reason ? '：' + row.locked_reason : '') + (row.locked_by ? '（' + row.locked_by + '）' : '')" placement="top">
+                  <el-tag size="small" type="warning" style="margin-left: 4px">锁定</el-tag>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column label="占用者" min-width="120" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="row.holder_email">{{ row.holder_email }}</span>
+                <span v-else style="color: #c0c4cc">-</span>
               </template>
             </el-table-column>
             <el-table-column prop="adb_address" label="ADB" min-width="110" show-overflow-tooltip>
@@ -1723,7 +1742,7 @@ const legendRole = [
               <h3 style="margin:0">我的编译服务器（账号私有，SSH 凭据加密保管，服务端集中执行，不下发 agent）</h3>
               <el-button v-if="!myBuildRow" type="primary" @click="openBsCreate">添加我的编译服务器</el-button>
             </div>
-            <p style="color:#909399">每个账号配置自己的编译服务器（一账号一台）。点「探测」：端口→认证→工作目录→git→工具链，全通过才具备 SDK 编译升级能力。密钥模式留空会自动生成 ed25519，公钥需放到编译机。</p>
+            <p style="color:#909399">只显示当前登录账号自己的编译服务器（token 隔离，管理员也不互看）。每个账号一账号一台。点「探测」：端口→认证→工作目录→git→工具链，全通过才具备 SDK 编译升级能力。密钥模式留空会自动生成 ed25519，公钥需放到编译机。</p>
             <el-table :data="buildServers" border>
               <el-table-column prop="name" label="名称" width="140" />
               <el-table-column label="主机" width="180">
@@ -2009,6 +2028,13 @@ const legendRole = [
             <el-form-item label="ADB 端口"><el-input-number v-model="deviceEditRow.adb_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="MAC"><el-input v-model="deviceEditRow.mac" /></el-form-item>
           </template>
+          <el-form-item label="锁定设备" class="settings-grid-full">
+            <el-switch v-model="deviceEditRow.locked" />
+            <span style="margin-left: 8px; color: #909399">锁定后不参与任何分配（不影响已在用的租约）</span>
+          </el-form-item>
+          <el-form-item v-if="deviceEditRow.locked" label="锁定原因" class="settings-grid-full">
+            <el-input v-model="deviceEditRow.locked_reason" placeholder="如 送修中 / 借出 / 不稳需要人工检查" maxlength="128" />
+          </el-form-item>
           <el-form-item label="共享方式" class="settings-grid-full">
             <el-radio-group v-model="deviceEditRow.share_scope">
               <el-radio value="shared">公共（任何人可申请）</el-radio>

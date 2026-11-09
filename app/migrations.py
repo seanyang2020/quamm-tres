@@ -45,6 +45,10 @@ _DEVICE_COLUMNS = {
     "share_scope": "VARCHAR(16) NOT NULL DEFAULT 'shared'",
     "allowed_emails": "TEXT",
     "allowed_agent_labels": "TEXT",
+    # v0.27 手动锁定
+    "locked": "BOOLEAN NOT NULL DEFAULT 0",
+    "locked_by": "VARCHAR(128)",
+    "locked_reason": "VARCHAR(128)",
 }
 
 # credential 表新增列（v0.11）-> DDL 片段
