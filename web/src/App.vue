@@ -1309,7 +1309,7 @@ const legendRole = [
         <h2>设置</h2>
         <el-tabs v-model="settingsTab">
           <el-tab-pane label="系统设置" name="system">
-            <el-form v-if="settings" :model="settingsForm" label-width="200px" style="max-width: 640px; margin-bottom: 16px">
+            <el-form v-if="settings" :model="settingsForm" label-width="160px" class="settings-grid-form">
               <el-form-item label="位置规则">
                 <span>{{ settings.location_rule.format }}（{{ settings.location_rule.description }}）</span>
               </el-form-item>
@@ -1350,49 +1350,11 @@ const legendRole = [
               <el-form-item label="allow_apply_when_suspect">
                 <el-switch v-model="settingsForm.allow_apply_when_suspect" />
               </el-form-item>
-              <el-form-item>
+              <el-form-item class="settings-grid-full">
                 <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存</el-button>
               </el-form-item>
             </el-form>
-            <h3>关于 Quamm TRES</h3>
-            <p v-if="versionInfo" style="margin: 0 0 12px">
-              <strong>{{ versionInfo.name }}</strong> · 版本 {{ versionInfo.version }}
-              <span v-if="versionInfo.stage">（{{ versionInfo.stage }}）</span>
-            </p>
-            <p v-if="healthInfo" style="margin: 0 0 12px; color: #606266">
-              启动时间：{{ healthInfo.started_at }}<br />
-              已运行：{{ healthInfo.uptime_human }}
-            </p>
-            <p style="color: #909399; margin: 0 0 12px">
-              测试资源分配管理系统：Agent 经 MCP 申请/释放 ADB 测试设备，管理员在此维护系统参数与设备类型。
-              机型的新增、编辑、停用与删除统一在「设备类型」页操作，本页不再重复入口。
-            </p>
-            <h4>健康级别 health_level</h4>
-            <el-table :data="legendHealth" border size="small">
-              <el-table-column prop="level" label="级别" width="80" />
-              <el-table-column prop="meaning" label="含义" />
-            </el-table>
-            <h4>设备状态</h4>
-            <el-table :data="legendDevice" border size="small">
-              <el-table-column prop="state" label="状态" width="120" />
-              <el-table-column prop="meaning" label="含义" />
-            </el-table>
-            <h4>租约状态</h4>
-            <el-table :data="legendLease" border size="small">
-              <el-table-column prop="state" label="状态" width="120" />
-              <el-table-column prop="meaning" label="含义" />
-            </el-table>
-            <h4>排队状态</h4>
-            <el-table :data="legendQueue" border size="small">
-              <el-table-column prop="state" label="状态" width="120" />
-              <el-table-column prop="meaning" label="含义" />
-            </el-table>
-            <h4>角色</h4>
-            <el-table :data="legendRole" border size="small">
-              <el-table-column prop="role" label="角色" width="100" />
-              <el-table-column prop="meaning" label="含义" />
-            </el-table>
-          </el-tab-pane>
+</el-tab-pane>
 
           <el-tab-pane label="设备类型" name="product-types">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
@@ -1487,10 +1449,6 @@ const legendRole = [
               <el-form-item><el-button @click="testSmtp">发测试邮件</el-button></el-form-item>
             </el-form>
           </el-tab-pane>
-          <el-tab-pane label="系统介绍" name="intro">
-            <iframe src="intro.html" title="系统介绍"
-              style="width:100%;height:78vh;border:1px solid var(--el-border-color);border-radius:10px;"></iframe>
-          </el-tab-pane>
           <el-tab-pane v-if="me.role === 'admin'" label="审计" name="audit">
             <div style="margin-bottom: 12px">
               <el-select v-model="auditAction" placeholder="按动作筛选（全部）" clearable @change="filterAudit" style="width: 240px">
@@ -1580,6 +1538,13 @@ const legendRole = [
                 <el-button type="primary" :loading="settingsSaving" @click="saveSettings">保存策略</el-button>
               </el-form-item>
             </el-form>
+          </el-tab-pane>
+          <el-tab-pane label="系统介绍" name="intro">
+            <div class="intro-toolbar">
+              <a class="intro-open" href="intro.html" target="_blank" rel="noopener">在全页面打开系统介绍 ↗</a>
+            </div>
+            <iframe src="intro.html" title="系统介绍"
+              style="width:100%;height:74vh;border:1px solid var(--el-border-color);border-radius:10px;"></iframe>
           </el-tab-pane>
         </el-tabs>
 
@@ -1889,4 +1854,9 @@ const legendRole = [
 .cat-card { cursor: pointer; transition: box-shadow .2s, transform .2s; }
 .cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); transform: translateY(-2px); }
 .shot-download { display: inline-block; text-decoration: none; }
+.settings-grid-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; }
+.settings-grid-form.settings-grid-form .settings-grid-full { grid-column: 1 / -1; }
+.intro-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+.intro-open { color: var(--el-color-primary); text-decoration: none; font-size: 13px; }
+.intro-open:hover { text-decoration: underline; }
 </style>

@@ -261,6 +261,52 @@
     <p class="muted">本页面随版本持续维护，源码位于 web/public/intro.html。</p>
   </section>
 
+  <section id="about">
+    <h2>11. 关于 Quamm TRES</h2>
+    <p><strong>Quamm TRES</strong> · 版本 <span id="ab-version">-</span>
+       <span class="muted">（运行时数据来自 /api/health，离线打开时显示占位）</span></p>
+    <p class="muted">启动时间：<span id="ab-started">-</span> ｜ 已运行：<span id="ab-uptime">-</span></p>
+    <p>测试资源分配管理系统：Agent 经 MCP 申请/释放 ADB 测试设备，管理员在此维护系统参数与设备类型。
+       机型的新增、编辑、停用与删除统一在「设备类型」页操作。</p>
+    <h3>健康级别 health_level</h3>
+    <table>
+      <tr><th>级别</th><th>含义</th></tr>
+      <tr><td>L3</td><td>健康，默认可申请</td></tr>
+      <tr><td>L2</td><td>可疑，最近巡检有波动，默认不分配</td></tr>
+      <tr><td>L1</td><td>降级，多次探测失败</td></tr>
+      <tr><td>L0</td><td>离线 / 完全不可达</td></tr>
+    </table>
+    <h3>设备状态</h3>
+    <table>
+      <tr><th>状态</th><th>含义</th></tr>
+      <tr><td>available</td><td>空闲，可申请</td></tr>
+      <tr><td>occupied</td><td>已被租用</td></tr>
+      <tr><td>pending</td><td>注册中</td></tr>
+      <tr><td>offline</td><td>离线</td></tr>
+    </table>
+    <h3>租约状态</h3>
+    <table>
+      <tr><th>状态</th><th>含义</th></tr>
+      <tr><td>GRANTED</td><td>在用</td></tr>
+      <tr><td>EXPIRING</td><td>宽限期，即将到期</td></tr>
+      <tr><td>RESERVED</td><td>排到 offer 窗口，待确认</td></tr>
+    </table>
+    <h3>排队状态</h3>
+    <table>
+      <tr><th>状态</th><th>含义</th></tr>
+      <tr><td>QUEUED</td><td>排队中</td></tr>
+      <tr><td>OFFERED</td><td>已发 offer，60 秒内确认</td></tr>
+      <tr><td>GRANTED</td><td>已分配</td></tr>
+      <tr><td>CANCELLED</td><td>已取消</td></tr>
+    </table>
+    <h3>角色</h3>
+    <table>
+      <tr><th>角色</th><th>含义</th></tr>
+      <tr><td>admin</td><td>全量查看 + 强制回收 + 发凭据 + 机型管理</td></tr>
+      <tr><td>user</td><td>只看自己的租约与申请</td></tr>
+    </table>
+  </section>
+
 </main>
 <script>
   // 仅在独立全窗口打开时显示「返回控制台」；内嵌于设置页 iframe 时隐藏
@@ -268,6 +314,22 @@
     var standalone = false;
     try { standalone = (window.self === window.top); } catch (e) { standalone = false; }
     if (standalone) { document.getElementById('backLink').style.display = 'inline-block'; }
+  })();
+
+  // 关于节：从 /api/health 拉取版本/启动时间/运行时长，失败时保留占位
+  (function () {
+    function set(id, v) { var el = document.getElementById(id); if (el && v != null) el.textContent = v; }
+    try {
+      fetch('api/health', { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d) return;
+          set('ab-version', d.version);
+          set('ab-started', d.started_at);
+          set('ab-uptime', d.uptime_human);
+        })
+        .catch(function () {});
+    } catch (e) {}
   })();
 </script>
 </body>
