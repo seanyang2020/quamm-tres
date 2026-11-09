@@ -113,13 +113,13 @@ def res_my_leases() -> list[dict]:
 
 @mcp.tool()
 def res_apply(
+    agent_info: str,
     product_type: str | None = None,
     device_id: str | None = None,
     target: str | None = None,
     purpose: str | None = None,
     expected_minutes: int | None = None,
     priority: int = 0,
-    agent_info: str | None = None,
 ) -> dict:
     """申请设备（两种方式二选一）。
 
@@ -258,17 +258,17 @@ def res_device_probe(
 
 @mcp.tool()
 def res_device_register(
+    agent_info: str,
     form_id: str,
     position_code: str,
     owner: str,
     model_class: str | None = None,
     note: str | None = None,
-    agent_info: str | None = None,
 ) -> dict:
-    """提交注册表（两段式第二步）。位置编号与责任人缺失会拒绝。
+    """提交注册表（两段式第二步，agent_info 为必填）。位置编号与责任人缺失会拒绝。
 
-    agent_info：注册时显式填写调用方 Agent 身份（如 WorkBuddy/豆包），写入审计并回写到
-    当前凭据的 agent_label，便于在凭据页识别该用户使用的 Agent。
+    agent_info（必填）：调用方 Agent 名称/版本（如 WorkBuddy/1.2、豆包/1.0），写入审计并
+    回写到当前凭据的 agent_label，便于在凭据页识别该用户使用的 Agent。
     """
     auth = require_auth()
     session = SessionLocal()
