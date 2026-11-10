@@ -1,0 +1,20 @@
+[Unit]
+Description=Quamm TRES worker (patrol / lease reclaim)
+After=network-online.target quamm-tres.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/scm/quamm-res
+Environment=PATH=/home/scm/quamm-res/.venv/bin:/home/scm/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/scm/quamm-res/.venv/bin/python -m app.workers.main
+Restart=always
+RestartSec=10
+KillMode=mixed
+TimeoutStopSec=25
+StandardOutput=append:/home/scm/quamm-res/var/worker.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target

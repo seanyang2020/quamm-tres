@@ -1,0 +1,20 @@
+[Unit]
+Description=Quamm TRES API (uvicorn 9100)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/scm/quamm-res
+Environment=PATH=/home/scm/quamm-res/.venv/bin:/home/scm/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/scm/quamm-res/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 9100
+Restart=always
+RestartSec=5
+KillMode=mixed
+TimeoutStopSec=25
+StandardOutput=append:/home/scm/quamm-res/var/api.log
+StandardError=inherit
+
+[Install]
+WantedBy=default.target
