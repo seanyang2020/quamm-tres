@@ -31,6 +31,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app import cache_prune
 from app.config import settings
 from app.constants import LeaseState
 from app.db import SessionLocal
@@ -314,6 +315,8 @@ def _read_flashed_version(ip: str, port: int) -> str | None:
 
 def _run_job(job_id: str) -> None:
     """后台线程主流程：QUEUED -> RUNNING -> SUCCEEDED / FAILED。"""
+    # v0.28.3：记录刷机前的下载目录快照，结束后只删本次新增的镜像
+    downloads_before = cache_prune.snapshot_downloads() if settings.flash_cache_prune_after_job else None
     session = SessionLocal()
     try:
         job = session.get(FlashJob, job_id)
@@ -366,6 +369,37 @@ def _run_job(job_id: str) -> None:
         _fail_job(session, job_id, f"{type(e).__name__}: {e}")
     finally:
         session.close()
+        if downloads_before is not None:
+            _prune_job_cache(job_id, downloads_before)
+
+
+def _prune_job_cache(job_id: str, before: set[str]) -> None:
+    """v0.28.3：刷机结束回收本次下载的镜像。
+
+    只在没有其它 RUNNING job 时执行 —— 并发刷机时 downloads/ 里的新增文件可能属于
+    另一个 job，误删会让对方中断。
+    """
+    try:
+        session = SessionLocal()
+        try:
+            others = (
+                session.query(FlashJob)
+                .filter(FlashJob.status == STATUS_RUNNING, FlashJob.job_id != job_id)
+                .count()
+            )
+        finally:
+            session.close()
+        if others:
+            logger.info("flash job %s: skip cache prune (%s other job running)", job_id, others)
+            return
+        result = cache_prune.prune_flash_job_delta(before)
+        if result["deleted_count"]:
+            logger.info(
+                "flash job %s: cache pruned %s items, freed %s",
+                job_id, result["deleted_count"], result["freed_human"],
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("flash job %s: cache prune failed", job_id)
 
 
 def _fail_job(session: Session, job_id: str, error: str) -> None:

@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import glob
+import logging
 import os
 import re
 import shutil
@@ -26,6 +27,8 @@ from pathlib import Path
 from app.domain.catalog import DomainError
 from app.utils import utcnow
 
+logger = logging.getLogger(__name__)
+
 SOURCES = {
     "daily": "http://172.16.1.201/Daily/XOS/",
     "release": "http://172.16.1.201/release/XOS/",
@@ -38,7 +41,10 @@ WORK_ROOT = Path(__file__).resolve().parent.parent / "var" / "db_source"
 
 # v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
 # 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
-XOSADB2UPDATE_PATH = "/home/scm/bin/xosadb2update"
+# v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
+# 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
+# v0.28.3：默认改为当前用户 ~/bin/xosadb2update，换机器部署不必改代码。
+XOSADB2UPDATE_PATH = str(Path.home() / "bin" / "xosadb2update")
 
 
 # ---------------- 路径智能适配 ----------------
@@ -260,3 +266,42 @@ def upgrade(ip: str, script_ini: str, update_args: str = "-f -a -e data",
     if p.returncode != 0:
         raise DomainError("UPGRADE_FAILED", f"升级失败（{p.returncode}）：{out[-500:]}")
     return {"ok": True, "ip": ip, "output_tail": out[-800:], "finished_at": utcnow().isoformat()}
+
+
+# ---------------- 缓存回收（v0.28.3） ----------------
+
+def discard_work(package_path: str | None, extract_dir: str | None) -> dict:
+    """删掉本次下载的包与解压目录（端到端升级结束后调用，script.ini 已用完）。"""
+    freed = 0
+    removed: list[str] = []
+    pkg = Path(package_path) if package_path else None
+    if pkg is not None and pkg.exists():
+        try:
+            freed += pkg.stat().st_size
+            pkg.unlink()
+            removed.append(str(pkg))
+        except OSError as e:
+            logger.warning("discard package %s failed: %s", pkg, e)
+    if pkg is not None:
+        try:
+            if pkg.parent.exists() and not any(pkg.parent.iterdir()):
+                pkg.parent.rmdir()
+        except OSError:
+            pass
+    ext = Path(extract_dir) if extract_dir else None
+    if ext is not None and ext.exists():
+        try:
+            freed += sum(f.stat().st_size for f in ext.rglob("*") if f.is_file())
+            shutil.rmtree(ext)
+            removed.append(str(ext))
+        except OSError as e:
+            logger.warning("discard extract dir %s failed: %s", ext, e)
+    return {"removed": removed, "freed_bytes": freed}
+
+
+def prune_work_root(keep_days: int | None = None, keep_per_label: int | None = None) -> dict:
+    """按保留策略清 var/db_source（下载前调用，避免越积越多）。"""
+    from app import cache_prune
+
+    result = cache_prune.prune_db_source(keep_days=keep_days, keep_per_label=keep_per_label)
+    return {"deleted_count": result["deleted_count"], "freed_bytes": result["freed_bytes"]}

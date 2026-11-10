@@ -5,6 +5,8 @@ res_admin 仅管理员可用（运行时校验），普通 token 调用返回 FO
 """
 from __future__ import annotations
 
+import logging
+
 from fastmcp import FastMCP
 
 from app.config import settings
@@ -28,6 +30,8 @@ mcp = FastMCP(
         "用完 res_release。长任务到期前调 res_renew 续约。"
     ),
 )
+
+logger = logging.getLogger("quamm-tres.mcp")
 
 
 def _err(e: DomainError) -> dict:
@@ -500,18 +504,24 @@ def res_db_device_version(device_id: str | None = None, ip: str | None = None,
 @mcp.tool()
 def res_db_prepare(source: str = "daily", project_path: str = "",
                    version: int | None = None) -> dict:
-    """下载并解压指定 DB 版本，返回本地包路径与 qmimages/script.ini（下载即落盘，需有效凭据）。"""
+    """下载并解压指定 DB 版本，返回本地包路径与 qmimages/script.ini（下载即落盘，需有效凭据）。
+
+    v0.28.3：下载前先按保留策略回收旧缓存（过期解压目录、每个 label 超份数的旧包），
+    返回的路径仍可用，但会被后续回收按 db_source_keep_days 清掉，别当长期存储。
+    """
     try:
         require_auth()
         norm = db_source.normalize_source(source, project_path)
         if not norm["project_url"]:
             raise DomainError("MISSING_PROJECT", "需提供 project_path")
+        cleaned = db_source.prune_work_root()
         fv = db_source.find_versions(norm["project_url"], version)
         pkg = db_source.list_packages(fv["version_url"])[0]
         label = project_path.replace("/", "_") + f"_{fv['selected']}"
         dl = db_source.download_package(pkg["url"], label)
         ex = db_source.extract_and_find_ini(dl["package"])
-        return {"version": fv["selected"], "strategy": fv["strategy"], **dl, **ex}
+        return {"version": fv["selected"], "strategy": fv["strategy"], **dl, **ex,
+                "cache_pruned": cleaned}
     except DomainError as e:
         return _err(e)
     except AuthError as e:
@@ -526,6 +536,7 @@ def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: in
     """端到端 DB 升级：发现版本→下载 CURRENT*.gz→解压定位 script.ini→xosadb2update。
 
     需有效凭据；同步执行（数分钟），默认保留 data（-f -a -e data）。可指定 device_id 或 ip。
+    v0.28.3：升级结束（无论成败）立即删掉本次下载的包与解压目录，不留在 var/db_source。
     """
     try:
         require_auth()
@@ -538,15 +549,22 @@ def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: in
         if not norm["project_url"]:
             raise DomainError("MISSING_PROJECT", "需提供 project_path")
         before = db_source.device_db_version(addr, port, project_path or None)
+        cleaned = db_source.prune_work_root()
         fv = db_source.find_versions(norm["project_url"], version)
         pkg = db_source.list_packages(fv["version_url"])[0]
         label = project_path.replace("/", "_") + f"_{fv['selected']}"
         dl = db_source.download_package(pkg["url"], label)
         ex = db_source.extract_and_find_ini(dl["package"])
-        up = db_source.upgrade(addr, ex["script_ini"], update_args)
-        after = db_source.device_db_version(addr, port, project_path or None)
-        return {"before": before, "target_version": fv["selected"], "package": dl["name"],
-                "upgrade": up, "after": after}
+        try:
+            up = db_source.upgrade(addr, ex["script_ini"], update_args)
+            after = db_source.device_db_version(addr, port, project_path or None)
+            return {"before": before, "target_version": fv["selected"], "package": dl["name"],
+                    "upgrade": up, "after": after, "cache_pruned": cleaned}
+        finally:
+            # 刷完即清：包与解压目录都只服务一次升级，留着纯占空间
+            discarded = db_source.discard_work(dl.get("package"), ex.get("extract_dir"))
+            if discarded["removed"]:
+                logger.info("db upgrade cleanup: %s", discarded)
     except DomainError as e:
         return _err(e)
     except AuthError as e:

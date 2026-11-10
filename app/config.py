@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -70,12 +71,21 @@ class Settings(BaseSettings):
 
     # 固件下载 / 刷机（v0.14，复用现成工具，不重新实现）
     xos_base_url: str = "http://172.16.1.201/Daily/XOS"  # DB 目录根（末尾无 /）
-    dbxostest_path: str = "/home/scm/bin/dbxostest.py"   # 下载 + 刷写编排器
+    # v0.28.3：默认取当前用户 ~/bin/dbxostest.py，换机器部署不用改代码（env 可覆盖）
+    dbxostest_path: str = str(Path.home() / "bin" / "dbxostest.py")  # 下载 + 刷写编排器
     python_bin: str = "python3"
     flash_work_dir: str = "./var/flash"                  # dbxostest 的 cwd（downloads/tmp 落此）
     flash_log_dir: str = "./var/flash/logs"              # 每个 job 一份日志
     flash_http_timeout: int = 8                          # 版本目录列表 HTTP 超时
     flash_timeout_seconds: int = 1800                    # 单次刷机子进程上限（5-15 分钟）
+
+    # 缓存回收（v0.28.3）：DB 源包/解压缓存与刷机缓存都必须回收，否则无限膨胀
+    db_source_keep_days: int = 1          # var/db_source 下超过 N 天未改动即删
+    db_source_keep_per_label: int = 1     # 每个 label 目录只保留最新 N 个包
+    flash_cache_keep_days: int = 1        # var/flash/downloads 超过 N 天即删
+    flash_log_keep_days: int = 30         # var/flash/logs 与 test_report 保留天数
+    flash_cache_prune_after_job: bool = True  # 单个刷机 job 结束即删它本次下载的镜像
+    cache_prune_interval_hours: int = 6   # worker 定时清理周期
 
     # 通知（一期只落库，不真正发信）
     smtp_host: str = ""

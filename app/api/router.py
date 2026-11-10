@@ -534,6 +534,32 @@ def prune_screenshot_records(
     return screenshot_lifecycle.prune_global(session, actor=identity.email)
 
 
+# ---------- 缓存回收（v0.28.3） ----------
+
+
+@router.get("/maintenance/cache")
+def cache_usage(
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+):
+    """查看 DB 源缓存 / 刷机缓存占用与当前保留策略。"""
+    from app import cache_prune
+
+    return cache_prune.cache_stats()
+
+
+@router.post("/maintenance/cache/prune")
+def prune_cache(
+    payload: dict | None = Body(default=None),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+):
+    """立即回收缓存。body {"dry_run": true} 只统计不删。"""
+    from app import cache_prune
+
+    dry_run = bool((payload or {}).get("dry_run"))
+    result = cache_prune.prune_all(dry_run=dry_run)
+    return {**result, "actor": identity.email}
+
+
 @router.get("/feedback")
 def list_feedback(
     status: str | None = None,

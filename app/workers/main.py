@@ -124,6 +124,20 @@ def _screenshot_prune_job() -> None:
         session.close()
 
 
+def _cache_prune_job() -> None:
+    """v0.28.3 缓存回收：DB 源包/解压目录 + 刷机 downloads/logs（best-effort）。"""
+    try:
+        from app import cache_prune
+
+        result = cache_prune.prune_all()
+        logger.info(
+            "cache prune: freed=%s (%s -> %s)",
+            result["freed_human"], result["before_total_human"], result["after_total_human"],
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("cache prune failed")
+
+
 def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
@@ -139,6 +153,11 @@ def run_worker() -> None:
     scheduler.add_job(_credential_expiry_job, "interval", hours=24, id="credential_expiry")
     # v0.24：截图全局保留策略（每小时一次，best-effort，独立线程不阻塞其它任务）
     scheduler.add_job(_screenshot_prune_job, "interval", hours=1, id="screenshot_prune")
+    # v0.28.3：缓存回收（默认 6 小时一次；DB 源包/解压目录、刷机下载/日志）
+    scheduler.add_job(
+        _cache_prune_job, "interval",
+        hours=max(1, settings.cache_prune_interval_hours), id="cache_prune",
+    )
     scheduler.start()
     logger.info("worker started (lease_scan=%ss, patrol=%smin)", settings.lease_scan_seconds, settings.patrol_interval_minutes)
 
