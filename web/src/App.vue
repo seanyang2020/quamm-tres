@@ -121,6 +121,21 @@ watch([detailPageSize, () => detailFilteredDevices.value.length], () => {
   const maxPage = Math.max(1, Math.ceil(detailFilteredDevices.value.length / detailPageSize.value))
   if (detailPage.value > maxPage) detailPage.value = maxPage
 })
+const STATUS_LABEL = { occupied: '占用', available: '可用', offline: '离线', pending: '待检' }
+const emptyDetailText = computed(() => {
+  const kw = deviceSearch.value.trim()
+  const total = detailCounts.value.all
+  if (kw) return `没有匹配「${kw}」的设备（${detailTitle.value} 共 ${total} 台）`
+  if (detailStatusTab.value !== 'all') {
+    return `${detailTitle.value} · ${STATUS_LABEL[detailStatusTab.value] || detailStatusTab.value} 暂无设备（该机型共 ${total} 台）`
+  }
+  return `${detailTitle.value} 暂无设备`
+})
+function showAllInDetail() {
+  detailStatusTab.value = 'all'
+  deviceSearch.value = ''
+  detailPage.value = 1
+}
 function openDeviceDetail(type, status = 'all') {
   selectedDeviceType.value = type
   detailStatusTab.value = status
@@ -391,8 +406,18 @@ async function api(path, opts) {
 }
 
 async function loadDashboard() { dashboard.value = await api('/api/dashboard') }
+let devicesReqSeq = 0
 async function loadDevices() {
-  devices.value = await api('/api/devices')
+  const seq = ++devicesReqSeq
+  try {
+    const list = await api('/api/devices')
+    if (seq !== devicesReqSeq) return // 已有更新的请求在飞，丢弃旧响应，避免旧数据覆盖新数据
+    const arr = Array.isArray(list) ? list : (list && Array.isArray(list.items) ? list.items : [])
+    devices.value = arr
+    if (!arr.length) ElMessage.warning('设备列表返回为空，请稍后重试或检查登录状态')
+  } catch (e) {
+    ElMessage.error('设备列表加载失败：' + e.message)
+  }
 }
 // UTC ISO -> 本地时区可读时间
 function formatLocal(iso) {
@@ -706,7 +731,7 @@ async function reviewFeedback(row, status) {
 function switchPage(key) {
   active.value = key
   if (key === 'dashboard') loadDashboard()
-  else if (key === 'devices') loadDevices()
+  else if (key === 'devices') { goDevices(); loadDevices() }
   else if (key === 'scheduling') {
     loadLeases(); loadQueue(); loadAnomalies(); loadNotices(); loadPatrol()
   }
@@ -1373,7 +1398,15 @@ const legendRole = [
             </el-table-column>
           </el-table>
           </div>
-          <el-empty v-if="!detailFilteredDevices.length" description="该状态下没有设备" />
+          <el-empty v-if="!detailFilteredDevices.length" :description="emptyDetailText">
+              <el-button
+                v-if="detailStatusTab !== 'all' || deviceSearch.trim()"
+                size="small"
+                type="primary"
+                plain
+                @click="showAllInDetail"
+              >查看全部 {{ detailCounts.all }} 台</el-button>
+            </el-empty>
           <div v-if="detailFilteredDevices.length" class="detail-pager">
             <span class="detail-range">共 {{ detailFilteredDevices.length }} 台，第 {{ detailRangeStart }}-{{ detailRangeEnd }} 台</span>
             <el-pagination
