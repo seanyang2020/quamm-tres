@@ -357,7 +357,7 @@ async function submitDeviceEdit() {
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
-const ptEditRow = ref({ type_code: '', display_name: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null })
+const ptEditRow = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555, model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '' })
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
@@ -368,9 +368,11 @@ const ptAllowIncomplete = ref(false)
 const ptCreateSaving = ref(false)
 const ptCreateRow = ref({
   type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
+  adb_port: 5555, model_pattern: '',
   defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
-  chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null,
+  chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
 })
+const ptCreateTitle = ref('新增机型')
 const ptCreateRules = computed(() => {
   const req = { required: true, message: '该字段默认必填（可勾选底部「允许不完整」放开）', trigger: 'blur' }
   return ptAllowIncomplete.value
@@ -1053,7 +1055,10 @@ const enabledProductTypes = computed(() => productTypes.value.filter(p => p.enab
 const disabledProductTypes = computed(() => productTypes.value.filter(p => !p.enabled))
 function openPtEdit(row) {
   ptEditRow.value = {
-    type_code: row.type_code, display_name: row.display_name,
+    type_code: row.type_code, display_name: row.display_name || '',
+    has_screen: !!row.has_screen, has_led: !!row.has_led,
+    serial_count: row.serial_count === undefined || row.serial_count === null ? 1 : row.serial_count,
+    adb_port: row.adb_port || 5555, model_pattern: row.model_pattern || '',
     defconfig: row.defconfig || '', sdk_repo_cmd: row.sdk_repo_cmd || '',
     build_cmd: row.build_cmd || '', image_path: row.image_path || '',
     jenkins_url: row.jenkins_url || '', notes: row.notes || '',
@@ -1071,6 +1076,10 @@ async function savePtEdit() {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         new_type_code: newCode,
+        display_name: ptEditRow.value.display_name,
+        has_screen: ptEditRow.value.has_screen, has_led: ptEditRow.value.has_led,
+        serial_count: ptEditRow.value.serial_count, adb_port: ptEditRow.value.adb_port,
+        model_pattern: ptEditRow.value.model_pattern,
         defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
         jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
@@ -1110,14 +1119,41 @@ async function loadHealthInfo() {
 function resetPtCreate() {
   ptCreateRow.value = {
     type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
+    adb_port: 5555, model_pattern: '',
     defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
-    chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null,
+    chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
   }
   ptAllowIncomplete.value = false
+  ptCreateTitle.value = '新增机型'
   ptCreateForm.value?.clearValidate?.()
 }
 function openPtCreate() {
   resetPtCreate()
+  ptCreateDialog.value = true
+}
+// v0.28.7：派生机型 —— 以某机型为模板克隆一行（工程配置/芯片浮点/编译服务器全部带过来），
+// 只换 type_code 与名称；不搬运任何设备，原设备仍留在模板机型上。
+// 两个入口：机型列表行「派生」、每台设备操作列「派生」（该设备当前机型为模板）。
+function openPtDerive(row, fromDevice) {
+  const code = fromDevice ? (row.model_class || '') : (row.type_code || '')
+  if (!code) { ElMessage.warning('该设备还没有机型，无法派生机型'); return }
+  const tpl = productTypes.value.find((p) => p.type_code === code)
+  if (!tpl) { ElMessage.warning('机型 ' + code + ' 不在当前列表，请刷新后重试'); return }
+  resetPtCreate()
+  ptCreateRow.value = {
+    type_code: code + '_copy',
+    display_name: (tpl.display_name || code) + '-副本',
+    has_screen: !!tpl.has_screen, has_led: !!tpl.has_led,
+    serial_count: tpl.serial_count === undefined || tpl.serial_count === null ? 1 : tpl.serial_count,
+    adb_port: tpl.adb_port || 5555, model_pattern: tpl.model_pattern || '',
+    defconfig: tpl.defconfig || '', sdk_repo_cmd: tpl.sdk_repo_cmd || '',
+    build_cmd: tpl.build_cmd || '', image_path: tpl.image_path || '',
+    jenkins_url: tpl.jenkins_url || '', notes: tpl.notes || '',
+    chip_model: tpl.chip_model || '', float_abi: tpl.float_abi || 'auto',
+    has_fpu: !!tpl.has_fpu, build_server_id: tpl.build_server_id || null,
+    copy_from: code,
+  }
+  ptCreateTitle.value = '派生机型（模板 ' + code + '）'
   ptCreateDialog.value = true
 }
 async function submitPtCreate() {
@@ -1137,18 +1173,29 @@ async function submitPtCreate() {
       body: JSON.stringify({
         type_code: code, display_name: row.display_name,
         has_screen: row.has_screen, has_led: row.has_led, serial_count: row.serial_count,
-      }),
-    })
-    await api('/api/product-types/' + encodeURIComponent(code), {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+        adb_port: row.adb_port, model_pattern: row.model_pattern,
+        copy_from: row.copy_from || null,
         defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
         image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
         chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
         build_server_id: row.build_server_id,
       }),
     })
-    ElMessage.success('已新增机型 ' + code)
+    // 派生：后端已在一次请求里整行复制（含工程字段），不用再 PUT；普通新增仍走两步。
+    if (!row.copy_from) {
+      await api('/api/product-types/' + encodeURIComponent(code), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
+          image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+          chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
+          build_server_id: row.build_server_id,
+        }),
+      })
+    }
+    ElMessage.success(row.copy_from
+      ? ('已派生机型 ' + code + '（模板 ' + row.copy_from + '）')
+      : ('已新增机型 ' + code))
     ptCreateDialog.value = false
     loadProductTypes(); loadSettings()
   } catch (e) {
@@ -1366,7 +1413,7 @@ const legendRole = [
             </div>
           </div>
           <div class="device-table-wrap">
-          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1270px">
+          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1315px">
             <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip />
             <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip />
             <el-table-column prop="position_code" label="位置" width="85" show-overflow-tooltip />
@@ -1402,11 +1449,13 @@ const legendRole = [
                 <el-tag v-else size="small" type="success">公共</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="285">
+            <el-table-column label="操作" width="336" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small"
                   :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
+                <el-button v-if="me.role === 'admin'" link type="success" size="small" :disabled="!row.model_class"
+                  @click="openPtDerive(row, true)">派生</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
                 <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
                 <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
@@ -1730,10 +1779,11 @@ const legendRole = [
               <el-table-column label="芯片 / 浮点" width="180">
                 <template #default="{ row }">{{ row.chip_model || '-' }} · {{ row.float_abi || 'auto' }}{{ row.has_fpu ? ' (FPU)' : '' }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="260">
+              <el-table-column label="操作" width="252" fixed="right">
                 <template #default="{ row }">
                   <template v-if="me.role === 'admin'">
                     <el-button size="small" @click="openPtEdit(row)">编辑</el-button>
+                    <el-button size="small" @click="openPtDerive(row, false)">派生</el-button>
                     <el-button size="small" type="danger" @click="disableProductType(row.type_code)">停用</el-button>
                     <el-button size="small" type="danger" plain @click="deleteProductType(row.type_code)">删除</el-button>
                   </template>
@@ -1955,8 +2005,19 @@ const legendRole = [
             <el-form-item label="type_code">
               <el-input v-model="ptEditRow.new_type_code" placeholder="机型主键，可直接修改（会同步已有设备的机型）" />
             </el-form-item>
+            <el-form-item label="名称"><el-input v-model="ptEditRow.display_name" placeholder="展示名（给人看），留空则用 type_code" /></el-form-item>
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
             <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
+            <el-form-item label="有屏"><el-switch v-model="ptEditRow.has_screen" /></el-form-item>
+            <el-form-item label="有灯"><el-switch v-model="ptEditRow.has_led" /></el-form-item>
+            <el-form-item label="串口数"><el-input-number v-model="ptEditRow.serial_count" :min="0" /></el-form-item>
+            <el-form-item label="ADB 端口"><el-input-number v-model="ptEditRow.adb_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="机型匹配正则"><el-input v-model="ptEditRow.model_pattern" placeholder="留空则不按型号自动归档" /></el-form-item>
+            <el-form-item label="编译服务器">
+              <el-select v-model="ptEditRow.build_server_id" clearable placeholder="不绑定" style="width: 100%">
+                <el-option v-for="b in buildServers" :key="b.server_id" :label="b.name + '（' + b.host + '）'" :value="b.server_id" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="SDK 获取命令" class="pt-full"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" class="pt-full"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
@@ -1974,35 +2035,7 @@ const legendRole = [
           <template #footer><el-button @click="ptEditDialog = false">取消</el-button><el-button type="primary" @click="savePtEdit">保存</el-button></template>
         </el-dialog>
 
-        <el-dialog v-model="ptCreateDialog" title="新增机型" width="860px" :close-on-click-modal="false">
-          <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="96px" class="pt-grid">
-            <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
-            <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>
-            <el-form-item label="有屏"><el-switch v-model="ptCreateRow.has_screen" /></el-form-item>
-            <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
-            <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
-            <el-form-item label="主芯片型号"><el-input v-model="ptCreateRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
-            <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
-            <el-form-item label="浮点 ABI">
-              <el-select v-model="ptCreateRow.float_abi" style="width: 100%">
-                <el-option label="auto（探测自动判定）" value="auto" />
-                <el-option label="hard（硬浮点 / vxosdbg）" value="hard" />
-                <el-option label="soft（软浮点 / xosdbg）" value="soft" />
-              </el-select>
-            </el-form-item>
-            <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd" class="pt-full"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
-            <el-form-item label="编译命令" prop="build_cmd" class="pt-full"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
-            <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
-            <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
-            <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>
-            <el-form-item label="允许不完整"><el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox></el-form-item>
-            <el-form-item label="备注" class="pt-full"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
-          </el-form>
-          <template #footer>
-            <el-button @click="ptCreateDialog = false">取消</el-button>
-            <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">新增</el-button>
-          </template>
-        </el-dialog>
+        
 
         <el-dialog v-model="bsDialog" :title="bsRow.server_id ? '编辑编译服务器' : '添加编译服务器'" width="560px" :close-on-click-modal="false">
           <el-form label-width="110px">
@@ -2320,7 +2353,43 @@ const legendRole = [
         <el-empty v-if="!screenshotHistory.length && !screenshotHistoryLoading" description="该设备暂无截图记录" />
         <template #footer><el-button @click="screenshotHistoryVisible = false">关闭</el-button></template>
       </el-dialog>
-    </el-main>
+    <el-dialog v-model="ptCreateDialog" :title="ptCreateTitle" width="860px" :close-on-click-modal="false">
+          <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="96px" class="pt-grid">
+            <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
+            <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>
+            <el-form-item label="有屏"><el-switch v-model="ptCreateRow.has_screen" /></el-form-item>
+            <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
+            <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
+            <el-form-item label="ADB 端口"><el-input-number v-model="ptCreateRow.adb_port" :min="1" :max="65535" /></el-form-item>
+            <el-form-item label="机型匹配正则"><el-input v-model="ptCreateRow.model_pattern" placeholder="留空则不按型号自动归档" /></el-form-item>
+            <el-form-item label="编译服务器">
+              <el-select v-model="ptCreateRow.build_server_id" clearable placeholder="不绑定" style="width: 100%">
+                <el-option v-for="b in buildServers" :key="b.server_id" :label="b.name + '（' + b.host + '）'" :value="b.server_id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="主芯片型号"><el-input v-model="ptCreateRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
+            <el-form-item label="defconfig" prop="defconfig"><el-input v-model="ptCreateRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
+            <el-form-item label="浮点 ABI">
+              <el-select v-model="ptCreateRow.float_abi" style="width: 100%">
+                <el-option label="auto（探测自动判定）" value="auto" />
+                <el-option label="hard（硬浮点 / vxosdbg）" value="hard" />
+                <el-option label="soft（软浮点 / xosdbg）" value="soft" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd" class="pt-full"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
+            <el-form-item label="编译命令" prop="build_cmd" class="pt-full"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
+            <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
+            <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>
+            <el-form-item label="允许不完整"><el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox></el-form-item>
+            <el-form-item label="备注" class="pt-full"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="ptCreateDialog = false">取消</el-button>
+            <el-button type="primary" :loading="ptCreateSaving" @click="submitPtCreate">{{ ptCreateRow.copy_from ? '派生' : '新增' }}</el-button>
+          </template>
+        </el-dialog>
+        </el-main>
   </el-container>
 </template>
 

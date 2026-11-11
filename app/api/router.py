@@ -1013,6 +1013,73 @@ def update_settings(
     return settings_view(session=session)
 
 
+def _product_flag(value, default: bool = False) -> bool:
+    """兼容 bool 与 "1/true/yes/on" 字符串。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _product_int(value, default: int, minimum: int = 0, maximum: int | None = None) -> int:
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    if n < minimum:
+        return minimum
+    if maximum is not None and n > maximum:
+        return maximum
+    return n
+
+
+def _apply_product_eng_fields(pt: ProductType, payload: dict) -> None:
+    """工程/编译/能力元数据：6 个自由文本 + 芯片型号/浮点 ABI/FPU。"""
+    for field in ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes"):
+        if field in payload:
+            value = payload[field]
+            setattr(pt, field, (str(value).strip() if value is not None else None) or None)
+    if "chip_model" in payload:
+        value = payload["chip_model"]
+        pt.chip_model = (str(value).strip() if value is not None else None) or None
+    if "float_abi" in payload:
+        value = str(payload["float_abi"] or "auto").strip().lower()
+        pt.float_abi = value if value in ("hard", "soft", "auto") else "auto"
+    if "has_fpu" in payload:
+        pt.has_fpu = _product_flag(payload["has_fpu"])
+
+
+def _apply_product_basic_fields(pt: ProductType, payload: dict) -> None:
+    """v0.28.7：展示名、基础属性、固件策略、编译服务器引用 —— 编辑时也都能改。
+
+    type_code 是机器主键（API/排队/设备归属都靠它），display_name 是给人看的名字，
+    改名不影响任何引用，所以这里允许直接改 display_name。
+    """
+    if "display_name" in payload:
+        pt.display_name = (str(payload.get("display_name") or "").strip() or pt.type_code)[:128]
+    if "has_screen" in payload:
+        pt.has_screen = _product_flag(payload["has_screen"])
+    if "has_led" in payload:
+        pt.has_led = _product_flag(payload["has_led"])
+    if "serial_count" in payload:
+        pt.serial_count = _product_int(payload["serial_count"], pt.serial_count, 0, 64)
+    if "adb_port" in payload:
+        pt.adb_port = _product_int(payload["adb_port"], pt.adb_port, 1, 65535)
+    if "model_pattern" in payload:
+        value = payload["model_pattern"]
+        pt.model_pattern = (str(value).strip() if value is not None else None) or None
+    if "db_project_name" in payload:
+        value = payload["db_project_name"]
+        pt.db_project_name = (str(value).strip() if value is not None else None) or None
+    for field in ("required_major", "required_minor", "required_patch"):
+        if field in payload:
+            setattr(pt, field, _product_int(payload[field], getattr(pt, field), 0, 9999))
+    if "build_server_id" in payload:
+        value = payload["build_server_id"]
+        pt.build_server_id = (str(value).strip() if value is not None else None) or None
+
+
 @router.get("/product-types")
 def list_product_types(session: Session = Depends(get_session)):
     """设备类型完整列表（含 6 个元数据字段 + 完整度标签），供设置页「设备类型」Tab。"""
@@ -1030,20 +1097,8 @@ def update_product_type(
     pt = session.get(ProductType, type_code)
     if pt is None:
         raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
-    for field in ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes"):
-        if field in payload:
-            value = payload[field]
-            setattr(pt, field, (str(value).strip() if value is not None else None) or None)
-    # v0.23：芯片/浮点能力（float_abi 仅 hard/soft/auto；不强制、允许留空）。
-    if "chip_model" in payload:
-        value = payload["chip_model"]
-        pt.chip_model = (str(value).strip() if value is not None else None) or None
-    if "float_abi" in payload:
-        value = str(payload["float_abi"] or "auto").strip().lower()
-        pt.float_abi = value if value in ("hard", "soft", "auto") else "auto"
-    if "has_fpu" in payload:
-        value = payload["has_fpu"]
-        pt.has_fpu = value if isinstance(value, bool) else str(value or "").strip().lower() in ("1", "true", "yes", "on")
+    _apply_product_eng_fields(pt, payload)
+    _apply_product_basic_fields(pt, payload)
     # v0.13：支持「停用 / 重新启用」同一入口（bool 或 "true"/"false" 字符串都兼容）。
     if "enabled" in payload:
         value = payload["enabled"]
@@ -1117,6 +1172,32 @@ def add_product_type(
         raise HTTPException(status_code=400, detail="type_code 必填")
     if session.get(ProductType, code) is not None:
         raise HTTPException(status_code=409, detail=f"机型 {code} 已存在")
+    # v0.28.7：派生 —— 以现有机型为模板克隆一行（工程配置/芯片浮点/编译服务器全部带过来），
+    # 只换 type_code 与展示名；不搬运任何设备，设备仍留在模板机型上。
+    copy_from = str(payload.get("copy_from") or "").strip()
+    if copy_from:
+        tpl = session.get(ProductType, copy_from)
+        if tpl is None:
+            raise HTTPException(status_code=404, detail=f"派生模板机型 {copy_from} 不存在")
+        data = {c.name: getattr(tpl, c.name) for c in ProductType.__table__.columns}
+        data["type_code"] = code
+        data["enabled"] = True
+        data["display_name"] = (
+            (str(payload.get("display_name") or "").strip()) or f"{tpl.display_name}-副本"
+        )[:128]
+        data["created_at"] = utcnow()
+        derived = ProductType(**data)
+        session.add(derived)
+        session.flush()
+        _apply_product_eng_fields(derived, payload)
+        _apply_product_basic_fields(derived, payload)
+        session.commit()
+        return {
+            "type_code": code,
+            "display_name": derived.display_name,
+            "enabled": True,
+            "derived_from": copy_from,
+        }
     fa = str(payload.get("float_abi") or "auto").strip().lower()
     fa = fa if fa in ("hard", "soft", "auto") else "auto"
     hf = payload.get("has_fpu")
