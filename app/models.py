@@ -439,3 +439,107 @@ class BuildServer(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime())
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
+
+# ---------------- v0.29 设备层串口能力 ----------------
+# 物理串口由 tres-logs 日志机器以 raw TCP 暴露；TRES 只存"设备↔端口↔动作"的定义与状态。
+# 表结构见 docs：D:\work\aitools\private\Quamm-TRES-设备串口能力规划.md §3
+
+
+class DeviceSerialPort(Base):
+    """一台设备的一路串口（设备级配置，同机型不同接线各自配）。"""
+
+    __tablename__ = "device_serial_port"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    device_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("device.device_id"), nullable=False
+    )
+    slot: Mapped[int] = mapped_column(Integer, nullable=False)  # 第几路 1..N
+    role: Mapped[str] = mapped_column(
+        String(16), default="spare", server_default="spare", nullable=False
+    )  # log | power | mode | spare
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transport: Mapped[str] = mapped_column(
+        String(8), default="tcp", server_default="tcp", nullable=False
+    )  # tcp（tres-logs）| local（COM/tty）
+    endpoint: Mapped[str | None] = mapped_column(String(128), nullable=True)  # tcp://host:port
+    port_name: Mapped[str | None] = mapped_column(String(64), nullable=True)  # COM11 / /dev/ttyUSB0
+    channel: Mapped[str | None] = mapped_column(String(32), nullable=True)  # tres-logs 侧通道名
+    baudrate: Mapped[int] = mapped_column(
+        Integer, default=115200, server_default="115200", nullable=False
+    )
+    databits: Mapped[int] = mapped_column(Integer, default=8, server_default="8", nullable=False)
+    stopbits: Mapped[int] = mapped_column(Integer, default=1, server_default="1", nullable=False)
+    parity: Mapped[str] = mapped_column(String(1), default="N", server_default="N", nullable=False)
+    encoding_default: Mapped[str] = mapped_column(
+        String(8), default="hex", server_default="hex", nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+
+    __table_args__ = (
+        Index("uq_serial_port_slot", "device_id", "slot", unique=True),
+    )
+
+
+class SerialAction(Base):
+    """一个语义动作 = 有序多条命令（steps 为 JSON 数组）。"""
+
+    __tablename__ = "serial_action"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    port_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("device_serial_port.id"), nullable=False
+    )
+    action_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    kind: Mapped[str] = mapped_column(
+        String(16), default="custom", server_default="custom", nullable=False
+    )  # power | mode | custom
+    steps: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    inter_step_ms: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
+    sort: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
+
+    __table_args__ = (
+        Index("uq_serial_action_key", "port_id", "action_key", unique=True),
+    )
+
+
+class SerialState(Base):
+    """设备串口最后状态（供能力声明与排障，不做乐观推断）。"""
+
+    __tablename__ = "serial_state"
+
+    device_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("device.device_id"), primary_key=True
+    )
+    power_state: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", nullable=False
+    )  # on | off | unknown
+    mode_state: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", nullable=False
+    )
+    last_action: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_result: Mapped[str | None] = mapped_column(String(16), nullable=True)  # ok|fail|timeout|busy
+    last_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    last_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
+
+class SerialLogCursor(Base):
+    """log 通道读游标（同一 log 串口只能 tres-logs 独占采集，TRES 只记读到哪）。"""
+
+    __tablename__ = "serial_log_cursor"
+
+    device_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    port_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_offset: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)

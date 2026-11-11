@@ -1945,3 +1945,161 @@ def sdk_build_route(
         )
     except DomainError as e:
         raise _domain_http(e)
+
+
+# ---------------- v0.29 设备层串口（tres-logs raw TCP） ----------------
+from app.domain import serial as serial_svc
+
+
+def _require_serial_lease(session, identity, device_id: str, action_key=None, confirm=False):
+    serial_svc.check_access(
+        session,
+        device_id,
+        email=identity.email,
+        is_admin=(identity.role == "admin"),
+        action_key=action_key,
+        confirm=confirm,
+    )
+
+
+@router.get("/devices/{device_id}/serial")
+def get_device_serial(device_id: str, session: Session = Depends(get_session)):
+    """串口能力声明：端口、动作（含 steps）、电源/模式状态、当前占用。"""
+    try:
+        return serial_svc.caps(session, device_id)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.put("/devices/{device_id}/serial")
+def put_device_serial(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """配置端口与动作（仅管理员）。ports 元素结构见规划文档 §3。"""
+    try:
+        return serial_svc.upsert_ports(
+            session,
+            device_id,
+            payload.get("ports") or [],
+            actor=identity.email,
+            replace=bool(payload.get("replace")),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.delete("/devices/{device_id}/serial/{slot}")
+def delete_device_serial(
+    device_id: str,
+    slot: int,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        return serial_svc.delete_port(session, device_id, slot, actor=identity.email)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/serial/action")
+def post_serial_action(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """服务端执行一个已定义动作（前端「测试」按钮也走这里）。"""
+    action_key = str(payload.get("action_key") or "").strip()
+    if not action_key:
+        raise HTTPException(status_code=400, detail="action_key 必填")
+    try:
+        _require_serial_lease(session, identity, device_id, action_key, bool(payload.get("confirm")))
+        return serial_svc.run_action(
+            session,
+            device_id,
+            action_key,
+            by=f"web:{identity.email}",
+            lease_id=payload.get("lease_id"),
+            hold_ms=payload.get("hold_ms"),
+            dry_run=bool(payload.get("dry_run")),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/serial/read")
+def post_serial_read(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """短读串口（默认 log 口）。"""
+    try:
+        _require_serial_lease(session, identity, device_id)
+        return serial_svc.read_serial(
+            session,
+            device_id,
+            slot=payload.get("slot"),
+            seconds=float(payload.get("seconds") or 3.0),
+            by=f"web:{identity.email}",
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/serial/probe")
+def post_serial_probe(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """自检串口：能否连上、有没有回包。"""
+    try:
+        _require_serial_lease(session, identity, device_id)
+        return serial_svc.probe_port(
+            session, device_id, slot=payload.get("slot"), by=f"web:{identity.email}"
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/serial/state/reset")
+def post_serial_state_reset(
+    device_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """把串口状态归零（换电源板后用）。"""
+    try:
+        return serial_svc.reset_state(session, device_id, actor=identity.email)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/serial/report")
+def post_serial_report(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """skill 直连 TCP 执行后回填状态与审计。"""
+    device_id = str(payload.get("device_id") or "").strip()
+    action_key = str(payload.get("action_key") or "").strip()
+    if not device_id or not action_key:
+        raise HTTPException(status_code=400, detail="device_id / action_key 必填")
+    try:
+        return serial_svc.report_result(
+            session,
+            device_id,
+            action_key,
+            str(payload.get("result") or ""),
+            by=str(payload.get("by") or f"web:{identity.email}"),
+            detail=payload.get("detail"),
+        )
+    except DomainError as e:
+        raise _domain_http(e)

@@ -90,11 +90,10 @@ def res_list_devices(
     suspect/offline 设备不会出现在结果里；排查时可传 claimable_only=false。
     """
     return _guard_ro(
-        catalog.list_devices,
+        _serial_list_devices,
         model_class=model_class,
         status=status,
         limit=limit,
-        for_agent=True,
         claimable_only=claimable_only,
     )
 
@@ -111,8 +110,8 @@ def res_list_positions() -> list[dict]:
 
 @mcp.tool()
 def res_device_info(device_id: str) -> dict:
-    """单台设备详情：机型、位置、状态、健康级别、当前占用（脱敏）。"""
-    return _guard_ro(catalog.device_info, device_id, for_agent=True)
+    """单台设备详情：机型、位置、状态、健康级别、当前占用（脱敏）+ 串口能力。"""
+    return _guard_ro(_serial_device_info, device_id)
 
 
 @mcp.tool()
@@ -863,3 +862,146 @@ def build_mcp_app():
         stateless_http=True,
         middleware=[Middleware(McpAuthMiddleware)],
     )
+
+
+# ---------------- v0.29 设备层串口 ----------------
+from app.domain import serial as serial_svc
+
+
+def _serial_actor(auth) -> str:
+    label = getattr(getattr(auth, "credential", None), "agent_label", None)
+    return f"{label} ({auth.email})" if label else auth.email
+
+
+def _serial_list_devices(
+    session,
+    model_class=None,
+    status=None,
+    limit=100,
+    claimable_only=True,
+):
+    rows = catalog.list_devices(
+        session,
+        model_class=model_class,
+        status=status,
+        limit=limit,
+        for_agent=True,
+        claimable_only=claimable_only,
+    )
+    flags = serial_svc.serial_flags(session)
+    for r in rows:
+        r["serial"] = flags.get(
+            r.get("device_id"), {"log": False, "power": False, "mode": False, "slots": 0}
+        )
+    return rows
+
+
+def _serial_device_info(session, device_id):
+    info = catalog.device_info(session, device_id, for_agent=True)
+    try:
+        info["serial"] = serial_svc.serial_summary(session, device_id)
+    except DomainError:
+        info["serial"] = {"available": False}
+    return info
+
+
+def _serial_action_impl(session, auth, device_id, action_key, lease_id=None,
+                        confirm=False, hold_ms=None):
+    serial_svc.check_access(
+        session, device_id,
+        email=auth.email, is_admin=auth.is_admin,
+        action_key=action_key, confirm=confirm,
+    )
+    return serial_svc.run_action(
+        session, device_id, action_key,
+        by=_serial_actor(auth), lease_id=lease_id, hold_ms=hold_ms,
+    )
+
+
+def _serial_read_impl(session, auth, device_id, slot=None, seconds=3.0):
+    serial_svc.check_access(session, device_id, email=auth.email, is_admin=auth.is_admin)
+    return serial_svc.read_serial(
+        session, device_id, slot=slot, seconds=seconds, by=_serial_actor(auth)
+    )
+
+
+def _serial_probe_impl(session, auth, device_id, slot=None):
+    serial_svc.check_access(session, device_id, email=auth.email, is_admin=auth.is_admin)
+    return serial_svc.probe_port(session, device_id, slot=slot, by=_serial_actor(auth))
+
+
+def _serial_config_impl(session, auth, device_id, ports, replace=False):
+    if not auth.is_admin:
+        raise DomainError("FORBIDDEN", "串口配置只允许管理员")
+    return serial_svc.upsert_ports(
+        session, device_id, ports, actor=auth.email, replace=replace
+    )
+
+
+def _serial_report_impl(session, auth, device_id, action_key, result, detail=None):
+    return serial_svc.report_result(
+        session, device_id, action_key, result, by=_serial_actor(auth), detail=detail
+    )
+
+
+@mcp.tool()
+def res_serial_caps(device_id: str) -> dict:
+    """查一台设备的串口能力：端口、动作（含 hex 序列）、电源/模式状态、当前谁占着。"""
+    return _guard_ro(serial_svc.caps, device_id)
+
+
+@mcp.tool()
+def res_serial_action(
+    device_id: str,
+    action_key: str,
+    lease_id: str | None = None,
+    confirm: bool = False,
+    hold_ms: int | None = None,
+) -> dict:
+    """服务端执行一个已定义串口动作（power_on / power_off / power_cycle / mode_* / custom_*）。
+
+    需要持有该设备租约或管理员权限；mode_edl 额外要 confirm=true。
+    power_cycle 若没单独定义，会按 power_off + 断电保持(默认1200ms) + power_on 组合执行。
+    """
+    return _guard(_serial_action_impl, device_id, action_key, lease_id, confirm, hold_ms)
+
+
+@mcp.tool()
+def res_serial_read(device_id: str, slot: int | None = None, seconds: float = 3.0) -> dict:
+    """短读串口（默认 log 口），返回这几秒收到的原始文本。"""
+    return _guard(_serial_read_impl, device_id, slot, seconds)
+
+
+@mcp.tool()
+def res_serial_probe(device_id: str, slot: int | None = None) -> dict:
+    """自检串口：能不能连上、有没有回包字节（配错波特率/端口时先跑这个）。"""
+    return _guard(_serial_probe_impl, device_id, slot)
+
+
+@mcp.tool()
+def res_serial_config(device_id: str, ports: list[dict], replace: bool = False) -> dict:
+    """配置设备串口与动作（仅管理员）。ports 结构见 docs §3。"""
+    return _guard(_serial_config_impl, device_id, ports, replace)
+
+
+@mcp.tool()
+def res_serial_report(device_id: str, action_key: str, result: str,
+                      detail: dict | None = None) -> dict:
+    """skill 直连 TCP 执行后回填 TRES 状态与审计（要求已认证身份，且动作须已定义）。"""
+    return _guard(_serial_report_impl, device_id, action_key, result, detail)
+
+
+@mcp.tool()
+def res_serial_log(device_id: str, since: int = 0, max_bytes: int = 8192,
+                   keyword: str | None = None) -> dict:
+    """读 tres-logs 侧 log 增量。tres-logs 的日志接口（规划 C4）尚未对齐，当前返回不可用。"""
+    try:
+        c = serial_svc.caps(SessionLocal(), device_id)
+    except DomainError:
+        c = {"log": {"available": False}}
+    return {
+        "device_id": device_id,
+        "available": False,
+        "reason": "tres-logs 的 log 接口（C4）尚未对齐，暂用 res_serial_read 短读",
+        "log": c.get("log"),
+    }
