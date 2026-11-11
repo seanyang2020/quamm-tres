@@ -1059,14 +1059,18 @@ function openPtEdit(row) {
     jenkins_url: row.jenkins_url || '', notes: row.notes || '',
     chip_model: row.chip_model || '', float_abi: row.float_abi || 'auto', has_fpu: !!row.has_fpu,
     build_server_id: row.build_server_id || null,
+    new_type_code: row.type_code,
   }
   ptEditDialog.value = true
 }
 async function savePtEdit() {
+  const newCode = (ptEditRow.value.new_type_code || '').trim()
+  if (!newCode) { ElMessage.warning('type_code 不能为空'); return }
   try {
     const r = await api('/api/product-types/' + encodeURIComponent(ptEditRow.value.type_code), {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        new_type_code: newCode,
         defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
         jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
@@ -1074,9 +1078,15 @@ async function savePtEdit() {
         has_fpu: ptEditRow.value.has_fpu, build_server_id: ptEditRow.value.build_server_id,
       }),
     })
-    ElMessage.success('已保存（' + r.complete_label + '）')
+    const moved = (r && r.moved_devices) || 0
+    ElMessage.success(
+      moved
+        ? ('已保存（' + r.complete_label + '），type_code 已改为 ' + r.type_code + '，同步调整 ' + moved + ' 台设备')
+        : ('已保存（' + r.complete_label + '）')
+    )
     ptEditDialog.value = false
     loadProductTypes(); loadSettings()
+    if (moved) { loadDevices() }
   } catch (e) { ElMessage.error(e.message) }
 }
 
@@ -1936,6 +1946,9 @@ const legendRole = [
 
         <el-dialog v-model="ptEditDialog" :title="'编辑设备类型 · ' + ptEditRow.type_code" width="820px" :close-on-click-modal="false">
           <el-form label-width="96px" class="pt-grid">
+            <el-form-item label="type_code">
+              <el-input v-model="ptEditRow.new_type_code" placeholder="机型主键，可直接修改（会同步已有设备的机型）" />
+            </el-form-item>
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
             <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
             <el-form-item label="SDK 获取命令" class="pt-full"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>

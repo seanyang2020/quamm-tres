@@ -41,6 +41,7 @@ from app.models import (
     Contact,
     Credential,
     Device,
+    FlashJob,
     Lease,
     Notice,
     NoticeReceipt,
@@ -1047,12 +1048,52 @@ def update_product_type(
     if "enabled" in payload:
         value = payload["enabled"]
         pt.enabled = value if isinstance(value, bool) else str(value).strip().lower() in ("1", "true", "yes", "on")
+    # v0.28.5：支持同时修改主键 type_code，并级联迁移已有设备/历史刷机记录。
+    new_code = payload.get("new_type_code")
+    new_code = (str(new_code).strip() if new_code is not None else "") or ""
+    previous_code = type_code
+    moved_devices = 0
+    moved_flash_jobs = 0
+    # 迁移前先算好返回值，避免删除旧行后再访问 ORM 对象触发重新加载。
+    complete_now = catalog.product_complete(pt)
+    enabled_now = pt.enabled
+    if new_code and new_code != type_code:
+        if len(new_code) > 64:
+            raise HTTPException(status_code=400, detail="new_type_code 过长（最多 64 字符）")
+        if not all(c.isalnum() or c in "_.-" for c in new_code):
+            raise HTTPException(status_code=400, detail="new_type_code 只能包含字母、数字、下划线、点、连字符")
+        if session.get(ProductType, new_code) is not None:
+            raise HTTPException(status_code=409, detail=f"机型 {new_code} 已存在，请先处理同名机型")
+        session.flush()  # 先把普通字段落到旧行，克隆时读到的是最新值
+        data = {c.name: getattr(pt, c.name) for c in ProductType.__table__.columns}
+        data["type_code"] = new_code
+        # 顺序：先插新行 -> 再迁子表引用 -> 最后删旧行，任何时刻外键都成立。
+        session.add(ProductType(**data))
+        session.flush()
+        moved_devices = (
+            session.query(Device)
+            .filter(Device.model_class == previous_code)
+            .update({"model_class": new_code}, synchronize_session=False)
+        )
+        moved_flash_jobs = (
+            session.query(FlashJob)
+            .filter(FlashJob.product_type == previous_code)
+            .update({"product_type": new_code}, synchronize_session=False)
+        )
+        session.expunge(pt)
+        session.query(ProductType).filter(ProductType.type_code == previous_code).delete(
+            synchronize_session=False
+        )
     session.commit()
     return {
-        "type_code": type_code,
-        "complete": catalog.product_complete(pt),
-        "complete_label": "完整" if catalog.product_complete(pt) else "信息不全",
-        "enabled": pt.enabled,
+        "type_code": new_code or previous_code,
+        "previous_type_code": previous_code,
+        "renamed": bool(new_code and new_code != previous_code),
+        "moved_devices": moved_devices,
+        "moved_flash_jobs": moved_flash_jobs,
+        "complete": complete_now,
+        "complete_label": "完整" if complete_now else "信息不全",
+        "enabled": enabled_now,
     }
 
 
