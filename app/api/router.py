@@ -1054,6 +1054,7 @@ def update_product_type(
     previous_code = type_code
     moved_devices = 0
     moved_flash_jobs = 0
+    moved_queue_entries = 0
     # 迁移前先算好返回值，避免删除旧行后再访问 ORM 对象触发重新加载。
     complete_now = catalog.product_complete(pt)
     enabled_now = pt.enabled
@@ -1080,6 +1081,13 @@ def update_product_type(
             .filter(FlashJob.product_type == previous_code)
             .update({"product_type": new_code}, synchronize_session=False)
         )
+        # 排队记录里 target_type='product' 的 target_code 就是机型，必须一起迁，
+        # 否则排队项会指向一个不存在的机型，排队的人永远等不到设备。
+        moved_queue_entries = (
+            session.query(QueueEntry)
+            .filter(QueueEntry.target_type == "product", QueueEntry.target_code == previous_code)
+            .update({"target_code": new_code}, synchronize_session=False)
+        )
         session.expunge(pt)
         session.query(ProductType).filter(ProductType.type_code == previous_code).delete(
             synchronize_session=False
@@ -1091,6 +1099,7 @@ def update_product_type(
         "renamed": bool(new_code and new_code != previous_code),
         "moved_devices": moved_devices,
         "moved_flash_jobs": moved_flash_jobs,
+        "moved_queue_entries": moved_queue_entries,
         "complete": complete_now,
         "complete_label": "完整" if complete_now else "信息不全",
         "enabled": enabled_now,

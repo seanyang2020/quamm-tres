@@ -1078,15 +1078,21 @@ async function savePtEdit() {
         has_fpu: ptEditRow.value.has_fpu, build_server_id: ptEditRow.value.build_server_id,
       }),
     })
-    const moved = (r && r.moved_devices) || 0
+    const movedDev = (r && r.moved_devices) || 0
+    const movedJob = (r && r.moved_flash_jobs) || 0
+    const movedQueue = (r && r.moved_queue_entries) || 0
+    const movedParts = []
+    if (movedDev) { movedParts.push(movedDev + ' 台设备') }
+    if (movedQueue) { movedParts.push(movedQueue + ' 条排队') }
+    if (movedJob) { movedParts.push(movedJob + ' 条刷机记录') }
     ElMessage.success(
-      moved
-        ? ('已保存（' + r.complete_label + '），type_code 已改为 ' + r.type_code + '，同步调整 ' + moved + ' 台设备')
+      movedParts.length
+        ? ('已保存（' + r.complete_label + '），type_code 已改为 ' + r.type_code + '，同步调整 ' + movedParts.join('、'))
         : ('已保存（' + r.complete_label + '）')
     )
     ptEditDialog.value = false
     loadProductTypes(); loadSettings()
-    if (moved) { loadDevices() }
+    if (movedDev) { loadDevices() }
   } catch (e) { ElMessage.error(e.message) }
 }
 
