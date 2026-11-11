@@ -1414,6 +1414,18 @@ const legendRole = [
           </div>
           <div class="device-table-wrap">
           <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1315px">
+            <el-table-column label="操作" width="300">
+              <template #default="{ row }">
+                <el-button v-if="me.role === 'admin'" link type="primary" size="small"
+                  :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
+                <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
+                <el-button v-if="me.role === 'admin'" link type="success" size="small" :disabled="!row.model_class"
+                  @click="openPtDerive(row, true)">派生</el-button>
+                <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
+                <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
+                <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
+              </template>
+            </el-table-column>
             <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip />
             <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip />
             <el-table-column prop="position_code" label="位置" width="85" show-overflow-tooltip />
@@ -1449,18 +1461,7 @@ const legendRole = [
                 <el-tag v-else size="small" type="success">公共</el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="336" fixed="right">
-              <template #default="{ row }">
-                <el-button v-if="me.role === 'admin'" link type="primary" size="small"
-                  :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
-                <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
-                <el-button v-if="me.role === 'admin'" link type="success" size="small" :disabled="!row.model_class"
-                  @click="openPtDerive(row, true)">派生</el-button>
-                <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
-                <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
-                <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
-              </template>
-            </el-table-column>
+            
           </el-table>
           </div>
           <el-empty v-if="!detailFilteredDevices.length" :description="emptyDetailText">
@@ -1779,7 +1780,7 @@ const legendRole = [
               <el-table-column label="芯片 / 浮点" width="180">
                 <template #default="{ row }">{{ row.chip_model || '-' }} · {{ row.float_abi || 'auto' }}{{ row.has_fpu ? ' (FPU)' : '' }}</template>
               </el-table-column>
-              <el-table-column label="操作" width="252" fixed="right">
+              <el-table-column label="操作" width="330" fixed="right">
                 <template #default="{ row }">
                   <template v-if="me.role === 'admin'">
                     <el-button size="small" @click="openPtEdit(row)">编辑</el-button>
