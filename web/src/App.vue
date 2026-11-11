@@ -1350,7 +1350,7 @@ const legendRole = [
             </div>
           </div>
           <div class="device-table-wrap">
-          <el-table :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1270px">
+          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1270px">
             <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip />
             <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip />
             <el-table-column prop="position_code" label="位置" width="85" show-overflow-tooltip />
