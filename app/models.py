@@ -474,6 +474,16 @@ class DeviceSerialPort(Base):
     encoding_default: Mapped[str] = mapped_column(
         String(8), default="hex", server_default="hex", nullable=False
     )
+    # 健康度：配置会在现场失效（端口拔了 / tres-logs 重启 / endpoint 变了），
+    # 记下来让 caps 能直接告诉 AI「有配置但当前不通」，而不是反复硬试。
+    health_state: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", nullable=False
+    )  # unknown | ok | fail | suspect
+    health_fail_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    health_checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    health_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     enabled: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="1", nullable=False
     )

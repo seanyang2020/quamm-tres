@@ -149,6 +149,28 @@ def release(key: str, holder: str | None = None) -> bool:
         return True
 
 
+def acquire_wait(
+    key: str,
+    holder: str,
+    ttl_sec: float = 120.0,
+    wait_ms: int = 2000,
+) -> dict:
+    """占住一路串口；被别的 holder 占着时最多等 wait_ms，再抛 SerialBusy。
+
+    一路串口挂多台设备（共享电源口）时靠这个排队：持有方控制完立刻 release，
+    后来的等一下就能拿到；等不到就明确报 busy，不闷头失败。
+    """
+    deadline = time.monotonic() + max(0, int(wait_ms or 0)) / 1000.0
+    while True:
+        try:
+            return acquire(key, holder, ttl_sec=ttl_sec)
+        except SerialBusy:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                raise
+            time.sleep(min(0.2, remain))
+
+
 def holder_of(key: str) -> dict | None:
     now = time.monotonic()
     with _hold_guard:

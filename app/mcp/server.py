@@ -906,7 +906,7 @@ def _serial_device_info(session, device_id):
 
 
 def _serial_action_impl(session, auth, device_id, action_key, lease_id=None,
-                        confirm=False, hold_ms=None):
+                        confirm=False, hold_ms=None, wait_ms=None):
     serial_svc.check_access(
         session, device_id,
         email=auth.email, is_admin=auth.is_admin,
@@ -915,6 +915,14 @@ def _serial_action_impl(session, auth, device_id, action_key, lease_id=None,
     return serial_svc.run_action(
         session, device_id, action_key,
         by=_serial_actor(auth), lease_id=lease_id, hold_ms=hold_ms,
+        wait_ms=wait_ms if wait_ms is not None else serial_svc.DEFAULT_HOLD_WAIT_MS,
+    )
+
+
+def _serial_release_impl(session, auth, device_id, slot=None):
+    serial_svc.check_access(session, device_id, email=auth.email, is_admin=auth.is_admin)
+    return serial_svc.release_device_ports(
+        session, device_id, actor=_serial_actor(auth), slot=slot
     )
 
 
@@ -957,13 +965,14 @@ def res_serial_action(
     lease_id: str | None = None,
     confirm: bool = False,
     hold_ms: int | None = None,
+    wait_ms: int | None = None,
 ) -> dict:
     """服务端执行一个已定义串口动作（power_on / power_off / power_cycle / mode_* / custom_*）。
 
     需要持有该设备租约或管理员权限；mode_edl 额外要 confirm=true。
     power_cycle 若没单独定义，会按 power_off + 断电保持(默认1200ms) + power_on 组合执行。
     """
-    return _guard(_serial_action_impl, device_id, action_key, lease_id, confirm, hold_ms)
+    return _guard(_serial_action_impl, device_id, action_key, lease_id, confirm, hold_ms, wait_ms)
 
 
 @mcp.tool()
@@ -1005,3 +1014,13 @@ def res_serial_log(device_id: str, since: int = 0, max_bytes: int = 8192,
         "reason": "tres-logs 的 log 接口（C4）尚未对齐，暂用 res_serial_read 短读",
         "log": c.get("log"),
     }
+
+
+@mcp.tool()
+def res_serial_release(device_id: str, slot: int | None = None) -> dict:
+    """释放该设备占用的物理串口。
+
+    一路串口挂多台设备（共享电源口）时，控制完必须放，否则下一台会 busy；
+    Agent 异常中断后也用它兜底，不用等 ttl（默认 120s）。
+    """
+    return _guard(_serial_release_impl, device_id, slot)

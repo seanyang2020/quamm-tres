@@ -31,6 +31,8 @@ MODE_KEYS = ("mode_normal", "mode_fastboot", "mode_edl")
 POWER_CYCLE_HOLD_MS = 1200   # 断电保持；电源板电容释放一般 1~3s，必要时调
 DEFAULT_TTL_SEC = 120.0
 DEFAULT_HARD_TIMEOUT_S = 5.0
+DEFAULT_HOLD_WAIT_MS = 2000  # 共享串口：被占时最多等这么久（等持有方 release）
+HEALTH_FAIL_SUSPECT = 3      # 连续失败几次后标 suspect（不再无脑重试）
 
 _POWER_STATE_BY_KEY = {"power_on": "on", "power_off": "off", "power_cycle": "on"}
 _MODE_STATE_BY_KEY = {
@@ -67,7 +69,10 @@ def _hold_key(port: DeviceSerialPort) -> str:
     """占用键用物理通道而不是设备槽位：两台设备误配同一端点时也能防串台。"""
     if port.transport == "local":
         return f"local:{port.port_name or ('slot%s' % port.slot)}"
-    return f"tcp:{(port.endpoint or '').strip().lower() or ('slot%s' % port.slot)}"
+    ep = (port.endpoint or "").strip().lower()
+    if ep.startswith("tcp://"):
+        ep = ep[6:]
+    return f"tcp:{ep or ('slot%s' % port.slot)}"
 
 
 def _port_dict(port: DeviceSerialPort, actions: list[SerialAction] | None = None) -> dict:
@@ -85,6 +90,12 @@ def _port_dict(port: DeviceSerialPort, actions: list[SerialAction] | None = None
         "parity": port.parity,
         "encoding_default": port.encoding_default,
         "enabled": bool(port.enabled),
+        "health": {
+            "state": port.health_state or "unknown",
+            "fail_count": int(port.health_fail_count or 0),
+            "checked_at": port.health_checked_at.isoformat() if port.health_checked_at else None,
+            "error": port.health_error,
+        },
         "actions": [
             {
                 "action_key": a.action_key,
@@ -234,10 +245,15 @@ def _upsert_action(session: Session, port: DeviceSerialPort, raw: dict) -> None:
         kind = "power" if key.startswith("power_") else ("mode" if key.startswith("mode_") else "custom")
     if kind not in ("power", "mode", "custom"):
         raise DomainError("SERIAL_CONFIG", f"动作 {key} 的 kind 非法: {kind}")
-    try:
-        steps = serial_tcp.normalize_steps(raw.get("steps"))
-    except serial_tcp.SerialError as e:
-        raise DomainError("SERIAL_CONFIG", f"动作 {key}: {e.message}") from e
+    raw_steps = raw.get("steps")
+    if key == "power_cycle" and not raw_steps:
+        # power_cycle 允许留空：执行时按 power_off -> 保持 -> power_on 组合跑
+        steps = []
+    else:
+        try:
+            steps = serial_tcp.normalize_steps(raw_steps)
+        except serial_tcp.SerialError as e:
+            raise DomainError("SERIAL_CONFIG", f"动作 {key}: {e.message}") from e
 
     act = (
         session.query(SerialAction)
@@ -296,6 +312,41 @@ def _state_dict(state: SerialState | None) -> dict:
     }
 
 
+def _dict_hold_key(port: dict) -> str:
+    """dict 版占用键（与 _hold_key 同口径）。"""
+    if port.get("transport") == "local":
+        return f"local:{port.get('port_name') or ('slot%s' % port.get('slot'))}"
+    ep = (port.get("endpoint") or "").strip().lower()
+    if ep.startswith("tcp://"):
+        ep = ep[6:]
+    return f"tcp:{ep or ('slot%s' % port.get('slot'))}"
+
+
+def _shared_map(session: Session, device_id: str) -> dict[str, list[dict]]:
+    """一个物理串口被哪些设备共用（一路电源/串口挂多台设备）。
+
+    用户口径：一个串口可以给多台设备供电，所以共用是正常配置，
+    但控制完必须释放，否则后一台拿不到。这里只做「告知」，互斥由占用表保证。
+    """
+    rows = (
+        session.query(DeviceSerialPort)
+        .filter(DeviceSerialPort.enabled.is_(True))
+        .all()
+    )
+    out: dict[str, list[dict]] = {}
+    for p in rows:
+        out.setdefault(_hold_key(p), []).append(
+            {
+                "device_id": p.device_id,
+                "slot": p.slot,
+                "role": p.role,
+                "label": p.label,
+                "self": p.device_id == device_id,
+            }
+        )
+    return {k: v for k, v in out.items() if len(v) > 1}
+
+
 def caps(session: Session, device_id: str) -> dict:
     """能力声明：AI/skill 拿到这份就知道"能不能断电、怎么发、现在谁占着"。"""
     ports = list_ports(session, device_id)
@@ -318,15 +369,37 @@ def caps(session: Session, device_id: str) -> dict:
                 if a["action_key"] not in mode_keys:
                     mode_keys.append(a["action_key"])
 
+    # 共享串口：同一物理口被多台设备声明时，告诉 AI 动了会连带谁
+    shared = _shared_map(session, device_id)
+    for p in ports:
+        key = _dict_hold_key(p)
+        peers = [x for x in shared.get(key, []) if not x["self"]]
+        p["shared"] = bool(peers)
+        p["shared_with"] = [
+            {"device_id": x["device_id"], "slot": x["slot"], "label": x["label"]}
+            for x in peers
+        ]
+
     busy = None
     for p in ports:
-        key = f"tcp:{(p.get('endpoint') or '').strip().lower()}"
-        if p["transport"] == "local":
-            key = f"local:{p.get('port_name') or ('slot%s' % p['slot'])}"
+        key = _dict_hold_key(p)
         h = serial_tcp.holder_of(key)
         if h:
-            busy = {"slot": p["slot"], "role": p["role"], **h}
+            busy = {"slot": p["slot"], "role": p["role"], "shared": p["shared"], **h}
             break
+
+    degraded = [
+        {
+            "slot": p["slot"],
+            "role": p["role"],
+            "state": p["health"]["state"],
+            "fail_count": p["health"]["fail_count"],
+            "error": p["health"]["error"],
+            "checked_at": p["health"]["checked_at"],
+        }
+        for p in ports
+        if p["health"]["state"] in ("fail", "suspect")
+    ]
 
     return {
         "device_id": device_id,
@@ -347,6 +420,17 @@ def caps(session: Session, device_id: str) -> dict:
         "state": _state_dict(state),
         "busy": busy,
         "power_cycle_hold_ms": POWER_CYCLE_HOLD_MS,
+        # 有配置就算「有」，但可能当前不通：healthy=false + degraded 给出原因，
+        # 由 AI 决定是重试、probe 还是放弃——不把救命手段（断电重启）直接藏掉。
+        "healthy": not degraded,
+        "degraded": degraded,
+        "shared_endpoints": {
+            k: [
+                {"device_id": x["device_id"], "slot": x["slot"], "role": x["role"]}
+                for x in v
+            ]
+            for k, v in shared.items()
+        },
     }
 
 
@@ -363,6 +447,9 @@ def serial_summary(session: Session, device_id: str) -> dict:
         "mode": c["mode"],
         "state": c["state"],
         "busy": c["busy"],
+        "healthy": c.get("healthy", True),
+        "degraded": c.get("degraded", []),
+        "shared": bool(c.get("shared_endpoints")),
     }
 
 
@@ -472,6 +559,7 @@ def run_action(
     lease_id: str | None = None,
     ttl_sec: float = DEFAULT_TTL_SEC,
     hold_ms: int | None = None,
+    wait_ms: int = DEFAULT_HOLD_WAIT_MS,
     hard_timeout_s: float = DEFAULT_HARD_TIMEOUT_S,
     dry_run: bool = False,
 ) -> dict:
@@ -494,8 +582,23 @@ def run_action(
 
     t_all = time.monotonic()
     acquired = False
+    outcome: dict = {"ok": None, "error": None, "code": None}
     try:
-        serial_tcp.acquire(key, by, ttl_sec)
+        # 共享串口（一路口挂多台设备）排队：持有方控制完 release，这边最多等 wait_ms
+        try:
+            serial_tcp.acquire_wait(key, by, ttl_sec, wait_ms)
+        except serial_tcp.SerialBusy as e:
+            raise DomainError(
+                "SERIAL_BUSY",
+                f"{device_id} 的串口（slot{port.slot} {port.role}）正被 "
+                f"{(e.detail or {}).get('holder')} 占用，等了 {wait_ms}ms 仍未释放",
+                {
+                    "port_slot": port.slot,
+                    "role": port.role,
+                    "waited_ms": wait_ms,
+                    **(e.detail or {}),
+                },
+            ) from e
         acquired = True
         if action_key == "power_cycle" and not act.steps:
             # 组合动作：power_off -> 保持 -> power_on
@@ -518,6 +621,11 @@ def run_action(
                 )
             r_off = _exec_steps(port, off_act.steps, hard_timeout_s=hard_timeout_s)
             if not r_off.ok:
+                outcome.update(
+                    ok=False,
+                    error=getattr(r_off, "error", None),
+                    code=getattr(r_off, "error_code", None),
+                )
                 result = {
                     "device_id": device_id, "action_key": action_key,
                     "result": "fail", "phase": "power_off",
@@ -531,6 +639,11 @@ def run_action(
             time.sleep(hold / 1000.0)
             r_on = _exec_steps(port, on_act.steps, hard_timeout_s=hard_timeout_s)
             if not r_on.ok:
+                outcome.update(
+                    ok=False,
+                    error=getattr(r_on, "error", None),
+                    code=getattr(r_on, "error_code", None),
+                )
                 result = {
                     "device_id": device_id, "action_key": action_key,
                     "result": "fail", "phase": "power_on",
@@ -541,6 +654,7 @@ def run_action(
                 _audit(session, device_id, action_key, port, lease_id, by, result)
                 session.commit()
                 return result
+            outcome.update(ok=True, error=None, code=None)
             result = {
                 "device_id": device_id, "action_key": action_key,
                 "result": "ok", "hold_ms": hold,
@@ -555,6 +669,11 @@ def run_action(
 
         r = _exec_steps(port, act.steps or [], hard_timeout_s=hard_timeout_s)
         out = r.to_dict()
+        outcome.update(
+            ok=r.ok,
+            error=getattr(r, "error", None),
+            code=getattr(r, "error_code", None),
+        )
         result = {
             "device_id": device_id,
             "action_key": action_key,
@@ -575,8 +694,15 @@ def run_action(
         session.commit()
         return result
     finally:
+        # 共享串口必须控制完就放，否则后面那台设备一直排队
         if acquired:
             serial_tcp.release(key, by)
+        if outcome["ok"] is not None:
+            _touch_health(session, port, outcome["ok"], outcome["error"], outcome["code"])
+            try:
+                session.commit()
+            except Exception:
+                session.rollback()
 
 
 def _audit(
@@ -611,6 +737,78 @@ def _audit(
     )
 
 
+# ---------------------------------------------------------------- 健康 / 释放
+
+def _touch_health(
+    session: Session,
+    port: DeviceSerialPort,
+    ok: bool,
+    error: str | None = None,
+    code: str | None = None,
+) -> None:
+    """端口健康回写。
+
+    配置会在现场失效（端口拔了 / tres-logs 重启 / endpoint 变了），所以：
+    - 成功：state=ok、计数清零；
+    - 连接/配置类失败：累计计数，到阈值标 suspect（不再让 AI 无脑重试）；
+    - 业务失败（expect 不匹配等）：记 fail 但不升级 suspect（可能只是命令/波特率问题）。
+    """
+    port.health_checked_at = utcnow()
+    if ok:
+        port.health_state = "ok"
+        port.health_fail_count = 0
+        port.health_error = None
+        return
+
+    port_invalid = code in ("SERIAL_CONNECT", "SERIAL_CONFIG")
+    if port_invalid:
+        cnt = int(port.health_fail_count or 0) + 1
+        port.health_fail_count = cnt
+        port.health_state = "suspect" if cnt >= HEALTH_FAIL_SUSPECT else "fail"
+    else:
+        port.health_state = "fail"
+    msg = f"{code}: {error}" if code else (error or "失败")
+    port.health_error = str(msg)[:400]
+
+
+def release_device_ports(
+    session: Session,
+    device_id: str,
+    *,
+    actor: str,
+    slot: int | None = None,
+) -> dict:
+    """手动释放该设备占用的物理串口（异常中断后的兜底）。
+
+    共享串口（一路口挂多台设备）必须控制完就放，否则后面那台一直 busy。
+    """
+    _device(session, device_id)
+    q = session.query(DeviceSerialPort).filter(
+        DeviceSerialPort.device_id == device_id,
+        DeviceSerialPort.enabled.is_(True),
+    )
+    if slot is not None:
+        q = q.filter(DeviceSerialPort.slot == int(slot))
+    released = []
+    for p in q.order_by(DeviceSerialPort.slot).all():
+        key = _hold_key(p)
+        if serial_tcp.force_release(key):
+            released.append({"slot": p.slot, "role": p.role, "key": key})
+    audit.record(
+        session,
+        actor=actor,
+        action="serial_release",
+        device_id=device_id,
+        detail={"released": released, "by": actor},
+    )
+    session.commit()
+    return {
+        "device_id": device_id,
+        "released": released,
+        "released_count": len(released),
+    }
+
+
 # ---------------------------------------------------------------- 读 / 自检 / 上报
 
 def read_serial(
@@ -638,7 +836,15 @@ def read_serial(
     port = next((p for p in ports if p.role == "log"), ports[0])
 
     key = _hold_key(port)
-    serial_tcp.acquire(key, by, ttl_sec)
+    try:
+        serial_tcp.acquire_wait(key, by, ttl_sec, DEFAULT_HOLD_WAIT_MS)
+    except serial_tcp.SerialBusy as e:
+        raise DomainError(
+            "SERIAL_BUSY",
+            f"{device_id} 的串口（slot{port.slot} {port.role}）正被 "
+            f"{(e.detail or {}).get('holder')} 占用，读不到",
+            {"port_slot": port.slot, "role": port.role, **(e.detail or {})},
+        ) from e
     try:
         r = serial_tcp.read_stream(
             _port_target(port), seconds=seconds, max_bytes=max_bytes,
@@ -705,7 +911,16 @@ def probe_port(
             "bytes": r.get("bytes"),
             "error": r.get("error"),
         })
-    return {"device_id": device_id, "ports": results}
+        if r.get("connected"):
+            _touch_health(session, p, True)
+        else:
+            _touch_health(session, p, False, r.get("error") or "连不上", "SERIAL_CONNECT")
+    session.commit()
+    return {
+        "device_id": device_id,
+        "ports": results,
+        "healthy": all(x.get("connected") for x in results if x.get("busy") is None),
+    }
 
 
 def report_result(

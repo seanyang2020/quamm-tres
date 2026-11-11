@@ -2024,6 +2024,7 @@ def post_serial_action(
             by=f"web:{identity.email}",
             lease_id=payload.get("lease_id"),
             hold_ms=payload.get("hold_ms"),
+            wait_ms=payload.get("wait_ms"),
             dry_run=bool(payload.get("dry_run")),
         )
     except DomainError as e:
@@ -2100,6 +2101,23 @@ def post_serial_report(
             str(payload.get("result") or ""),
             by=str(payload.get("by") or f"web:{identity.email}"),
             detail=payload.get("detail"),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/serial/release")
+def post_serial_release(
+    device_id: str,
+    payload: dict = Body(default={}),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """手动释放该设备占用的物理串口（共享串口控制完必须放，异常中断后用它兜底）。"""
+    try:
+        _require_serial_lease(session, identity, device_id)
+        return serial_svc.release_device_ports(
+            session, device_id, actor=f"web:{identity.email}", slot=payload.get("slot")
         )
     except DomainError as e:
         raise _domain_http(e)
