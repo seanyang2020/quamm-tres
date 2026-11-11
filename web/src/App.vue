@@ -277,9 +277,24 @@ async function submitDeviceProbe() {
   } catch (e) { ElMessage.error(e.message) } finally { deviceAddProbing.value = false }
 }
 
+function suggestFreePosition(base) {
+  const used = new Set((devices.value || []).map(d => String(d.position_code || '').trim()).filter(Boolean))
+  if (!used.has(base)) return base
+  let i = 2
+  while (used.has(`${base}-${i}`)) i++
+  return `${base}-${i}`
+}
+
 async function submitDeviceRegister() {
   if (!deviceAddConfirm.value.position_code.trim()) { ElMessage.error('请填写位置'); return }
   if (!deviceAddConfirm.value.owner.trim()) { ElMessage.error('请填写负责人'); return }
+  // 位置全库唯一：重名先自动避重再提交（把"自己的名字"当位置是最常见写法）
+  const pos = deviceAddConfirm.value.position_code.trim()
+  const free = suggestFreePosition(pos)
+  if (free !== pos) {
+    deviceAddConfirm.value.position_code = free
+    ElMessage.warning(`位置「${pos}」已被占用，已自动改为「${free}」`)
+  }
   deviceAddSaving.value = true
   try {
     const r = await api('/api/devices/register', {
@@ -2159,7 +2174,8 @@ const legendRole = [
           />
           <el-form label-width="100px">
             <el-form-item label="位置" required>
-              <el-input v-model="deviceAddConfirm.position_code" placeholder="工位/会议室/机架机位，如 302-R2-05" />
+              <el-input v-model="deviceAddConfirm.position_code" placeholder="物理位置，如 302-R2-05（每台唯一）" />
+              <div class="form-hint">位置是设备的物理位置，每台设备唯一；填自己的名字也行，但重名会自动加序号。「个人独享」只决定谁能申请，不影响位置。</div>
             </el-form-item>
             <el-form-item label="负责人" required>
               <el-input v-model="deviceAddConfirm.owner" placeholder="维护责任人" />
@@ -2440,4 +2456,6 @@ const legendRole = [
 .intro-toolbar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
 .intro-open { color: var(--el-color-primary); text-decoration: none; font-size: 13px; }
 .intro-open:hover { text-decoration: underline; }
+.form-hint { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; }
+
 </style>

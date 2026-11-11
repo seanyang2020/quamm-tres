@@ -645,10 +645,30 @@ def device_register(
     existing = _match_existing(session, probe)
 
     # 位置唯一性：位置已被“另一台”设备占用才拒绝
+    # 位置是「设备的物理位置」，每台设备必须唯一；与共享方式（公共/个人独享/指定名单）无关。
     dup_pos = session.query(Device).filter(Device.position_code == position_code).first()
     if dup_pos is not None and (existing is None or dup_pos.device_id != existing.device_id):
+        occupied = dup_pos.display_name or dup_pos.device_id
+        suggestion = position_code
+        n = 2
+        while (
+            session.query(Device)
+            .filter(Device.position_code == suggestion)
+            .first()
+            is not None
+        ):
+            suggestion = f"{position_code}-{n}"
+            n += 1
         raise DomainError(
-            "POSITION_DUP", f"位置编号 {position_code} 已分配给 {dup_pos.device_id}"
+            "POSITION_DUP",
+            f"位置「{position_code}」已被「{occupied}」（{dup_pos.device_id}）占用。"
+            f"位置是设备的物理位置，每台设备必须唯一，与是否「个人独享」无关。"
+            f"可改用「{suggestion}」。",
+            {
+                "position_code": position_code,
+                "occupied_by": dup_pos.device_id,
+                "suggestion": suggestion,
+            },
         )
 
     warnings: list[str] = []
@@ -838,7 +858,17 @@ def _retire_device(session: Session, d: Device, actor_email: str) -> None:
 
     d.status = DeviceStatus.RETIRED
     d.retired_at = utcnow()
-    audit.record(session, actor=actor_email, action="unregister", device_id=d.device_id)
+    # 释放物理位置：位置编号是全库唯一索引，若历史设备一直占着，
+    # 同位置的新设备注册会被这台已下架的设备挡住（报错还指向一个 retired 设备）。
+    released_position = d.position_code
+    d.position_code = None
+    audit.record(
+        session,
+        actor=actor_email,
+        action="unregister",
+        device_id=d.device_id,
+        detail={"released_position": released_position} if released_position else None,
+    )
 
 
 # ---------- v0.26 共享策略与设备编辑 ----------
