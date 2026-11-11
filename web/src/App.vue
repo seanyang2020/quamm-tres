@@ -1414,13 +1414,11 @@ const legendRole = [
           </div>
           <div class="device-table-wrap">
           <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1315px">
-            <el-table-column label="操作" width="300">
+            <el-table-column label="操作" width="260">
               <template #default="{ row }">
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small"
                   :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
-                <el-button v-if="me.role === 'admin'" link type="success" size="small" :disabled="!row.model_class"
-                  @click="openPtDerive(row, true)">派生</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
                 <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
                 <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
