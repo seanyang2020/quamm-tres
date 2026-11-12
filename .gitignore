@@ -14,3 +14,7 @@ scripts/.demo_admin_token.json
 
 # v0.14 刷机工作目录（下载包/日志）
 var/
+
+# 部署机历史残留备份（前端旧版本 / 单文件改动备份），不进版本库
+dist.prev*/
+*.bak_pos*
