@@ -14,6 +14,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.router import router as api_router
+from app.api.wirelog_router import router as wirelog_router
 from app.config import settings
 from app.db import SessionLocal, init_db
 from app.domain.probe import setup_prober_from_settings
@@ -44,6 +45,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Quamm TRES", lifespan=lifespan)
 app.include_router(api_router)
+app.include_router(wirelog_router, prefix="/api")
 app.mount("/mcp", mcp_app)
 
 # 静态看板：优先 web/dist（Vue 构建产物），否则退化为内联看板

@@ -46,6 +46,22 @@ def _lease_scan_job() -> None:
         session.close()
 
 
+def _serial_token_job() -> None:
+    """v0.30：租约串口派生票 pending 重试（日志机恢复/心跳上报后补签）。"""
+    session = SessionLocal()
+    try:
+        from app.domain import serial_token
+
+        done = serial_token.retry_pending(session)
+        if done:
+            logger.info("serial token retry: granted=%s", done)
+    except Exception:  # noqa: BLE001
+        logger.exception("serial token retry failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def _patrol_job() -> None:
     session = SessionLocal()
     try:
@@ -141,6 +157,10 @@ def _cache_prune_job() -> None:
 def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
+        # v0.30：worker 可能先于 API 启动，幂等补列后再跑扫描
+        from app.migrations import migrate
+
+        migrate(session)
         seed_product_types(session)
     with SessionLocal() as session:
         setup_prober_from_settings(session)
@@ -150,6 +170,8 @@ def run_worker() -> None:
     scheduler.add_job(_patrol_job, "interval", minutes=settings.patrol_interval_minutes, id="patrol")
     # v0.28：待检设备每 10 分钟探测一次（运行时 pending_patrol_interval_minutes 可调）
     scheduler.add_job(_pending_patrol_job, "interval", minutes=1, id="pending_patrol")
+    # v0.30：串口派生票 pending 重试（每分钟滴答，命中量通常为 0）
+    scheduler.add_job(_serial_token_job, "interval", seconds=60, id="serial_token_retry")
     scheduler.add_job(_credential_expiry_job, "interval", hours=24, id="credential_expiry")
     # v0.24：截图全局保留策略（每小时一次，best-effort，独立线程不阻塞其它任务）
     scheduler.add_job(_screenshot_prune_job, "interval", hours=1, id="screenshot_prune")

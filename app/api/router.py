@@ -9,7 +9,7 @@ v0.11 起接入登录：rr_ token 可在 /api/auth/login 换 HttpOnly 会话 coo
 from __future__ import annotations
 
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -957,6 +957,86 @@ def audit(
     return {"events": events, "actions": actions}
 
 
+# ---------- 名单 Agent 选项（v0.29.2 指定名单共享） ----------
+
+@router.post("/principals/agent-options")
+def principal_agent_options(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """按邮箱批量返回其有效凭据可用的 Agent 名称，供「指定名单」共享选择。
+
+    只统计 active 凭据（未吊销、未过期，见 ``Credential.active``）的非空 agent_label；
+    default_agent 取最近使用（last_used_at）优先、其次最近创建（created_at）的凭据。
+    """
+    raw = payload.get("emails") if isinstance(payload, dict) else None
+    if not isinstance(raw, list):
+        raise HTTPException(status_code=400, detail="emails 须为数组")
+    emails: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        email = str(item or "").strip().lower()
+        if email and email not in seen:
+            seen.add(email)
+            emails.append(email)
+    if len(emails) > 200:
+        raise HTTPException(status_code=400, detail="单次最多查询 200 个邮箱")
+
+    by_email: dict[str, dict] = {
+        email: {"email": email, "agents": [], "default_agent": None, "found": False}
+        for email in emails
+    }
+    if emails:
+        principals = (
+            session.query(Principal)
+            .filter(func.lower(Principal.email).in_(emails))
+            .all()
+        )
+        principal_ids = [p.id for p in principals]
+        creds_by_principal: dict[int, list[Credential]] = {}
+        if principal_ids:
+            creds = (
+                session.query(Credential)
+                .filter(Credential.principal_id.in_(principal_ids))
+                .all()
+            )
+            for cred in creds:
+                if cred.active:
+                    creds_by_principal.setdefault(cred.principal_id, []).append(cred)
+
+        for principal in principals:
+            key = principal.email.strip().lower()
+            creds = creds_by_principal.get(principal.id, [])
+            labels = sorted(
+                {
+                    cred.agent_label.strip()
+                    for cred in creds
+                    if cred.agent_label and cred.agent_label.strip()
+                }
+            )
+            default_agent = None
+            if creds:
+                latest = max(
+                    creds,
+                    key=lambda c: (
+                        c.last_used_at is not None,
+                        c.last_used_at or datetime.min,
+                        c.created_at or datetime.min,
+                    ),
+                )
+                if latest.agent_label and latest.agent_label.strip():
+                    default_agent = latest.agent_label.strip()
+            by_email[key] = {
+                "email": principal.email,
+                "agents": labels,
+                "default_agent": default_agent,
+                "found": True,
+            }
+
+    return {"items": [by_email[email] for email in emails]}
+
+
 # ---------- 设置（Web「设置」页） ----------
 
 @router.get("/settings")
@@ -966,7 +1046,7 @@ def settings_view(session: Session = Depends(get_session)):
         "product_types": catalog.list_products(session),
         "location_rule": {
             "format": "推荐：302-R2-05（楼栋-机架-机位）或 工位/会议室 描述，如「A区工位-12」「3F会议室-01」",
-            "description": "位置为描述性文本，建议规范表达但非强制；注册时自动去空白，位置全局唯一。可用 res_list_positions 查询全部设备位置与 IP。",
+            "description": "位置为描述性文本，建议规范表达但非强制；注册时自动去空白。同一位置可放多台设备，不再要求全局唯一。可用 res_list_positions 查询全部设备位置与 IP。",
             "mandatory": False,
         },
         "probe_backend": settings.probe_backend,
@@ -1050,6 +1130,59 @@ def _apply_product_eng_fields(pt: ProductType, payload: dict) -> None:
         pt.has_fpu = _product_flag(payload["has_fpu"])
 
 
+def _derived_override(pt: "ProductType", payload: dict) -> None:
+    """v0.29.3：派生机型只让「显式给出的非空差异值」覆盖模板配置。
+
+    派生是整行克隆，模板里的工程命令 / 镜像路径 / 芯片浮点 / 编译服务器都已经带过来；
+    前端表单若某个字段没预填（空串 / None），这里不能把模板值抹成空，
+    否则派生出来的机型还得手工一项项补（v0.28.7 的实现就是被空值覆盖）。
+    """
+    text_fields = ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path",
+                   "jenkins_url", "notes", "model_pattern", "db_project_name")
+    for field in text_fields:
+        if field in payload:
+            value = payload[field]
+            text = (str(value).strip() if value is not None else "")
+            if text:
+                setattr(pt, field, text)
+    if "chip_model" in payload:
+        value = payload["chip_model"]
+        text = (str(value).strip() if value is not None else "")
+        if text:
+            pt.chip_model = text
+    if "float_abi" in payload:
+        value = str(payload["float_abi"] or "").strip().lower()
+        # auto 是表单默认值（≠差异项），派生时沿用模板的 hard/soft，避免把模板抹成 auto
+        if value in ("hard", "soft"):
+            pt.float_abi = value
+    for field in ("has_screen", "has_led", "has_fpu"):
+        if field in payload:
+            value = payload[field]
+            if isinstance(value, bool):
+                setattr(pt, field, value)
+            else:
+                text = str(value or "").strip().lower()
+                if text in ("1", "true", "yes", "on"):
+                    setattr(pt, field, True)
+                elif text in ("0", "false", "no", "off"):
+                    setattr(pt, field, False)
+    for field in ("serial_count", "adb_port", "required_major",
+                  "required_minor", "required_patch"):
+        if field in payload:
+            value = payload[field]
+            if value is None or str(value).strip() == "":
+                continue
+            try:
+                setattr(pt, field, int(value))
+            except (TypeError, ValueError):
+                continue
+    if "build_server_id" in payload:
+        value = payload["build_server_id"]
+        text = (str(value).strip() if value is not None else "")
+        if text:
+            pt.build_server_id = text
+
+
 def _apply_product_basic_fields(pt: ProductType, payload: dict) -> None:
     """v0.28.7：展示名、基础属性、固件策略、编译服务器引用 —— 编辑时也都能改。
 
@@ -1084,6 +1217,17 @@ def _apply_product_basic_fields(pt: ProductType, payload: dict) -> None:
 def list_product_types(session: Session = Depends(get_session)):
     """设备类型完整列表（含 6 个元数据字段 + 完整度标签），供设置页「设备类型」Tab。"""
     return catalog.list_products(session)
+
+
+@router.get("/product-types/{type_code}")
+def get_product_type(type_code: str, session: Session = Depends(get_session)):
+    """v0.29.3：单机型完整配置（派生弹窗据此预填，避免依赖页面内存里的列表快照）。"""
+    pt = session.get(ProductType, type_code)
+    if pt is None:
+        raise HTTPException(status_code=404, detail=f"机型 {type_code} 不存在")
+    row = {c.name: getattr(pt, c.name) for c in ProductType.__table__.columns}
+    row["complete"] = catalog.product_complete(pt)
+    return row
 
 
 @router.put("/product-types/{type_code}")
@@ -1189,8 +1333,8 @@ def add_product_type(
         derived = ProductType(**data)
         session.add(derived)
         session.flush()
-        _apply_product_eng_fields(derived, payload)
-        _apply_product_basic_fields(derived, payload)
+        # v0.29.3：整行克隆已带全模板配置；这里只覆盖显式给出的非空差异项。
+        _derived_override(derived, payload)
         session.commit()
         return {
             "type_code": code,

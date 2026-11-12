@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const pages = [
@@ -8,6 +8,7 @@ const pages = [
   { key: 'scheduling', label: '资源调度' },
   { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
+  { key: 'wirelog', label: 'WireLog' },
   { key: 'settings', label: '设置' },
 ]
 const active = ref('dashboard')
@@ -213,6 +214,10 @@ const deviceAddSaving = ref(false)
 const deviceAddForm = ref({ ip: '', port: 5555, hint_model: '' })
 const deviceAddProbe = ref(null)
 const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] })
+// v0.29.2 指定名单「允许 Agent」：按邮箱从有效凭据拉取可选项
+const deviceAddAgentInfo = ref({})
+const deviceAddAgentSeen = ref(new Set())
+const deviceAddAgentAuto = ref(new Set())
 // 设备发现模式
 const deviceAddMode = ref('ip')
 const discoveryNetworks = ref('')
@@ -220,11 +225,16 @@ const discovering = ref(false)
 const discoveryResults = ref([])
 
 function openDeviceAdd() {
+  // v0.29.2：打开即刷新机型字典，避免刚派生/新增的机型在下拉里看不到
+  loadProductTypes()
   deviceAddStep.value = 1
   deviceAddMode.value = 'ip'
   deviceAddProbe.value = null
   deviceAddForm.value = { ip: '', port: 5555, hint_model: '' }
   deviceAddConfirm.value = { position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
+  deviceAddAgentInfo.value = {}
+  deviceAddAgentSeen.value = new Set()
+  deviceAddAgentAuto.value = new Set()
   discoveryNetworks.value = ''
   discoveryResults.value = []
   deviceAddVisible.value = true
@@ -255,7 +265,13 @@ function pickDiscovered(row) {
     owner: '',
     model_class: row.probe?.model || '',
     note: '',
+    share_scope: 'shared',
+    allowed_emails: [],
+    allowed_agent_labels: [],
   }
+  deviceAddAgentInfo.value = {}
+  deviceAddAgentSeen.value = new Set()
+  deviceAddAgentAuto.value = new Set()
   deviceAddStep.value = 2
 }
 
@@ -272,29 +288,23 @@ async function submitDeviceProbe() {
       }),
     })
     deviceAddProbe.value = r
-    deviceAddConfirm.value.model_class = r.probe?.model || deviceAddForm.value.hint_model || ''
+    // v0.29.2：探测/提示得到的机型未必已在字典里；未注册就留空，让用户从下拉选，
+    // 否则提交后会以 UNKNOWN_MODEL 失败（"机型 xxx 不在机型字典中"）。
+    const probeModel = r.probe?.model || deviceAddForm.value.hint_model || ''
+    const registered = enabledProductTypes.value.some((t) => t.type_code === probeModel)
+    deviceAddConfirm.value.model_class = registered ? probeModel : ''
+    if (probeModel && !registered) {
+      ElMessage.warning(
+        '探测到机型 ' + probeModel + ' 未注册：请先在「设置 → 设备类型」新增/派生该机型，或从下拉改选已有机型',
+      )
+    }
     deviceAddStep.value = 2
   } catch (e) { ElMessage.error(e.message) } finally { deviceAddProbing.value = false }
-}
-
-function suggestFreePosition(base) {
-  const used = new Set((devices.value || []).map(d => String(d.position_code || '').trim()).filter(Boolean))
-  if (!used.has(base)) return base
-  let i = 2
-  while (used.has(`${base}-${i}`)) i++
-  return `${base}-${i}`
 }
 
 async function submitDeviceRegister() {
   if (!deviceAddConfirm.value.position_code.trim()) { ElMessage.error('请填写位置'); return }
   if (!deviceAddConfirm.value.owner.trim()) { ElMessage.error('请填写负责人'); return }
-  // 位置全库唯一：重名先自动避重再提交（把"自己的名字"当位置是最常见写法）
-  const pos = deviceAddConfirm.value.position_code.trim()
-  const free = suggestFreePosition(pos)
-  if (free !== pos) {
-    deviceAddConfirm.value.position_code = free
-    ElMessage.warning(`位置「${pos}」已被占用，已自动改为「${free}」`)
-  }
   deviceAddSaving.value = true
   try {
     const r = await api('/api/devices/register', {
@@ -320,11 +330,18 @@ async function submitDeviceRegister() {
 const deviceEditVisible = ref(false)
 const deviceEditSaving = ref(false)
 const deviceEditRow = ref(null)
+// v0.29.2 编辑弹窗的「允许 Agent」候选（按 allowed_emails 拉取）
+const deviceEditAgentInfo = ref({})
+const deviceEditAgentSeen = ref(new Set())
+const deviceEditAgentAuto = ref(new Set())
 function canEditDevice(row) {
   return !!me.value && (me.value.role === 'admin' || row.registered_by === me.value.email)
 }
 function openDeviceEdit(row) {
   if (!contacts.value.length) loadContacts()
+  deviceEditAgentInfo.value = {}
+  deviceEditAgentSeen.value = new Set()
+  deviceEditAgentAuto.value = new Set()
   deviceEditRow.value = {
     device_id: row.device_id,
     display_name: row.display_name || '',
@@ -369,6 +386,136 @@ async function submitDeviceEdit() {
     loadDevices()
   } catch (e) { ElMessage.error(e.message) } finally { deviceEditSaving.value = false }
 }
+
+// ---- v0.29.2 指定名单「允许 Agent」自动联动 ----
+function normalizeAllowedEmails(list) {
+  const out = []
+  for (const item of (list || [])) {
+    const email = String(item || '').trim().toLowerCase()
+    if (email && !out.includes(email)) out.push(email)
+  }
+  return out
+}
+
+async function fetchAgentInfo(emails) {
+  if (!emails.length) return {}
+  const r = await api('/api/principals/agent-options', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ emails }),
+  })
+  const map = {}
+  for (const item of (r.items || [])) {
+    const key = String(item.email || '').trim().toLowerCase()
+    if (key) map[key] = item
+  }
+  return map
+}
+
+function pickAgentOptions(infoMap, emails) {
+  const options = new Set()
+  for (const email of normalizeAllowedEmails(emails)) {
+    for (const label of (infoMap[email]?.agents || [])) {
+      const s = String(label || '').trim()
+      if (s) options.add(s)
+    }
+  }
+  return [...options].sort()
+}
+
+async function refreshAllowedAgents({ emails, infoRef, seenRef, autoRef, getLabels, setLabels, isStale }) {
+  const normalized = normalizeAllowedEmails(emails)
+  let info = {}
+  try {
+    info = await fetchAgentInfo(normalized)
+  } catch (e) {
+    info = {}
+  }
+  if (isStale && isStale()) return
+
+  // 计算本次“被移除用户”曾提供的 agent，后续从已选值中清掉，避免残留。
+  const current = new Set(normalized)
+  const removedLabels = new Set()
+  for (const [email, item] of Object.entries(infoRef.value || {})) {
+    if (current.has(email)) continue
+    for (const label of (item?.agents || [])) {
+      const s = String(label || '').trim()
+      if (s) removedLabels.add(s)
+    }
+  }
+
+  infoRef.value = info
+  const offered = new Set(pickAgentOptions(info, normalized))
+  const auto = new Set()
+  for (const email of normalized) {
+    const agents = (info[email]?.agents || []).map((a) => String(a || '').trim()).filter(Boolean)
+    // 只有一个有效 agent 时直接自动填入；多个则作为选项交给用户勾选。
+    if (agents.length === 1) auto.add(agents[0])
+  }
+
+  const prevAuto = autoRef.value || new Set()
+  const merged = []
+  const push = (label) => {
+    const s = String(label || '').trim()
+    if (s && !merged.includes(s)) merged.push(s)
+  }
+  for (const label of (getLabels() || [])) {
+    const s = String(label || '').trim()
+    if (!s || prevAuto.has(s)) continue
+    // 之前由已移除用户提供、且当前候选里没有的 agent 一并清掉。
+    if (removedLabels.has(s) && !offered.has(s)) continue
+    push(s)
+  }
+  for (const label of auto) push(label)
+
+  setLabels(merged)
+  autoRef.value = auto
+  seenRef.value = offered
+}
+
+const deviceAddAgentOptions = computed(() =>
+  pickAgentOptions(deviceAddAgentInfo.value, deviceAddConfirm.value.allowed_emails)
+)
+const deviceEditAgentOptions = computed(() =>
+  pickAgentOptions(deviceEditAgentInfo.value, deviceEditRow.value?.allowed_emails || [])
+)
+
+let deviceAddAgentSeq = 0
+watch(
+  [() => deviceAddConfirm.value.allowed_emails, () => deviceAddConfirm.value.share_scope],
+  async ([emails, scope]) => {
+    if (scope !== 'restricted') { deviceAddAgentSeq += 1; return }
+    const seq = ++deviceAddAgentSeq
+    await refreshAllowedAgents({
+      emails,
+      infoRef: deviceAddAgentInfo,
+      seenRef: deviceAddAgentSeen,
+      autoRef: deviceAddAgentAuto,
+      getLabels: () => deviceAddConfirm.value.allowed_agent_labels,
+      setLabels: (v) => { deviceAddConfirm.value.allowed_agent_labels = v },
+      isStale: () => seq !== deviceAddAgentSeq,
+    })
+  },
+  { deep: true }
+)
+
+let deviceEditAgentSeq = 0
+watch(
+  [() => deviceEditRow.value?.allowed_emails, () => deviceEditRow.value?.share_scope],
+  async ([emails, scope]) => {
+    if (!deviceEditRow.value || scope !== 'restricted') { deviceEditAgentSeq += 1; return }
+    const seq = ++deviceEditAgentSeq
+    await refreshAllowedAgents({
+      emails,
+      infoRef: deviceEditAgentInfo,
+      seenRef: deviceEditAgentSeen,
+      autoRef: deviceEditAgentAuto,
+      getLabels: () => deviceEditRow.value.allowed_agent_labels,
+      setLabels: (v) => { if (deviceEditRow.value) deviceEditRow.value.allowed_agent_labels = v },
+      isStale: () => seq !== deviceEditAgentSeq,
+    })
+  },
+  { deep: true }
+)
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
@@ -745,6 +892,170 @@ async function reviewFeedback(row, status) {
   } catch (e) { ElMessage.error(e.message) }
 }
 
+// ---------------- WireLog 日志机 ----------------
+const wlNodes = ref([])
+const wlDetail = ref(null)
+const wlDetailId = ref(null)
+const wlEnrollForm = ref({ adb_address: '', display_name: '', model_class: 'esl2_hk' })
+const wlConfigForm = ref({
+  heartbeat_interval_s: 60,
+  log_level: 'info',
+  keepalive_enabled: true,
+  keepalive_interval_s: 60,
+  consistency_interval_s: 600,
+  rotate_local_token: false,
+})
+const wlGrantForm = ref({ slot: 1, principal: '' })
+
+async function loadWlNodes() {
+  try { wlNodes.value = await api('/api/wirelog/nodes') }
+  catch (e) { ElMessage.error(String(e.message || e)) }
+  if (wlDetailId.value) openWlDetail(wlDetailId.value)
+}
+
+async function openWlDetail(nodeId) {
+  try {
+    wlDetail.value = await api('/api/wirelog/nodes/' + nodeId)
+    wlDetailId.value = nodeId
+    wlConfigForm.value = { ...wlConfigForm.value, ...(wlDetail.value.config || {}) }
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+}
+
+function closeWlDetail() { wlDetail.value = null; wlDetailId.value = null }
+
+// ---------------- WireLog 串口终端（v0.29.3，独立全屏 xterm 页） ----------------
+// 点「shell可达」/「终端」→ 新窗口打开 /shell.html，用 xterm 全屏操作该路串口。
+// 形态对齐 serial-web-bridge 的 lsb TCP 接入：WebSocket + xterm，ANSI 颜色正常渲染。
+function openWlShell(row) {
+  const nodeId = wlDetailId.value || (wlDetail.value && wlDetail.value.node_id)
+  if (!nodeId) { ElMessage.warning('请先打开日志机详情'); return }
+  const q = new URLSearchParams({
+    node_id: nodeId,
+    slot: String(Number((row && row.slot) || 1)),
+    name: (wlDetail.value && wlDetail.value.display_name) || nodeId,
+    tty: (row && row.tty) || '',
+    baud: String((row && row.baud) || ''),
+  })
+  window.open('/shell.html?' + q.toString(), '_blank')
+}
+
+async function submitWlEnroll() {
+  try {
+    const r = await api('/api/wirelog/enroll', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(wlEnrollForm.value),
+    })
+    ElMessage.success(r.reused ? '已复用同地址节点并重发 token'
+                      : '已发放，明文 token 仅显示这一次，请立即写入设备')
+    ElMessageBox.alert(
+      (r.reused ? '【复用节点重发】\n' : '') +
+      'node_id: ' + r.node_id + '\nnode_token: ' + r.node_token +
+      '\n\n' + r.fw_setenv.join('\n'),
+      'WireLog 发放结果（请妥善保存）', { customClass: 'wl-enroll-box' })
+    wlEnrollForm.value = { adb_address: '', display_name: '', model_class: 'esl2_hk' }
+    loadWlNodes()
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+}
+
+async function saveWlConfig() {
+  const config = { ...wlConfigForm.value }
+  try {
+    await api('/api/wirelog/nodes/' + wlDetailId.value + '/config', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    })
+    ElMessage.success('配置已下发（下次心跳生效）')
+    openWlDetail(wlDetailId.value)
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+}
+
+async function wlGrant() {
+  try {
+    await api('/api/wirelog/nodes/' + wlDetailId.value + '/write-grant', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slot: wlGrantForm.value.slot,
+                             principal: wlGrantForm.value.principal }),
+    })
+    ElMessage.success('写授权已下发')
+    openWlDetail(wlDetailId.value)
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+}
+
+async function wlRevoke(slot) {
+  try {
+    await api('/api/wirelog/nodes/' + wlDetailId.value + '/write-grant', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slot, revoke: true }),
+    })
+    ElMessage.success('已撤销写权限')
+    openWlDetail(wlDetailId.value)
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+}
+
+function wlStatusType(s) {
+  return { online: 'success', enrolled: 'info', stale: 'warning',
+           offline: 'danger', retired: 'info' }[s] || 'info'
+}
+
+async function wlRetire(node) {
+  try {
+    await ElMessageBox.confirm(
+      `确定退役日志机「${node.display_name}」？退役后该节点心跳将被拒绝（可恢复需重新发放）。`,
+      '退役确认', { type: 'warning' })
+    await api('/api/wirelog/nodes/' + node.node_id + '/retire', { method: 'POST' })
+    ElMessage.success('已退役')
+    if (wlDetailId.value === node.node_id) closeWlDetail()
+    loadWlNodes()
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    ElMessage.error(String(e.message || e))
+  }
+}
+
+async function wlDelete(node) {
+  try {
+    await ElMessageBox.confirm(
+      `确定硬删除日志机「${node.display_name}」？仅无绑定/无审计的退役节点可删，不可恢复。`,
+      '删除确认', { type: 'error', confirmButtonText: '删除' })
+    await api('/api/wirelog/nodes/' + node.node_id, { method: 'DELETE' })
+    ElMessage.success('已删除')
+    if (wlDetailId.value === node.node_id) closeWlDetail()
+    loadWlNodes()
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    ElMessage.error(String(e.message || e))
+  }
+}
+
+// P9：跨视图跳转
+function jumpToDevice(deviceId) {
+  active.value = 'devices'
+  selectedDeviceType.value = ALL_DEVICES
+  detailStatusTab.value = 'all'
+  deviceSearch.value = deviceId
+  loadDevices()
+}
+
+function jumpToWlNode(nodeId) {
+  active.value = 'wirelog'
+  loadWlNodes()
+  openWlDetail(nodeId)
+}
+
+// P9：设备详情侧串口卡片（弹窗）
+const wlBindDlg = reactive({ visible: false, loading: false, device: null, rows: [] })
+
+async function openDeviceWlBindings(row) {
+  wlBindDlg.visible = true
+  wlBindDlg.loading = true
+  wlBindDlg.device = row
+  wlBindDlg.rows = []
+  try {
+    wlBindDlg.rows = await api('/api/wirelog/device/' + row.device_id + '/bindings')
+  } catch (e) { ElMessage.error(String(e.message || e)) }
+  finally { wlBindDlg.loading = false }
+}
+
 function switchPage(key) {
   active.value = key
   if (key === 'dashboard') loadDashboard()
@@ -754,6 +1065,7 @@ function switchPage(key) {
   }
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
+  else if (key === 'wirelog') loadWlNodes()
   else if (key === 'settings') {
     loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback(); loadBuildServers()
     if (me.value && me.value.role === 'admin') loadScreenshotStats()
@@ -1149,10 +1461,17 @@ function openPtCreate() {
 // v0.28.7：派生机型 —— 以某机型为模板克隆一行（工程配置/芯片浮点/编译服务器全部带过来），
 // 只换 type_code 与名称；不搬运任何设备，原设备仍留在模板机型上。
 // 两个入口：机型列表行「派生」、每台设备操作列「派生」（该设备当前机型为模板）。
-function openPtDerive(row, fromDevice) {
+async function openPtDerive(row, fromDevice) {
   const code = fromDevice ? (row.model_class || '') : (row.type_code || '')
   if (!code) { ElMessage.warning('该设备还没有机型，无法派生机型'); return }
-  const tpl = productTypes.value.find((p) => p.type_code === code)
+  // v0.29.3：直接向服务端要模板的完整配置（含镜像/编译/芯片/编译服务器），
+  // 不再依赖页面内存里的列表快照，保证派生弹窗一打开就带全，只需改差异项。
+  let tpl = null
+  try {
+    tpl = await api('/api/product-types/' + encodeURIComponent(code))
+  } catch (e) {
+    tpl = productTypes.value.find((p) => p.type_code === code) || null
+  }
   if (!tpl) { ElMessage.warning('机型 ' + code + ' 不在当前列表，请刷新后重试'); return }
   resetPtCreate()
   ptCreateRow.value = {
@@ -1436,6 +1755,7 @@ const legendRole = [
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
                 <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
+                <el-button link type="primary" size="small" @click="openDeviceWlBindings(row)">串口</el-button>
                 <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
               </template>
             </el-table-column>
@@ -1704,6 +2024,181 @@ const legendRole = [
             </el-table>
           </el-tab-pane>
         </el-tabs>
+      </div>
+
+      <!-- WireLog 日志机 -->
+      <div v-else-if="active === 'wirelog'">
+        <h2>WireLog 日志机</h2>
+
+        <el-card v-if="!wlDetail">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>日志机列表（serialhub）</span>
+              <el-button size="small" @click="loadWlNodes">刷新</el-button>
+            </div>
+          </template>
+          <el-table :data="wlNodes" stripe @row-click="r => openWlDetail(r.node_id)">
+            <el-table-column prop="node_id" label="node_id" min-width="180" />
+            <el-table-column prop="display_name" label="名称" min-width="140" />
+            <el-table-column prop="model_class" label="机型" width="110" />
+            <el-table-column label="状态" width="100">
+              <template #default="{ row }">
+                <el-tag size="small" :type="wlStatusType(row.status)">{{ row.status }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="ip" label="IP" min-width="130" />
+            <el-table-column prop="sw_version" label="版本" width="90" />
+            <el-table-column prop="last_heartbeat_at" label="最近心跳" min-width="190" />
+            <el-table-column label="操作" width="150" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="row.status !== 'retired'" size="small"
+                           type="warning" plain
+                           @click.stop="wlRetire(row)">退役</el-button>
+                <el-button v-if="row.status === 'retired'" size="small"
+                           type="danger"
+                           @click.stop="wlDelete(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-divider />
+          <h3 style="margin-top:0">发放新日志机（ADB + fw_setenv）</h3>
+          <el-form label-width="120" inline>
+            <el-form-item label="ADB 地址">
+              <el-input v-model="wlEnrollForm.adb_address" placeholder="172.16.60.122:5555" />
+            </el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="wlEnrollForm.display_name" placeholder="可选" />
+            </el-form-item>
+            <el-form-item label="机型">
+              <el-input v-model="wlEnrollForm.model_class" />
+            </el-form-item>
+            <el-form-item>
+              <el-button type="primary" @click="submitWlEnroll">生成 token 与 fw_setenv</el-button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+
+        <el-card v-else>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>日志机详情：{{ wlDetail.node_id }}</span>
+              <el-button size="small" @click="closeWlDetail">返回列表</el-button>
+            </div>
+          </template>
+
+          <el-descriptions :column="3" border size="small">
+            <el-descriptions-item label="名称">{{ wlDetail.display_name }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
+              <el-tag size="small" :type="wlStatusType(wlDetail.status)">{{ wlDetail.status }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="IP">{{ wlDetail.ip }}</el-descriptions-item>
+            <el-descriptions-item label="版本">{{ wlDetail.sw_version }}</el-descriptions-item>
+            <el-descriptions-item label="token 尾号">{{ wlDetail.token_prefix }}</el-descriptions-item>
+            <el-descriptions-item label="最近心跳">{{ wlDetail.last_heartbeat_at }}</el-descriptions-item>
+          </el-descriptions>
+
+          <h3>各路串口（含 shell 就绪 / MAC 闭环 / 写授权）</h3>
+          <el-table :data="wlDetail.ports" border size="small">
+            <el-table-column prop="slot" label="路" width="55" />
+            <el-table-column prop="tty" label="tty" min-width="120" />
+            <el-table-column prop="baud" label="波特" width="80" />
+            <el-table-column label="串口就绪" width="105">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.shell_reachable ? 'success' : 'info'"
+                        :style="row.shell_reachable ? 'cursor:pointer' : ''"
+                        @click="row.shell_reachable && openWlShell(row)">
+                  {{ row.shell_reachable ? 'shell可达' : 'down' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="shell_mac" label="实测 MAC" min-width="150" />
+            <el-table-column prop="shell_ip" label="实测 IP" min-width="120" />
+            <el-table-column label="绑定设备" min-width="170">
+              <template #default="{ row }">
+                <el-button v-if="row.bound_device_id" link type="primary"
+                           @click="jumpToDevice(row.bound_device_id)">
+                  {{ row.bound_device ? (row.bound_device.name + ' (' + row.bound_device.status + ')') : row.bound_device_id }}
+                </el-button>
+                <span v-else style="color:#909399">未绑定</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="写授权" min-width="140">
+              <template #default="{ row }">
+                <span v-if="row.write_granted_to">{{ row.write_granted_to }}</span>
+                <span v-else style="color:#909399">只读</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="150" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" link type="primary"
+                  @click="openWlShell(row)" :disabled="!row.shell_reachable">终端</el-button>
+                <el-button size="small" link type="danger"
+                  @click="wlRevoke(row.slot)" :disabled="!row.write_granted_to">撤销写</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <el-row :gutter="16" style="margin-top:16px">
+            <el-col :span="12">
+              <h3>下发配置（下次心跳生效）</h3>
+              <el-form label-width="140" size="small">
+                <el-form-item label="心跳周期（秒）">
+                  <el-select v-model="wlConfigForm.heartbeat_interval_s" style="width:160px">
+                    <el-option :value="30" label="30 秒" />
+                    <el-option :value="60" label="60 秒" />
+                    <el-option :value="120" label="120 秒" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="日志级别">
+                  <el-select v-model="wlConfigForm.log_level" style="width:160px">
+                    <el-option value="debug" label="debug" />
+                    <el-option value="info" label="info" />
+                    <el-option value="warn" label="warn" />
+                    <el-option value="error" label="error" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="启用保活探测">
+                  <el-switch v-model="wlConfigForm.keepalive_enabled" />
+                </el-form-item>
+                <el-form-item label="保活周期（秒）">
+                  <el-select v-model="wlConfigForm.keepalive_interval_s" style="width:160px">
+                    <el-option :value="30" label="30 秒" />
+                    <el-option :value="60" label="60 秒" />
+                    <el-option :value="120" label="120 秒" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="一致性检测周期（秒）">
+                  <el-select v-model="wlConfigForm.consistency_interval_s" style="width:160px">
+                    <el-option :value="300" label="300 秒" />
+                    <el-option :value="600" label="600 秒" />
+                    <el-option :value="900" label="900 秒" />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="轮换本地串口 token">
+                  <el-switch v-model="wlConfigForm.rotate_local_token" />
+                </el-form-item>
+              </el-form>
+              <el-button size="small" type="primary"
+                         @click="saveWlConfig">保存并下发</el-button>
+            </el-col>
+            <el-col :span="12">
+              <h3>写授权</h3>
+              <el-form label-width="70">
+                <el-form-item label="路 slot">
+                  <el-input-number v-model="wlGrantForm.slot" :min="1" />
+                </el-form-item>
+                <el-form-item label="授权对象">
+                  <el-input v-model="wlGrantForm.principal"
+                            placeholder="principal / lease 标识" />
+                </el-form-item>
+                <el-form-item>
+                  <el-button type="primary" @click="wlGrant">授予写权限</el-button>
+                </el-form-item>
+              </el-form>
+            </el-col>
+          </el-row>
+        </el-card>
       </div>
 
       <!-- 设置：系统 + 设备类型 + 通讯录 + SMTP + 介绍 + 审计 -->
@@ -2174,17 +2669,19 @@ const legendRole = [
           />
           <el-form label-width="100px">
             <el-form-item label="位置" required>
-              <el-input v-model="deviceAddConfirm.position_code" placeholder="物理位置，如 302-R2-05（每台唯一）" />
-              <div class="form-hint">位置是设备的物理位置，每台设备唯一；填自己的名字也行，但重名会自动加序号。「个人独享」只决定谁能申请，不影响位置。</div>
+              <el-input v-model="deviceAddConfirm.position_code" placeholder="物理位置，如 302-R2-05（同一位置可放多台设备）" />
+              <div class="form-hint">同一位置可放多台设备；填自己的名字也行，不会自动加序号。「个人独享」只决定谁能申请，不影响位置。</div>
             </el-form-item>
             <el-form-item label="负责人" required>
               <el-input v-model="deviceAddConfirm.owner" placeholder="维护责任人" />
             </el-form-item>
             <el-form-item label="机型">
               <el-alert
-                v-if="!deviceAddProbe?.probe?.model"
+                v-if="!deviceAddConfirm.model_class"
                 type="warning" :closable="false" show-icon style="margin-bottom: 8px"
-                title="未自动探测到设备类型，请从已注册机型中选择"
+                :title="deviceAddProbe?.probe?.model
+                  ? ('探测到机型 ' + deviceAddProbe.probe.model + ' 未注册，请先新增/派生，或从下拉改选已有机型')
+                  : '未自动探测到设备类型，请从已注册机型中选择'"
               />
               <el-select v-model="deviceAddConfirm.model_class" placeholder="选择已注册机型" clearable style="width: 100%">
                 <el-option v-for="t in enabledProductTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
@@ -2206,7 +2703,12 @@ const legendRole = [
               </el-form-item>
               <el-form-item label="允许 Agent">
                 <el-select v-model="deviceAddConfirm.allowed_agent_labels" multiple filterable allow-create
-                  default-first-option placeholder="输入 Agent 名，回车添加" style="width: 100%" />
+                  default-first-option
+                  :placeholder="deviceAddAgentOptions.length ? '按所选用户的有效凭据勾选，或手动输入' : '所选用户暂无有效凭据，可手动输入 Agent 名'"
+                  style="width: 100%">
+                  <el-option v-for="a in deviceAddAgentOptions" :key="a" :label="a" :value="a" />
+                </el-select>
+                <div class="form-hint">根据所选用户的有效 token 自动列出；只有一个 Agent 时已自动填入。</div>
               </el-form-item>
             </template>
             <el-form-item label="备注">
@@ -2228,7 +2730,10 @@ const legendRole = [
         <el-form v-if="deviceEditRow" label-width="110px" class="settings-grid-form">
           <el-form-item label="名称"><el-input v-model="deviceEditRow.display_name" /></el-form-item>
           <el-form-item label="责任人"><el-input v-model="deviceEditRow.owner" /></el-form-item>
-          <el-form-item label="位置"><el-input v-model="deviceEditRow.position_code" /></el-form-item>
+          <el-form-item label="位置">
+            <el-input v-model="deviceEditRow.position_code" />
+            <div class="form-hint">同一位置可放多台设备。</div>
+          </el-form-item>
           <el-form-item v-if="me.role === 'admin'" label="机型">
             <el-select v-model="deviceEditRow.model_class" clearable style="width: 100%">
               <el-option v-for="t in enabledProductTypes" :key="t.type_code" :label="t.type_code" :value="t.type_code" />
@@ -2262,7 +2767,12 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="允许 Agent" class="settings-grid-full">
               <el-select v-model="deviceEditRow.allowed_agent_labels" multiple filterable allow-create
-                default-first-option placeholder="输入 Agent 名，回车添加" style="width: 100%" />
+                default-first-option
+                :placeholder="deviceEditAgentOptions.length ? '按所选用户的有效凭据勾选，或手动输入' : '所选用户暂无有效凭据，可手动输入 Agent 名'"
+                style="width: 100%">
+                <el-option v-for="a in deviceEditAgentOptions" :key="a" :label="a" :value="a" />
+              </el-select>
+              <div class="form-hint">根据所选用户的有效 token 自动列出；只有一个 Agent 时已自动填入。</div>
             </el-form-item>
           </template>
         </el-form>
@@ -2368,7 +2878,39 @@ const legendRole = [
         <el-empty v-if="!screenshotHistory.length && !screenshotHistoryLoading" description="该设备暂无截图记录" />
         <template #footer><el-button @click="screenshotHistoryVisible = false">关闭</el-button></template>
       </el-dialog>
+
+      <!-- P9 全局弹窗：设备的 WireLog 串口接入情况 -->
+      <el-dialog v-model="wlBindDlg.visible"
+                 :title="'串口接入 · ' + (wlBindDlg.device ? (wlBindDlg.device.display_name || wlBindDlg.device.device_id) : '')"
+                 width="860px">
+        <el-table :data="wlBindDlg.rows" border size="small" v-loading="wlBindDlg.loading" max-height="440">
+          <el-table-column label="日志机/路" min-width="180">
+            <template #default="{ row }">
+              <el-button link type="primary" @click="jumpToWlNode(row.node_id)">
+                {{ row.node_display || row.node_id }} · 路{{ row.slot }}
+              </el-button>
+            </template>
+          </el-table-column>
+          <el-table-column prop="tty" label="tty" width="120" show-overflow-tooltip />
+          <el-table-column label="串口就绪" width="90">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.shell_reachable ? 'success' : 'info'">
+                {{ row.shell_reachable ? '可达' : '不可达' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="shell_mac" label="实测 MAC" width="150" />
+          <el-table-column prop="shell_ip" label="实测 IP" width="130" />
+          <el-table-column prop="write_granted_to" label="写授权" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.write_granted_to || '只读' }}</template>
+          </el-table-column>
+        </el-table>
+        <el-empty v-if="!wlBindDlg.rows.length && !wlBindDlg.loading" description="该设备当前未绑定任何 WireLog 串口" />
+        <template #footer><el-button @click="wlBindDlg.visible = false">关闭</el-button></template>
+      </el-dialog>
     <el-dialog v-model="ptCreateDialog" :title="ptCreateTitle" width="860px" :close-on-click-modal="false">
+          <el-alert v-if="ptCreateRow.copy_from" type="info" :closable="false" show-icon style="margin-bottom:10px"
+            :title="'已从模板 ' + ptCreateRow.copy_from + ' 完整复制配置（工程命令 / 镜像路径 / 芯片浮点 / 编译服务器 / 固件策略），只需修改有差异的项'" />
           <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="96px" class="pt-grid">
             <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
             <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>

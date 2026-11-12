@@ -1,7 +1,8 @@
 """SQLAlchemy 2.0 ORM 模型（第一阶段 10 张表）。
 
 关键约定（见 docs/04 G1）：
-- device 用内部 device_id 做主键，MAC/SN/asset_tag/position_code 建唯一索引，不用 MAC 做主键。
+- device 用内部 device_id 做主键，MAC/SN/asset_tag 建唯一索引，position_code 仅建普通索引；
+  同一物理位置允许放多台设备，不用 MAC 做主键。
 """
 from __future__ import annotations
 
@@ -149,7 +150,8 @@ class Device(Base):
         Index("uq_device_mac", "mac", unique=True),
         Index("uq_device_sn", "sn", unique=True),
         Index("uq_device_asset_tag", "asset_tag", unique=True),
-        Index("uq_device_position_code", "position_code", unique=True),
+        # 位置可重复：同一物理位置允许放置多台设备，仅作查询索引，不做唯一约束。
+        Index("ix_device_position_code", "position_code"),
     )
 
 
@@ -220,6 +222,12 @@ class Lease(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime())
     # v0.18：最近一次心跳时间，worker 据此判定 Agent 是否仍在使用
     last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    # v0.30：租约级串口派生票（serialhub 1.1.0 方案④）。票值明文不落库，只存 label；
+    # 释放/回收按 label 即时撤销，重取会重签覆盖旧摘要。
+    serial_grant: Mapped[str | None] = mapped_column(String(16), nullable=True)  # none|pending|granted
+    serial_token_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    serial_grant_detail: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    serial_grant_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
     device: Mapped["Device"] = relationship()
     principal: Mapped["Principal"] = relationship()
@@ -553,3 +561,93 @@ class SerialLogCursor(Base):
         Integer, default=0, server_default="0", nullable=False
     )
     last_read_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
+
+# ============================================================
+# WireLog 日志机域（见 WIRELOG-DESIGN.md，R-1..R-3）
+# ============================================================
+
+class WireLogNode(Base):
+    """日志机（serialhub 载体），与被测 device 不同的一类资源。"""
+
+    __tablename__ = "wl_node"
+
+    node_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    node_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    token_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 反向验证 HMAC 对称密钥（ADR-6），经 adb 写入 uboot-env wl_hmac_key
+    hmac_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), default="enrolled", server_default="enrolled", nullable=False
+    )  # enrolled | online | stale | offline | retired
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    sw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    caps_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    config_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    last_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    provisioned_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class WireLogEnrollment(Base):
+    """一次 ADB 发放 token（写 uboot-env）的审计记录。"""
+
+    __tablename__ = "wl_enrollment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("wl_node.node_id"), nullable=False
+    )
+    adb_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    operator: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    uboot_var: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result: Mapped[str] = mapped_column(String(16), default="ok", nullable=False)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class WireLogPortBinding(Base):
+    """日志机某路串口与被测设备的绑定（含 shell 实测 MAC/IP 与就绪态）。"""
+
+    __tablename__ = "wl_port_binding"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("wl_node.node_id"), nullable=False
+    )
+    slot: Mapped[int] = mapped_column(Integer, nullable=False)  # 第几路
+    bound_device_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("device.device_id"), nullable=True
+    )
+    shell_mac: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    shell_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    shell_reachable: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    tty_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    baud: Mapped[int] = mapped_column(Integer, default=115200, nullable=False)
+    write_granted_to: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    health_state: Mapped[str] = mapped_column(
+        String(16), default="unknown", server_default="unknown", nullable=False
+    )
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
+    __table_args__ = (
+        Index("uq_wl_port", "node_id", "slot", unique=True),
+    )
+
+
+class WireLogAudit(Base):
+    """WireLog 操作审计。"""
+
+    __tablename__ = "wl_audit"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    action: Mapped[str] = mapped_column(String(48), nullable=False)
+    actor: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime())

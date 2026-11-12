@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TRES 串口终端</title>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0c0e14; overflow: hidden; }
+  body { display: flex; flex-direction: column; font-family: -apple-system, "Segoe UI", Roboto, "Microsoft YaHei", sans-serif; }
+  #bar {
+    display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+    padding: 6px 12px; background: #161b22; color: #c9d1d9; font-size: 12px;
+    border-bottom: 1px solid #30363d; white-space: nowrap; overflow: hidden;
+  }
+  #title { font-weight: 600; color: #e6edf3; overflow: hidden; text-overflow: ellipsis; }
+  #ep { color: #8b949e; font-family: Consolas, Menlo, monospace; }
+  #state { padding: 1px 8px; border-radius: 10px; background: #30363d; color: #c9d1d9; }
+  #state.ok { background: #1f6f3f; color: #d6ffe6; }
+  #state.ro { background: #6b5a1f; color: #ffefc2; }
+  #state.err { background: #7c2626; color: #ffd7d7; }
+  #state.busy { background: #26406b; color: #d7e8ff; }
+  #spacer { flex: 1 1 auto; }
+  button {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d; border-radius: 4px;
+    padding: 3px 10px; font-size: 12px; cursor: pointer;
+  }
+  button:hover { background: #30363d; color: #fff; }
+  #term { flex: 1 1 auto; min-height: 0; padding: 4px 6px; box-sizing: border-box; }
+  #hint { flex: 0 0 auto; padding: 4px 12px; font-size: 12px; color: #8b949e; background: #161b22; border-top: 1px solid #30363d; }
+</style>
+</head>
+<body>
+<div id="bar">
+  <span id="title">串口终端</span>
+  <span id="ep"></span>
+  <span id="state" class="busy">连接中…</span>
+  <span id="spacer"></span>
+  <button id="btnReconnect" title="重新连接该路串口">重连</button>
+  <button id="btnClear" title="清屏（不影响串口）">清屏</button>
+  <button id="btnClose" title="断开串口连接">断开</button>
+</div>
+<div id="term"></div>
+<div id="hint">经日志机 serialhub raw TCP 接入（登录 + 写锁）。只读账号只能看输出，要写串口请先在 WireLog「写授权」里授予当前账号。</div>
+
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script>
+(function () {
+  var q = new URLSearchParams(location.search);
+  var nodeId = q.get('node_id') || '';
+  var slot = parseInt(q.get('slot') || '1', 10) || 1;
+  var name = q.get('name') || nodeId;
+  var tty = q.get('tty') || '';
+  var baud = q.get('baud') || '';
+
+  document.getElementById('title').textContent =
+    name + ' · 第 ' + slot + ' 路 · ' + (tty || '—') + ' · ' + (baud || '—') + 'bps';
+  document.title = name + ' · 串口终端';
+
+  var stateEl = document.getElementById('state');
+  var epEl = document.getElementById('ep');
+  var hintEl = document.getElementById('hint');
+
+  function setState(text, cls) {
+    stateEl.textContent = text;
+    stateEl.className = cls || '';
+  }
+
+  if (!nodeId) {
+    setState('缺少 node_id', 'err');
+    document.getElementById('term').textContent = 'URL 缺少 node_id 参数，请从 WireLog 页面点击「终端」进入。';
+    return;
+  }
+
+  if (typeof Terminal !== 'function') {
+    document.getElementById('term').textContent = 'xterm 加载失败（/vendor/xterm.js 不可访问）';
+    setState('渲染器缺失', 'err');
+    return;
+  }
+
+  var term = new Terminal({
+    convertEol: true,
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily: 'Consolas, Menlo, "DejaVu Sans Mono", monospace',
+    lineHeight: 1.15,
+    scrollback: 5000,
+    theme: {
+      background: '#0c0e14', foreground: '#c9d1d9', cursor: '#58a6ff',
+      black: '#484f58', red: '#ff7b72', green: '#3fb950', yellow: '#d29922',
+      blue: '#58a6ff', magenta: '#bc8cff', cyan: '#39c5cf', white: '#b1bac4',
+      brightBlack: '#6e7681', brightRed: '#ffa198', brightGreen: '#56d364',
+      brightYellow: '#e3b341', brightBlue: '#79c0ff', brightMagenta: '#d2a8ff',
+      brightCyan: '#56d4dd', brightWhite: '#f0f6fc'
+    }
+  });
+
+  var fitAddon = null;
+  if (window.FitAddon && window.FitAddon.FitAddon) {
+    fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+  }
+  term.open(document.getElementById('term'));
+
+  function doFit() {
+    if (!fitAddon) return;
+    try { fitAddon.fit(); } catch (e) { /* 容器尺寸未就绪时忽略 */ }
+  }
+  setTimeout(doFit, 0);
+  setTimeout(doFit, 120);
+  window.addEventListener('resize', function () { setTimeout(doFit, 20); });
+
+  var ws = null;
+  var canWrite = false;
+  var closingByUser = false;
+
+  function updateHint() {
+    hintEl.textContent = canWrite
+      ? '已持写锁：键盘输入直接写入串口。只读账号只能看输出。'
+      : '只读模式：可以看输出，不能输入。需要在 WireLog「写授权」里把该路授予当前账号。';
+  }
+  updateHint();
+
+  // xterm Backspace 默认发 DEL(\x7f)，多数串口 shell erase=BS(\x08)（对齐 serial-bridge lsb）
+  term.onData(function (data) {
+    if (!canWrite) {
+      setState('只读，输入已忽略', 'ro');
+      return;
+    }
+    if (!ws || ws.readyState !== 1) return;
+    if (data === '\u007f') data = '\u0008';
+    ws.send(JSON.stringify({ type: 'data', data: data }));
+  });
+
+  function connect() {
+    closingByUser = false;
+    canWrite = false;
+    updateHint();
+    if (ws) {
+      try { ws.onclose = null; ws.close(); } catch (e) { /* ignore */ }
+      ws = null;
+    }
+    var proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+    var url = proto + location.host + '/api/wirelog/nodes/' +
+              encodeURIComponent(nodeId) + '/ports/' + slot + '/shell';
+    setState('连接中…', 'busy');
+    ws = new WebSocket(url);
+
+    ws.onopen = function () {
+      setState('已连服务，登录串口…', 'busy');
+    };
+    ws.onmessage = function (ev) {
+      var m;
+      try { m = JSON.parse(ev.data); } catch (e) { m = { type: 'out', data: ev.data }; }
+      if (m.type === 'out') {
+        term.write(m.data);
+      } else if (m.type === 'status') {
+        if (typeof m.can_write === 'boolean') { canWrite = m.can_write; updateHint(); }
+        if (m.endpoint) epEl.textContent = m.endpoint;
+        if (m.state === 'tcp') setState('已连串口服务，登录中…', 'busy');
+        else if (m.state === 'ready') setState(canWrite ? '就绪（可写）' : '就绪（只读）', canWrite ? 'ok' : 'ro');
+        else if (m.state === 'readonly') setState('就绪（只读）', 'ro');
+        else if (m.state === 'login-failed') setState('串口登录失败', 'err');
+        else if (m.state === 'closed') setState('已断开', 'err');
+        if (m.message) term.write('\r\n\u001b[33m[提示] ' + m.message + '\u001b[0m\r\n');
+      } else if (m.type === 'error') {
+        setState('连接失败', 'err');
+        term.write('\r\n\u001b[31m[错误] ' + (m.message || '未知错误') + '\u001b[0m\r\n');
+      }
+    };
+    ws.onclose = function () {
+      canWrite = false;
+      updateHint();
+      if (!closingByUser) setState('已断开（可点重连）', 'err');
+    };
+    ws.onerror = function () {
+      setState('连接异常', 'err');
+    };
+  }
+
+  document.getElementById('btnReconnect').onclick = function () {
+    term.write('\r\n\u001b[90m[重连] ' + new Date().toLocaleTimeString() + '\u001b[0m\r\n');
+    connect();
+  };
+  document.getElementById('btnClear').onclick = function () { term.clear(); term.focus(); };
+  document.getElementById('btnClose').onclick = function () {
+    closingByUser = true;
+    canWrite = false;
+    updateHint();
+    if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
+    setState('已断开', 'err');
+    term.write('\r\n\u001b[90m[已断开] 可点「重连」恢复\u001b[0m\r\n');
+  };
+
+  connect();
+  setTimeout(function () { term.focus(); }, 200);
+})();
+</script>
+</body>
+</html>

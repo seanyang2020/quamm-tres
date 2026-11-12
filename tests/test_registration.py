@@ -64,20 +64,34 @@ def test_unknown_model_does_not_block(db):
         dev.stop()
 
 
-def test_position_duplicate_rejected(db):
+def test_same_position_allows_multiple_devices(db):
+    """同一物理位置可放多台设备：position_code 不再全库唯一。（v0.29.2）"""
     dev1 = MockDevice(model="QM102V").start()
     dev2 = MockDevice(model="QM102V").start()
     try:
-        register_device(db, "user01@corp.com", dev1, "302-R4-01", "owner@corp.com")
-        r = register_device(db, "user01@corp.com", dev2, "302-R4-01", "owner@corp.com")
-        assert r.get("error") == "POSITION_DUP", r
+        first = register_device(db, "user01@corp.com", dev1, "302-R4-01", "owner@corp.com")
+        second = register_device(db, "user01@corp.com", dev2, "302-R4-01", "owner@corp.com")
+        assert first.get("error") is None, first
+        assert second.get("error") is None, second
+        assert first["matched_as"] == "new"
+        assert second["matched_as"] == "new"
+        assert first["device_id"] != second["device_id"]
+
+        s = db.session()
+        rows = s.query(Device).filter(Device.position_code == "302-R4-01").all()
+        assert {d.device_id for d in rows} == {first["device_id"], second["device_id"]}
+        s.close()
+
+        listed = {d["device_id"]: d for d in db.call("user01@corp.com", res_list_devices)}
+        assert listed[first["device_id"]]["position_code"] == "302-R4-01"
+        assert listed[second["device_id"]]["position_code"] == "302-R4-01"
     finally:
         dev1.stop()
         dev2.stop()
 
 
 def test_reregister_same_device_is_idempotent(db):
-    """重复注册同一台设备应命中已有记录：不新建、不报 POSITION_DUP。"""
+    """重复注册同一台设备应命中已有记录：不新建、不因位置相同报错。"""
     dev = MockDevice(model="QM102V").start()
     try:
         first = register_device(db, "user01@corp.com", dev, "302-R5-01", "owner@corp.com")

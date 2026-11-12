@@ -333,6 +333,51 @@ def _wake_queue(session: Session, device: Device) -> None:
         device.status = DeviceStatus.AVAILABLE
 
 
+def _provision_serial_token(session: Session, lease: Lease, device: Device | None,
+                             actor: str) -> dict | None:
+    """v0.30：签发租约级串口派生票（best-effort，失败标 pending 交 worker 重试）。
+
+    串口签发绝不能拖垮申请本身：任何异常都吞掉并返回 None。
+    """
+    try:
+        from app.domain import serial_token
+
+        return serial_token.provision(session, lease, device, actor=actor, want_plain=True)
+    except Exception:  # noqa: BLE001
+        logger.warning("serial token provision failed for %s", lease.lease_id, exc_info=True)
+        try:
+            session.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+
+def _serial_access_public(res: dict) -> dict:
+    """收敛成给 agent 的公开字段（只含派生票，绝不含主 token）。"""
+    nodes = res.get("nodes") or {}
+    return {
+        "token_type": "derived",
+        "token": res.get("token"),
+        "label": res.get("label"),
+        "exp_ms": res.get("exp_ms"),
+        "ports": sorted({s for v in nodes.values() for s in v.get("slots", [])}),
+        "access": [
+            {
+                "node_id": nid,
+                "raw_tcp": v.get("raw_tcp"),
+                "mcp_url": v.get("mcp_url"),
+                "slots": v.get("slots", []),
+            }
+            for nid, v in nodes.items()
+        ],
+        "login_hint": "raw TCP：连上收到 login: 后发 <token> + 换行(LF)；MCP：Authorization: Bearer <token>",
+        "note": (
+            "受限票：只读 + 本路串口读写，管理面工具被拒；租约释放/回收后立即失效。"
+            "丢失可调 res_serial_token 重取（重取会作废旧票）。"
+        ),
+    }
+
+
 def _reclaim(session: Session, lease: Lease, new_state: str, end_reason: str, actor: str) -> None:
     lease.state = new_state
     lease.released_at = utcnow()
@@ -372,6 +417,15 @@ def _reclaim(session: Session, lease: Lease, new_state: str, end_reason: str, ac
             "screenshot cleanup on release failed for %s (%s)",
             lease.device_id, lease.lease_id,
         )
+
+    # v0.30：撤销该租约的串口派生票（按 label 即时生效）。同样 best-effort：
+    # 撤销失败还有 exp_ms 过期兜底，绝不阻塞回收主流程。
+    try:
+        from app.domain import serial_token
+
+        serial_token.revoke(session, lease, actor=actor, reason=end_reason)
+    except Exception:  # noqa: BLE001
+        logger.warning("serial token revoke failed for %s (%s)", lease.lease_id, lease.device_id)
 
 
 def apply(
@@ -510,9 +564,12 @@ def apply(
         )
         try:
             session.commit()
+            lease_dict = _lease_dict(lease, device)
+            # v0.30：租约级串口派生票（best-effort；写不进日志机则标 pending，worker 重试）
+            serial_access = _provision_serial_token(session, lease, device, principal.email)
             result = {
                 "state": "GRANTED",
-                "lease": _lease_dict(lease, device),
+                "lease": lease_dict,
                 "renew_hint": "长任务请到期前调 res_renew 续约",
                 "agent_contract_version": AGENT_CONTRACT_VERSION,
                 "heartbeat": {
@@ -529,6 +586,12 @@ def apply(
                 },
                 "device_lock_path": settings.device_lock_path,
             }
+            if serial_access and serial_access.get("granted"):
+                result["serial_access"] = _serial_access_public(serial_access)
+                result["serial_hint"] = (
+                    "串口已开通：用 serial_access.token 直连日志机（MCP Bearer / raw TCP login）。"
+                    "丢了再调 res_serial_token(lease_id) 重取。"
+                )
             # v0.14：版本门禁只拦 X/Y；未知版本放行但警告，patch 落后仅提示
             state = (verdict or {}).get("state")
             if state == "UNKNOWN_VERSION":

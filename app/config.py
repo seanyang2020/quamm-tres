@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     pending_patrol_interval_minutes: int = 10
     patrol_fail_threshold: int = 2       # 连续 N 轮失败判 offline
     probe_timeout_seconds: int = 5
+    # 串口派生票（serialhub 1.1.0）下发/撤销时调日志机 MCP 的超时（秒）
+    serial_token_mcp_timeout: int = 6
     # 探测后端：mock=模拟设备 HTTP /probe（默认，本地演示）；
     # real=真实 Quamm XOS 设备，adb connect + shell 读文件（无 getprop）。
     # 决定"按 IP 探测"的全局默认；巡检则按每台 device.source 分流（见 probe.get_prober_for）。

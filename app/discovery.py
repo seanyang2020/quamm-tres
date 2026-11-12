@@ -4,7 +4,7 @@
 - 先并发 TCP 扫描网段内 5555 端口（adbscan 口径：线程池 + 短超时）；
 - 对每个命中主机调用 catalog.device_probe，生成与 MCP 一致的注册表单（form_id），
   并回读 product_name / MAC / 健康等级 / 是否已登记；
-- 后续确认注册仍走 catalog.device_register，复用位置唯一性、机型字典、必填等校验。
+- 后续确认注册仍走 catalog.device_register，复用必填字段、机型字典等校验。
 
 纯内存、只读探测，不 push / 刷机。
 """

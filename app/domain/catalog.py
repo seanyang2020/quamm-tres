@@ -635,7 +635,7 @@ def device_register(
         if pt is None:
             # 探测到的机型不在字典：不阻塞，标 unknown_model（能 adb 就能用，只是按机型筛不到）
             if model_class:
-                raise DomainError("UNKNOWN_MODEL", f"机型 {model_class} 不在机型字典中")
+                raise DomainError("UNKNOWN_MODEL", f"机型 {model_class} 不在机型字典中；请先在「设置 → 设备类型」新增或派生该机型，再重新添加设备")
             final_model = "unknown_model"
     else:
         final_model = "unknown_model"
@@ -644,32 +644,9 @@ def device_register(
     # 重复注册同一台设备时，position_code 本来就属于它自己，不能按“位置重复”拒绝。
     existing = _match_existing(session, probe)
 
-    # 位置唯一性：位置已被“另一台”设备占用才拒绝
-    # 位置是「设备的物理位置」，每台设备必须唯一；与共享方式（公共/个人独享/指定名单）无关。
-    dup_pos = session.query(Device).filter(Device.position_code == position_code).first()
-    if dup_pos is not None and (existing is None or dup_pos.device_id != existing.device_id):
-        occupied = dup_pos.display_name or dup_pos.device_id
-        suggestion = position_code
-        n = 2
-        while (
-            session.query(Device)
-            .filter(Device.position_code == suggestion)
-            .first()
-            is not None
-        ):
-            suggestion = f"{position_code}-{n}"
-            n += 1
-        raise DomainError(
-            "POSITION_DUP",
-            f"位置「{position_code}」已被「{occupied}」（{dup_pos.device_id}）占用。"
-            f"位置是设备的物理位置，每台设备必须唯一，与是否「个人独享」无关。"
-            f"可改用「{suggestion}」。",
-            {
-                "position_code": position_code,
-                "occupied_by": dup_pos.device_id,
-                "suggestion": suggestion,
-            },
-        )
+    # 位置允许重复：同一物理位置可以放多台设备（如一个工位/机架位上的多台样机），
+    # 不再因 position_code 相同而拒绝注册；重复注册同一台设备仍由 _match_existing 更新。
+    # 位置文本的空白校验与 trim 规范化已在上面完成。
 
     warnings: list[str] = []
 
@@ -858,8 +835,8 @@ def _retire_device(session: Session, d: Device, actor_email: str) -> None:
 
     d.status = DeviceStatus.RETIRED
     d.retired_at = utcnow()
-    # 释放物理位置：位置编号是全库唯一索引，若历史设备一直占着，
-    # 同位置的新设备注册会被这台已下架的设备挡住（报错还指向一个 retired 设备）。
+    # 下架时释放位置：设备不再占用该物理位置（原位置记录到审计明细）。
+    # 同位置允许放多台设备，因此这里只是业务上的“空出”，不是唯一索引约束。
     released_position = d.position_code
     d.position_code = None
     audit.record(
@@ -926,7 +903,7 @@ def device_update(
         if take("model_class") is not None:
             mc = str(take("model_class")).strip() or None
             if mc is not None and session.get(ProductType, mc) is None:
-                raise DomainError("UNKNOWN_MODEL", f"机型 {mc} 不在机型字典中")
+                raise DomainError("UNKNOWN_MODEL", f"机型 {mc} 不在机型字典中；请先在「设置 → 设备类型」新增或派生该机型")
             d.model_class = mc
         if take("ip") is not None:
             d.ip = str(take("ip")).strip() or None

@@ -53,7 +53,7 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
         result = probe_device(
             d.ip, d.adb_port or 5555,
             timeout=settings.probe_timeout_seconds,
-            source=d.source,
+            source=d.source, session=session, device_id=d.device_id,
         )
         d.last_probe_at = utcnow()
         # v0.14：真实设备探测顺带读到的固件版本回填（读不到则保留原值）

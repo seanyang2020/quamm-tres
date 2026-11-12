@@ -80,6 +80,14 @@ _LEASE_COLUMNS = {
     "last_heartbeat_at": "DATETIME",
 }
 
+# lease 表新增列（v0.30 租约级串口派生票）-> DDL 片段（inspect 判列后 ADD，幂等）
+_LEASE_SERIAL_COLUMNS = {
+    "serial_grant": "VARCHAR(16)",
+    "serial_token_label": "VARCHAR(64)",
+    "serial_grant_detail": "JSON",
+    "serial_grant_at": "DATETIME",
+}
+
 # product_type 表新增列（v0.23 芯片/浮点能力）-> DDL 片段（inspect 判列后 ADD，幂等）
 # float_abi 默认 auto（由探测推断），has_fpu 默认 0；不覆盖任何已有数据。
 _PRODUCT_TYPE_CHIP_COLUMNS = {
@@ -115,10 +123,32 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_FIRMWARE_COLUMNS)
     _backfill_db_project_names(session)
     _ensure_columns(session, "lease", _LEASE_COLUMNS)
+    _ensure_columns(session, "lease", _LEASE_SERIAL_COLUMNS)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_CHIP_COLUMNS)
     _ensure_screenshot_table(session)
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_BUILD_COLUMNS)
     _rebuild_build_server_for_principal(session)
+    _ensure_device_position_index(session)
+
+
+def _ensure_device_position_index(session: Session) -> None:
+    """v0.29.2 幂等迁移：position_code 取消全库唯一，改普通索引。
+
+    同一物理位置允许放多台设备。旧库遗留 ``uq_device_position_code`` 唯一索引时先 DROP，
+    再补建非唯一索引 ``ix_device_position_code``；只动索引，不删除/修改任何设备数据。
+    SQLite 与 PostgreSQL 均支持 ``DROP INDEX IF EXISTS``。
+    """
+    from sqlalchemy import Index
+
+    from app.models import Device
+
+    engine = session.get_bind()
+    indexes = {idx["name"] for idx in inspect(engine).get_indexes("device")}
+    if "uq_device_position_code" in indexes:
+        session.execute(text("DROP INDEX IF EXISTS uq_device_position_code"))
+        session.commit()
+    if "ix_device_position_code" not in indexes:
+        Index("ix_device_position_code", Device.position_code).create(bind=engine, checkfirst=True)
 
 
 def _ensure_screenshot_table(session: Session) -> None:

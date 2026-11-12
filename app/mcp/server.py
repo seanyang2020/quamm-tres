@@ -1024,3 +1024,137 @@ def res_serial_release(device_id: str, slot: int | None = None) -> dict:
     Agent 异常中断后也用它兜底，不用等 ttl（默认 120s）。
     """
     return _guard(_serial_release_impl, device_id, slot)
+
+
+@mcp.tool()
+def res_serial_token(lease_id: str) -> dict:
+    """拿本租约的日志机串口「派生票」（serialhub 1.1.0，受限票）。
+
+    返回 `token`（rt_ 开头）、日志机 access（raw_tcp / mcp_url / slots）、有效期与可用工具范围。
+    - 直连方式：raw TCP 连上收到 `login: ` 后发 `<token>` + 换行(LF)；或 MCP
+      `Authorization: Bearer <token>` 调 `http://<日志机>:8787/mcp`。
+    - 只读 + 本路串口读写；管理面工具（改波特率/开关口/标定/巡检/发工单）会被 serialhub 拒绝。
+    - **每次调用都会重签，旧票立即作废**（只保留最新一张）；租约释放/超时回收后立即失效。
+    - 主 token 永不下发；拿不到票说明日志机不可达，会返回 SERIAL_TOKEN_PENDING，稍后重试即可。
+    """
+    from app.domain import serial_token
+
+    return _guard(serial_token.token_for_lease, lease_id)
+
+
+# ---------------- WireLog 日志机域（见 WIRELOG-DESIGN.md）
+
+from app.domain import wirelog as wl_svc
+
+
+@mcp.tool()
+def wl_list_nodes() -> list[dict]:
+    """列出所有日志机（serialhub）：状态、IP、路数、最近心跳。"""
+    return _guard_ro(wl_svc.list_nodes)
+
+
+@mcp.tool()
+def wl_node_info(node_id: str) -> dict:
+    """日志机详情：能力、配置、各路串口绑定与 shell 就绪状态。"""
+    return _guard_ro(wl_svc.get_node, node_id)
+
+
+def _wl_enroll_impl(session, auth, adb_address=None, display_name=None,
+                    model_class="esl2_hk"):
+    if not auth.is_admin:
+        raise DomainError("FORBIDDEN", "日志机发放只允许管理员")
+    return wl_svc.enroll(session, adb_address=adb_address, operator=auth.email,
+                         display_name=display_name, model_class=model_class)
+
+
+@mcp.tool()
+def wl_enroll(adb_address: str | None = None, display_name: str | None = None,
+              model_class: str = "esl2_hk") -> dict:
+    """发放日志机：生成 node token 与 fw_setenv 命令（仅管理员，明文只回一次）。"""
+    return _guard(_wl_enroll_impl, adb_address, display_name, model_class)
+
+
+def _wl_config_impl(session, auth, node_id, config):
+    if not auth.is_admin:
+        raise DomainError("FORBIDDEN", "配置下发只允许管理员")
+    return wl_svc.set_config(session, node_id, config, auth.email)
+
+
+@mcp.tool()
+def wl_set_config(node_id: str, config: dict) -> dict:
+    """下发日志机配置（raw tcp、本地 token 轮换、端口参数等），仅管理员。"""
+    return _guard(_wl_config_impl, node_id, config)
+
+
+def _wl_bind_impl(session, auth, node_id, slot, device_id=None):
+    return wl_svc.bind_port(session, node_id, slot, device_id, auth.email)
+
+
+@mcp.tool()
+def wl_bind_port(node_id: str, slot: int,
+                 device_id: str | None = None) -> dict:
+    """绑定某路串口到设备（按 MAC 自动匹配或指定 device_id）。"""
+    return _guard(_wl_bind_impl, node_id, slot, device_id)
+
+
+def _wl_grant_impl(session, auth, node_id, slot, principal):
+    if not auth.is_admin:
+        raise DomainError("FORBIDDEN", "写授权只允许管理员")
+    return wl_svc.grant_write(session, node_id, slot, principal, auth.email)
+
+
+@mcp.tool()
+def wl_grant_write(node_id: str, slot: int, principal: str) -> dict:
+    """授予某路串口写权限给指定 principal（仅管理员）。"""
+    return _guard(_wl_grant_impl, node_id, slot, principal)
+
+
+def _wl_revoke_impl(session, auth, node_id, slot):
+    if not auth.is_admin:
+        raise DomainError("FORBIDDEN", "撤销写授权只允许管理员")
+    return wl_svc.revoke_write(session, node_id, slot, auth.email)
+
+
+@mcp.tool()
+def wl_revoke_write(node_id: str, slot: int) -> dict:
+    """撤销某路串口写权限（仅管理员），撤销后连接回只读。"""
+    return _guard(_wl_revoke_impl, node_id, slot)
+
+
+@mcp.tool()
+def wl_audit_tail(node_id: str | None = None, limit: int = 50) -> list[dict]:
+    """查 WireLog 审计（注册/心跳/配置/授权/绑定）。"""
+    return _guard_ro(wl_svc.audit_tail, node_id, limit)
+
+
+def _wl_uart_register_impl(session, auth, node_id, slot, position_code=None,
+                            owner=None):
+    return wl_svc.uart_register(session, node_id, slot, auth.email,
+                                position_code, owner)
+
+
+@mcp.tool()
+def wl_uart_register(node_id: str, slot: int,
+                     position_code: str | None = None,
+                     owner: str | None = None) -> dict:
+    """经 WireLog 串口全量探测并注册/更新设备（MAC/SN 二选一）。"""
+    return _guard(_wl_uart_register_impl, node_id, slot, position_code, owner)
+
+
+def _wl_reconcile_impl(session, auth, node_id, slot, observed):
+    return wl_svc.reconcile_identity(session, node_id, slot, observed,
+                                     auth.email)
+
+
+@mcp.tool()
+def wl_reconcile_identity(node_id: str, slot: int, observed: dict) -> dict:
+    """全量探测后按 MAC/SN 锚定，处理 IP 漂移与物理串口换位。"""
+    return _guard(_wl_reconcile_impl, node_id, slot, observed)
+
+
+@mcp.tool()
+def wl_merge_mac_conflicts() -> dict:
+    """同 MAC 多设备归并：按是否有活动租约决定删/留（仅管理员）。"""
+    def _impl(session, auth):
+        return wl_svc.merge_mac_conflicts(session, auth.email)
+    return _guard(_impl)

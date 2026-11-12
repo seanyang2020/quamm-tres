@@ -58,6 +58,32 @@ class Prober(Protocol):
     def probe(self, host: str, port: int, timeout: int = 5) -> ProbeResult: ...
 
 
+class DualChannelProber:
+    """ADB 优先、uart 兜底，两路任一可达即 L3（ADR-9）。"""
+
+    def __init__(self):
+        self._adb = RealXosProber()
+
+    def probe(self, host: str, port: int, timeout: int = 5) -> ProbeResult:
+        return self._adb.probe(host, port, timeout)
+
+    def probe_dual(self, host, port, timeout=5, session=None,
+                   device_id=None, full=False) -> ProbeResult:
+        adb_res = self._adb.probe(host, port, timeout)
+        adb_res.extra = {**(adb_res.extra or {}), "adb_reachable": adb_res.reachable_l3}
+        if adb_res.reachable_l3 or session is None or not device_id:
+            return adb_res
+        from app.domain.prober_uart import UartProber
+
+        uart_res = UartProber().probe_via_device(session, device_id,
+                                                 timeout=timeout, full=full)
+        uart_res.extra = {**(uart_res.extra or {}),
+                          "adb_reachable": False,
+                          "uart_reachable": uart_res.reachable_l3}
+        return uart_res
+
+
+
 class MockProber:
     """模拟设备探测后端（测试 / 演示默认）。
 
@@ -142,9 +168,16 @@ def get_prober_for(source: str | None) -> Prober:
 
 
 def probe_device(
-    host: str, port: int = DEFAULT_ADB_PORT, timeout: int = 5, source: str | None = None
+    host: str, port: int = DEFAULT_ADB_PORT, timeout: int = 5, source: str | None = None,
+    session=None, device_id: str | None = None, full: bool = False,
 ) -> ProbeResult:
-    """探测一台设备；给出 source 时按台分流，否则用全局后端。"""
+    """探测一台设备；给出 source 时按台分流，否则用全局后端。
+
+    给出 session + device_id 且为 real 通道时走双通道：ADB 优先、uart 兜底。
+    """
+    if session is not None and device_id and (source or "").lower() in ("real", "adb"):
+        return DualChannelProber().probe_dual(
+            host, port, timeout, session=session, device_id=device_id, full=full)
     return get_prober_for(source).probe(host, port, timeout)
 
 

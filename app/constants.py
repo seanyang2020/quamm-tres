@@ -95,6 +95,7 @@ class NoticeType:
 class RegisterChannel:
     ADMIN_WEB = "admin_web"
     MCP_AGENT = "mcp_agent"
+    WIRELOG_UART = "wirelog_uart"
 
 
 # 可申请状态（available 且在池内、L3）
