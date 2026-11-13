@@ -34,10 +34,12 @@ def _lease_scan_job() -> None:
         scan = leasing.expire_scan(session)
         offer_timeout = leasing.offer_timeout_scan(session)
         heartbeat_lost = leasing.heartbeat_scan(session)
-        if scan.get("expired") or offer_timeout or heartbeat_lost:
+        # 兜底自愈：occupied 但已无任何有效占用（无 ACTIVE 租约、无窗口内 OFFERED 票）→ available
+        orphan_fixed = leasing.orphan_scan(session)
+        if scan.get("expired") or offer_timeout or heartbeat_lost or orphan_fixed:
             logger.info(
-                "lease scan: expiring=%s expired=%s offer_timeout=%s heartbeat_lost=%s",
-                scan.get("expiring"), scan.get("expired"), offer_timeout, heartbeat_lost,
+                "lease scan: expiring=%s expired=%s offer_timeout=%s heartbeat_lost=%s orphan_recovered=%s",
+                scan.get("expiring"), scan.get("expired"), offer_timeout, heartbeat_lost, orphan_fixed,
             )
     except Exception:  # noqa: BLE001
         logger.exception("lease scan failed")

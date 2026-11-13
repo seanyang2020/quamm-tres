@@ -917,7 +917,78 @@ def ticket_cancel(session: Session, auth: AuthContext, ticket_id: str) -> dict:
     if entry.state == QueueState.QUEUED:
         cancel(session, entry, "cancelled")
         session.commit()
+    elif entry.state == QueueState.OFFERED:
+        # 放弃 offer：必须同时释放 RESERVED 预留租约并唤醒设备。
+        # 旧实现只对 QUEUED 生效，OFFERED 期间取消是「空操作」，设备会一直
+        # 停在 occupied 等 offer 窗口超时（就是「点释放后设备不回池」的成因）。
+        lease = session.query(Lease).filter(Lease.lease_id == entry.lease_id).first()
+        entry.state = QueueState.CANCELLED
+        entry.offer_expires_at = None
+        if lease is not None and lease.state == LeaseState.RESERVED:
+            # _reclaim 内部会 _wake_queue（无人排队则转 available）
+            _reclaim(session, lease, LeaseState.RELEASED, "offer_declined", actor=auth.email)
+        else:
+            device = session.get(Device, lease.device_id) if lease is not None else None
+            if device is not None and device.status != DeviceStatus.PENDING_REMOVAL:
+                _wake_queue(session, device)
+        session.commit()
     return {"ticket_id": ticket_id, "ok": True, "state": entry.state}
+
+
+def orphan_scan(session: Session) -> int:
+    """兜底自愈：设备处于 occupied 但已经没有任何有效占用 → 回 available。
+
+    覆盖历史残留（进程重启、offer 取消/超时竞态、释放后队列残票等）：
+    - 该设备没有任何 ACTIVE 租约（GRANTED/EXPIRING/RESERVED）；
+    - 该设备（或它所属品类池）没有仍在窗口内的 OFFERED 票；
+    - 健康级别为 L3（非 L3 交给巡检决定 pending/offline）。
+    """
+    now = utcnow()
+    live_device_ids = {
+        row[0]
+        for row in session.query(Lease.device_id).filter(Lease.state.in_(LeaseState.ACTIVE)).all()
+    }
+    occupied = session.query(Device).filter(Device.status == DeviceStatus.OCCUPIED).all()
+    fixed = 0
+    for d in occupied:
+        if d.device_id in live_device_ids:
+            continue
+        pending_offer = (
+            session.query(QueueEntry)
+            .filter(
+                QueueEntry.target_type == "device",
+                QueueEntry.target_code == d.device_id,
+                QueueEntry.state == QueueState.OFFERED,
+                QueueEntry.offer_expires_at.isnot(None),
+                QueueEntry.offer_expires_at > now,
+            )
+            .count()
+        )
+        if pending_offer == 0 and d.model_class:
+            pending_offer = (
+                session.query(QueueEntry)
+                .filter(
+                    QueueEntry.target_type == "product",
+                    QueueEntry.target_code == d.model_class,
+                    QueueEntry.state == QueueState.OFFERED,
+                    QueueEntry.offer_expires_at.isnot(None),
+                    QueueEntry.offer_expires_at > now,
+                )
+                .count()
+            )
+        if pending_offer:
+            continue
+        if d.health_level != HealthLevel.L3:
+            continue
+        d.status = DeviceStatus.AVAILABLE
+        fixed += 1
+        audit.record(
+            session, actor="system", action="orphan_recover", device_id=d.device_id,
+            detail={"reason": "occupied without active lease"},
+        )
+    if fixed:
+        session.commit()
+    return fixed
 
 
 def expire_scan(session: Session) -> dict:
