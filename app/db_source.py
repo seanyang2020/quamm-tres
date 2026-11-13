@@ -43,8 +43,8 @@ WORK_ROOT = Path(__file__).resolve().parent.parent / "var" / "db_source"
 # 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
 # v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
 # 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
-# v0.28.3：默认改为当前用户 ~/bin/xosadb2update，换机器部署不必改代码。
-XOSADB2UPDATE_PATH = str(Path.home() / "bin" / "xosadb2update")
+# v0.28.4：默认改为全局路径 /usr/local/bin/xosadb2update，整机只放一份，所有用户/服务共享。
+XOSADB2UPDATE_PATH = "/usr/local/bin/xosadb2update"
 
 
 # ---------------- 路径智能适配 ----------------

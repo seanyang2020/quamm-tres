@@ -23,7 +23,7 @@
     {
       "name": "xosadb2update",
       "role": "res_db_upgrade 端到端 DB 升级，以及 dbxostest 内部实际刷写",
-      "paths": ["~/bin/xosadb2update"],
+      "paths": ["/usr/local/bin/xosadb2update"],
       "which": "xosadb2update",
       "version": "1.0.50",
       "version_cmd": "{path} --version",
@@ -31,7 +31,7 @@
       "size": 9374384,
       "critical": true,
       "source_repo": "~/github_gitee/linux-adb-update/prebuilt/xosadb2update",
-      "note": "201 双位置：~/bin（worker PATH 首位，实际生效）+ /usr/local/sbin（root 一致副本），升级后两处都要更新；/usr/bin 旧副本已删，不要再放。部署流程见 linux-adb-update/doc/BUILD_AND_DEPLOY.md"
+      "note": "全局唯一副本，装 /usr/local/bin（root 755），worker 与登录 PATH 均覆盖；不要再往 ~/bin 或 /usr/local/sbin 放。部署流程见 linux-adb-update/doc/BUILD_AND_DEPLOY.md"
     },
     {
       "name": "adb",
