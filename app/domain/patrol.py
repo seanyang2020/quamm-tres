@@ -21,7 +21,10 @@ from app.constants import DeviceStatus, HealthLevel, LeaseState
 from app.domain import audit
 from app.domain.notices import notify_device_offline, notify_device_recovered
 from app.domain import device_recovery as recovery
-from app.domain.probe import probe_device
+from concurrent.futures import ThreadPoolExecutor
+
+from app.domain.probe import ProbeResult, probe_device
+from app.domain.prober_real import tcp_port_open
 from app.models import Device, Lease, PatrolRun
 from app.utils import new_run_id, utcnow
 
@@ -42,6 +45,18 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
         q = q.filter(Device.device_id.in_(device_ids))
     devices = q.all()
 
+    # v0.30.1：先对 real 源设备做并发 TCP 端口预检（socket，2s 窗口），
+    # 端口不通的设备直接在下面的循环里按 L0 记账，不再每台吃满 adb connect 超时。
+    # 只有端口通的设备才真正进入 adb 采集；mock 源完全不做预检。
+    port_open: dict[str, bool] = {}
+    real_devices = [d for d in devices if d.ip and d.source == "real"]
+    if real_devices:
+        with ThreadPoolExecutor(max_workers=min(16, max(1, len(real_devices)))) as pool:
+            flags = list(pool.map(
+                lambda d: tcp_port_open(d.ip, d.adb_port or 5555), real_devices,
+            ))
+        port_open = {d.device_id: ok for d, ok in zip(real_devices, flags)}
+
     l3 = suspect = offline = 0
     failures: list[dict] = []
 
@@ -50,11 +65,15 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
             continue
         # device 表的 ip/adb_port 即探测地址；端口缺失时按 ip:5555 组。
         # 按 device.source 分流：mock 永远走 HTTP /probe，real 走 adb 读文件。
-        result = probe_device(
-            d.ip, d.adb_port or 5555,
-            timeout=settings.probe_timeout_seconds,
-            source=d.source, session=session, device_id=d.device_id,
-        )
+        if d.source == "real" and port_open.get(d.device_id) is False:
+            # 端口不通：直接用 L0 结果记账，跳过 adb（pending 的敲门恢复分支仍会照常尝试）。
+            result = ProbeResult(level=HealthLevel.L0)
+        else:
+            result = probe_device(
+                d.ip, d.adb_port or 5555,
+                timeout=settings.probe_timeout_seconds,
+                source=d.source, session=session, device_id=d.device_id,
+            )
         d.last_probe_at = utcnow()
         # v0.14：真实设备探测顺带读到的固件版本回填（读不到则保留原值）
         probed_version = (result.extra or {}).get("firmware_version")

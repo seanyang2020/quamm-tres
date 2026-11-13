@@ -25,7 +25,10 @@ has_fpu（Features 含 vfp/neon）放进 ``ProbeResult.extra``，供设备截图
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
+import socket
 import subprocess
 
 from app.constants import HealthLevel
@@ -33,6 +36,49 @@ from app.constants import HealthLevel
 logger = logging.getLogger(__name__)
 
 ADB_TIMEOUT = 5  # 单条 adb 命令默认超时（对齐 adbscan；并发扫描时由调用方传入更大值）
+# v0.30.1：adb connect 单独放宽。冷启动 adb server（或对上位旧版 client 重起 server）
+# 实测会吃掉 5s，导致巡检把在线设备误判 L0/offline。
+ADB_CONNECT_TIMEOUT = 5  # TCP 预检已确认端口开，正常 adbd 秒连；5s 足够，避免挂死设备吃满超时
+
+# v0.30.1：TCP 端口预检窗口。不可达设备（离线占多数）用 socket 亚秒级排除，
+# 不再为每台付满 adb connect 超时；adb 只用于端口已通的设备。
+TCP_PREFLIGHT_TIMEOUT = 2.0
+
+
+def tcp_port_open(host: str, port: int, timeout: float = TCP_PREFLIGHT_TIMEOUT) -> bool:
+    """socket 直连 5555，判断 adbd 端口是否可达（不启动 adb，不做协议握手）。"""
+    if not host:
+        return False
+    try:
+        with socket.create_connection((host, port or 5555), timeout=timeout):
+            return True
+    except (OSError, ValueError):
+        return False
+
+# v0.30.1：显式解析 adb 二进制。系统 /usr/bin/adb（Ubuntu 包 1.0.39）与 platform-tools
+# 1.0.41 的 server 版本不一致，会互杀 server 并 drag 住 connect，必须避让。
+_ADB_CANDIDATES = (
+    "~/bin/adb",
+    "~/opt/platform-tools/adb",
+    "/usr/local/bin/adb",
+)
+
+
+def _resolve_adb() -> str:
+    """按固定优先级找 adb；环境变量 TRES_ADB_PATH 可覆盖。"""
+    env = (os.environ.get("TRES_ADB_PATH") or "").strip()
+    if env:
+        return env
+    for cand in _ADB_CANDIDATES:
+        path = os.path.expanduser(cand)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    found = shutil.which("adb") or "adb"
+    logger.warning("adb 未命中首选路径，回退 %s（可能是系统旧版 1.0.39，会影响 server 复用）", found)
+    return found
+
+
+ADB_BIN = _resolve_adb()
 
 # v0.28.2：shell 活性探针。大写 + 双下划线，不会被 _TOKEN_RE / _MAC_RE 误命中。
 _SHELL_PROBE = "echo __TRES_SHELL_OK__"
@@ -54,7 +100,7 @@ def _run(cmd: list[str], timeout: int = ADB_TIMEOUT) -> tuple[int, str]:
     返回 (returncode, stdout.strip())。stderr 单独丢弃：cat 失败的错误文本
     不带干净 token / MAC，不会被下面的解析误当成有效值。
     """
-    full = ["timeout", str(timeout), "adb", *cmd]
+    full = ["timeout", str(timeout), ADB_BIN, *cmd]
     try:
         proc = subprocess.run(
             full,
@@ -127,7 +173,7 @@ def read_firmware_version(host: str, port: int = 5555) -> str | None:
     /etc/fw_version 是 XOS 实际落点；老工程可能只有 /etc/version。
     """
     address = f"{host}:{port or 5555}"
-    rc, out = _run(["connect", address])
+    rc, out = _run(["connect", address], ADB_CONNECT_TIMEOUT)
     if "connected" not in out.lower():
         _run(["disconnect", address])
         return None
@@ -165,6 +211,13 @@ class RealXosProber:
         from app.domain.probe import ProbeResult  # 延迟导入，打破循环引用
 
         address = f"{host}:{port or 5555}"
+        # v0.30.1：端口预检。端口不通直接 L0，省掉 adb connect 的 10s 超时。
+        if not tcp_port_open(host, port or 5555):
+            logger.info("real probe tcp closed %s", address)
+            return self._result(
+                ProbeResult, HealthLevel.L0, None, None, None, None,
+                "unknown", False, None, None,
+            )
         product_name: str | None = None
         eth_mac: str | None = None
         wlan_mac: str | None = None
@@ -179,7 +232,7 @@ class RealXosProber:
         mac_source: str | None = None
 
         # 1) connect（超时）。输出含 connected 才算连上；offline / 不可达直接 L0。
-        rc, out = _run(["connect", address], timeout)
+        rc, out = _run(["connect", address], max(timeout, ADB_CONNECT_TIMEOUT))
         connected = "connected" in out.lower()
         if not connected:
             logger.info("real probe connect failed %s rc=%s: %s", address, rc, out[:120])

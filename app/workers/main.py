@@ -92,16 +92,22 @@ def _pending_patrol_job() -> None:
             elapsed = (now - _last_pending_patrol_at).total_seconds()
             if elapsed < max(60, interval * 60 - 5):
                 return
-        pending_ids = [
+        # v0.30.1：待检 + 离线设备一起快轮询。
+        # 离线设备原先只能等 30 分钟全量巡检（且 worker 重启会错开一轮），
+        # 设备恢复上线后最久 30 分钟才被找回；改为与 pending 一起 10 分钟一轮。
+        recover_ids = [
             d.device_id
-            for d in session.query(Device).filter(Device.status == DeviceStatus.PENDING).all()
+            for d in session.query(Device)
+            .filter(Device.status.in_([DeviceStatus.PENDING, DeviceStatus.OFFLINE]))
+            .order_by(Device.created_at.asc())
+            .all()
         ]
         _last_pending_patrol_at = now
-        if not pending_ids:
+        if not recover_ids:
             return
-        run = patrol.run_patrol_round(session, device_ids=pending_ids)
+        run = patrol.run_patrol_round(session, device_ids=recover_ids)
         logger.info(
-            "pending patrol done: scanned=%s l3=%s (interval=%smin)",
+            "recover patrol done: scanned=%s l3=%s (interval=%smin)",
             run.scanned_count, run.l3_count, interval,
         )
     except Exception:  # noqa: BLE001
