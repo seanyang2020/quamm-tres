@@ -41,6 +41,26 @@ _CPU_PART_MODELS = {
 }
 
 
+def _persist_eng_config(device, result) -> None:
+    """把探测到的工程配置指纹写进 device.eng_config（JSON 文本）。
+
+    老固件无 build-info/config.gz 时 extra 里这两项为 None，此时不覆盖原值。
+    """
+    import json as _json
+
+    extra = (result.extra or {})
+    build_info = extra.get("build_info") or {}
+    eng_config = extra.get("eng_config") or {}
+    if not build_info and not eng_config:
+        return
+    payload = {}
+    if build_info:
+        payload["build_info"] = build_info
+    if eng_config:
+        payload["eng_config"] = eng_config
+    device.eng_config = _json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def product_complete(pt: ProductType) -> bool:
     """工程配置/SDK 获取/编译命令/镜像路径四列都非空 = complete。"""
     return all((getattr(pt, f, None) or "").strip() for f in COMPLETE_FIELDS)
@@ -216,6 +236,19 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
     return result
 
 
+def _eng_config_dict(d: Device) -> dict | None:
+    """device.eng_config（JSON 文本）反序列化为 dict；空/坏数据返回 None。"""
+    raw = getattr(d, "eng_config", None)
+    if not raw:
+        return None
+    try:
+        import json as _json
+
+        return _json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+
 def _public_device(d: Device, session: Session, for_agent: bool = True,
                    holder_email: str | None = None) -> dict:
     """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。"""
@@ -256,6 +289,7 @@ def _public_device(d: Device, session: Session, for_agent: bool = True,
                 "allowed_agent_labels": device_acl.allowed_agent_labels(d),
                 "locked_by": d.locked_by,
                 "locked_reason": d.locked_reason,
+                "eng_config": _eng_config_dict(d),
             }
         )
     return data
@@ -362,6 +396,7 @@ def _apply_probe_result(
     probed_version = (result.extra or {}).get("firmware_version")
     if probed_version:
         device.firmware_version = probed_version
+    _persist_eng_config(device, result)
     promoted = demoted = False
     if result.reachable_l3:
         device.health_level = HealthLevel.L3

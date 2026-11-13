@@ -41,6 +41,8 @@ _DEVICE_COLUMNS = {
     "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
     "firmware_version": "VARCHAR(64)",
     "register_agent": "VARCHAR(128)",
+    # v0.31 工程配置指纹（JSON）
+    "eng_config": "TEXT",
     # v0.26 共享范围与名单
     "share_scope": "VARCHAR(16) NOT NULL DEFAULT 'shared'",
     "allowed_emails": "TEXT",

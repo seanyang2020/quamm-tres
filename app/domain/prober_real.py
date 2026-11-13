@@ -189,6 +189,77 @@ def read_firmware_version(host: str, port: int = 5555) -> str | None:
         _run(["disconnect", address])
 
 
+# v0.31：高精度工程配置指纹。
+# 新构建固件在 /etc 下带 build-info（key=value：project/platform/built_at/git/defconfig）
+# 与 config.gz（内核 .config 的 gzip：权威品类 CONFIG_PRODUCT_X=y、QM_VERSION、能力位）。
+_ENG_GREP = (
+    "zcat /etc/config.gz 2>/dev/null | grep -E '"
+    "CONFIG_PRODUCT_[A-Z0-9_]+=y|CONFIG_XOS_PROJECT_TYPE=|CONFIG_XOS_APP_MAIN_ENTRY=|"
+    "CONFIG_QM_VERSION=|CONFIG_QM_HW_VERSION=|CONFIG_PLATFORM_ID=|"
+    "CONFIG_LCD_PANEL=|CONFIG_TOUCH_PANEL=|CONFIG_WIFI_SUPPORT=|CONFIG_ETHERNET_SUPPORT=|"
+    "CONFIG_XOS_WIFI_QUADRV='"
+)
+
+_ENG_KEY_MAP = {
+    "CONFIG_XOS_PROJECT_TYPE": "project_type",
+    "CONFIG_XOS_APP_MAIN_ENTRY": "main_entry",
+    "CONFIG_QM_VERSION": "qm_version",
+    "CONFIG_QM_HW_VERSION": "hw_version",
+    "CONFIG_PLATFORM_ID": "platform_id",
+    "CONFIG_XOS_WIFI_QUADRV": "wifi_chip",
+}
+
+_ENG_FLAG_MAP = {
+    "CONFIG_LCD_PANEL": "has_lcd",
+    "CONFIG_TOUCH_PANEL": "has_touch",
+    "CONFIG_WIFI_SUPPORT": "cfg_has_wifi",
+    "CONFIG_ETHERNET_SUPPORT": "has_ethernet",
+}
+
+
+def _parse_kv(out: str) -> dict[str, str]:
+    """解析 key=value 行（/etc/build-info）。注释与空行跳过。"""
+    result: dict[str, str] = {}
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key = key.strip()
+        if key:
+            result[key] = val.strip()
+    return result
+
+
+def _parse_eng_config(out: str) -> dict:
+    """解析 /etc/config.gz 的关键行，产出权威品类与能力位。
+
+    has_lcd/has_touch/has_ethernet/cfg_has_wifi 来自编译期配置，是设备能力画像；
+    product 是 CONFIG_PRODUCT_X=y 命中的品类（比 /etc/product_name 更权威）。
+    """
+    cfg: dict = {}
+    product: str | None = None
+    for line in (out or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, val = line.split("=", 1)
+        key, val = key.strip(), val.strip().strip('"')
+        lowered = val.lower()
+        if key.startswith("CONFIG_PRODUCT_") and lowered == "y":
+            # CONFIG_PRODUCT_BOARD 是字符串键，不会走到这里；其余命中即品类
+            if product is None and key != "CONFIG_PRODUCT_BOARD":
+                product = key[len("CONFIG_PRODUCT_"):]
+            continue
+        if key in _ENG_KEY_MAP:
+            cfg[_ENG_KEY_MAP[key]] = val
+        elif key in _ENG_FLAG_MAP:
+            cfg[_ENG_FLAG_MAP[key]] = lowered == "y"
+    if product:
+        cfg["product"] = product
+    return cfg
+
+
 def _is_fixed(mac: str | None) -> bool:
     """是否可作为设备指纹。
 
@@ -231,6 +302,8 @@ class RealXosProber:
         cpu_implementer: str | None = None
         has_fpu = False
         mac_source: str | None = None
+        build_info: dict = {}
+        eng_config: dict = {}
 
         # 1) connect（超时）。输出含 connected 才算连上；offline / 不可达直接 L0。
         rc, out = _run(["connect", address], max(timeout, ADB_CONNECT_TIMEOUT))
@@ -296,6 +369,22 @@ class RealXosProber:
                 _, ver_out = _run(["-s", address, "shell", "cat /etc/version"], timeout)
                 firmware_version = _first_version(ver_out)
 
+            # v0.31：工程配置指纹（新构建固件才有，老固件读空 -> 跳过）
+            _, bi_out = _run(["-s", address, "shell", "cat /etc/build-info"], timeout)
+            build_info = _parse_kv(bi_out)
+            _, cfg_out = _run(
+                ["-s", address, "shell", _ENG_GREP], max(timeout, 10)
+            )
+            eng_config = _parse_eng_config(cfg_out)
+            # product_name 缺失时用工程配置兜底（新固件可能不再带 /etc/product_name）
+            if product_name is None:
+                product_name = (
+                    (build_info.get("project") or "").strip()
+                    or (eng_config.get("product") or "").strip()
+                    or (eng_config.get("project_type") or "").strip()
+                    or None
+                )
+
             # v0.23：读 /proc/cpuinfo 判定浮点 ABI（Features 含 vfp/neon 即硬浮点）。
             _, cpu_out = _run(["-s", address, "shell", "cat /proc/cpuinfo"], timeout)
             features, cpu_part, cpu_implementer, has_fpu = _parse_cpuinfo(cpu_out)
@@ -316,7 +405,7 @@ class RealXosProber:
             ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
             storage_type, has_wifi, board_dt, firmware_version,
             features, cpu_part, cpu_implementer, has_fpu, shell_ok=shell_ok,
-            mac_source=mac_source,
+            mac_source=mac_source, build_info=build_info, eng_config=eng_config,
         )
 
     @staticmethod
@@ -324,7 +413,7 @@ class RealXosProber:
         ProbeResult, level, fixed_mac, product_name, eth_mac, wlan_mac,
         storage_type, has_wifi, board_dt, firmware_version,
         features=None, cpu_part=None, cpu_implementer=None, has_fpu=False, shell_ok=False,
-        mac_source=None,
+        mac_source=None, build_info=None, eng_config=None,
     ):
         return ProbeResult(
             level=level,
@@ -352,5 +441,20 @@ class RealXosProber:
                 "cpu_part": cpu_part,
                 "cpu_implementer": cpu_implementer,
                 "has_fpu": has_fpu,
+                # v0.31：工程配置指纹（高精度）。老固件无这两个文件时为 None。
+                "build_info": build_info or None,
+                "eng_config": eng_config or None,
+                "config_product": (eng_config or {}).get("product"),
+                "qm_version": (eng_config or {}).get("qm_version"),
+                "hw_version": (eng_config or {}).get("hw_version"),
+                "platform": (build_info or {}).get("platform"),
+                "built_at": (build_info or {}).get("built_at"),
+                "project_git": (build_info or {}).get("project_git"),
+                "config_sha256": (build_info or {}).get("config_sha256"),
+                "has_lcd": (eng_config or {}).get("has_lcd"),
+                "has_touch": (eng_config or {}).get("has_touch"),
+                "has_ethernet": (eng_config or {}).get("has_ethernet"),
+                "cfg_has_wifi": (eng_config or {}).get("cfg_has_wifi"),
+                "wifi_chip": (eng_config or {}).get("wifi_chip"),
             },
         )

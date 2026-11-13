@@ -29,6 +29,26 @@ from app.models import Device, Lease, PatrolRun
 from app.utils import new_run_id, utcnow
 
 
+def _persist_eng_config(device, result) -> None:
+    """把探测到的工程配置指纹写进 device.eng_config（JSON 文本）。
+
+    老固件无 build-info/config.gz 时 extra 里这两项为 None，此时不覆盖原值。
+    """
+    import json as _json
+
+    extra = (result.extra or {})
+    build_info = extra.get("build_info") or {}
+    eng_config = extra.get("eng_config") or {}
+    if not build_info and not eng_config:
+        return
+    payload = {}
+    if build_info:
+        payload["build_info"] = build_info
+    if eng_config:
+        payload["eng_config"] = eng_config
+    device.eng_config = _json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
 def _has_active_lease(session: Session, device_id: str) -> bool:
     return (
         session.query(Lease)
@@ -79,6 +99,7 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
         probed_version = (result.extra or {}).get("firmware_version")
         if probed_version:
             d.firmware_version = probed_version
+        _persist_eng_config(d, result)
 
         if result.reachable_l3:
             d.health_level = HealthLevel.L3

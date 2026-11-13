@@ -128,6 +128,8 @@ class Device(Base):
     board_dt: Mapped[str | None] = mapped_column(String(256), nullable=True)
     storage_type: Mapped[str | None] = mapped_column(String(16), nullable=True)
     has_wifi: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # v0.31：工程配置高精度指纹（JSON 文本）：build-info + config.gz 关键项
+    eng_config: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(
         String(16), default="mock", server_default="mock", nullable=False
     )
