@@ -1,0 +1,66 @@
+{
+  "schema": "tres-tools-lock/1",
+  "description": "TRES 依赖的外部可执行工具版本基线。check-tools.py 按此校验部署机；工具升级后必须同步更新本文件。",
+  "updated": "2026-11-13",
+  "verified_on": {
+    "host": "172.16.1.201 (正式实例)",
+    "note": "2026-11-13 实测：dbxostest.py 与本地一致；xosadb2update 由 1.0.2 升至 1.0.50；adbscan 不需要"
+  },
+  "tools": [
+    {
+      "name": "dbxostest.py",
+      "role": "res_flash 异步刷机：下载 tar.gz → 解压 → 定位 script.ini → 裸名调用 xosadb2update",
+      "paths": ["~/bin/dbxostest.py"],
+      "which": "dbxostest.py",
+      "version": "v1.00",
+      "version_cmd": "{path} --version",
+      "md5": "df7175dd268b61db966a565e2bef8fca",
+      "size": 137066,
+      "critical": true,
+      "source_repo": "~/github_gitee/misc_tools/dbxostest.py",
+      "note": "内部用裸命令名 xosadb2update，依赖 PATH；201 系统 python3=3.8.10 与 venv 3.12.16 均可运行"
+    },
+    {
+      "name": "xosadb2update",
+      "role": "res_db_upgrade 端到端 DB 升级，以及 dbxostest 内部实际刷写",
+      "paths": ["~/bin/xosadb2update"],
+      "which": "xosadb2update",
+      "version": "1.0.50",
+      "version_cmd": "{path} --version",
+      "md5": "2c8e358d612340202369c2f8f5aea668",
+      "size": 9374384,
+      "critical": true,
+      "source_repo": "~/github_gitee/linux-adb-update/prebuilt/xosadb2update",
+      "note": "必须位于 systemd unit PATH 最前的 ~/bin；同机旧副本 /usr/bin/xosadb2update=1.0.2、/usr/local/sbin/xosadb2update=1.0.34 会被 PATH 顺序遮蔽，不要依赖它们"
+    },
+    {
+      "name": "adb",
+      "role": "设备探测、刷机、截图通信",
+      "paths": ["~/bin/adb", "/usr/bin/adb"],
+      "which": "adb",
+      "version": "",
+      "version_cmd": "{path} version",
+      "critical": true,
+      "note": "版本只作展示不强制（201 系统包 1.0.39、本地 1.0.41 均可）。201 上 ~/bin/adb 是指向 ~/opt/platform-tools/adb 的符号链接，PATH 优先取它"
+    },
+    {
+      "name": "adbscan",
+      "role": "可选，仅作语义对齐；TRES 已用标准库复现敲门与扫描",
+      "paths": ["/usr/local/sbin/adbscan"],
+      "version": "1.00",
+      "version_cmd": "{path} -v",
+      "critical": false,
+      "note": "缺失不影响功能（app/domain/device_recovery.py、app/discovery.py 均自带实现）"
+    },
+    {
+      "name": "python3",
+      "role": "settings.python_bin 默认值，用于执行 dbxostest.py",
+      "paths": ["/usr/bin/python3"],
+      "which": "python3",
+      "version": "",
+      "version_cmd": "{path} --version",
+      "critical": false,
+      "note": "版本不强制（201 系统 3.8.10、本地 WSL 3.12.x 均验证 dbxostest.py --help 正常）"
+    }
+  ]
+}
