@@ -112,6 +112,8 @@ const detailDevices = computed(() => {
   return detailFilteredDevices.value.slice(start, start + detailPageSize.value)
 })
 const detailTitle = computed(() => selectedDeviceType.value === ALL_DEVICES ? '全部设备' : selectedDeviceType.value)
+// 品类详情页点「添加设备」时预填该品类（全部设备页不预填）
+const prefillType = computed(() => selectedDeviceType.value === ALL_DEVICES ? '' : (selectedDeviceType.value || ''))
 const detailRangeStart = computed(() => detailFilteredDevices.value.length === 0 ? 0 : (detailPage.value - 1) * detailPageSize.value + 1)
 const detailRangeEnd = computed(() => Math.min(detailPage.value * detailPageSize.value, detailFilteredDevices.value.length))
 
@@ -224,14 +226,16 @@ const discoveryNetworks = ref('')
 const discovering = ref(false)
 const discoveryResults = ref([])
 
-function openDeviceAdd() {
+function openDeviceAdd(presetModel) {
   // v0.29.2：打开即刷新机型字典，避免刚派生/新增的机型在下拉里看不到
+  // 品类详情页进入时带 presetModel，弹窗里直接预选该品类
+  const preset = presetModel || ''
   loadProductTypes()
   deviceAddStep.value = 1
   deviceAddMode.value = 'ip'
   deviceAddProbe.value = null
-  deviceAddForm.value = { ip: '', port: 5555, hint_model: '' }
-  deviceAddConfirm.value = { position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
+  deviceAddForm.value = { ip: '', port: 5555, hint_model: preset }
+  deviceAddConfirm.value = { position_code: '', owner: '', model_class: preset, note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
   deviceAddAgentInfo.value = {}
   deviceAddAgentSeen.value = new Set()
   deviceAddAgentAuto.value = new Set()
@@ -1664,9 +1668,13 @@ const legendRole = [
       <div v-else-if="active === 'devices'">
         <!-- 概况 -->
         <div v-if="!selectedDeviceType">
-          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px">
-            <h2 style="margin: 0">设备概况</h2>
-            <el-button v-if="me.role === 'admin'" size="small" type="primary" @click="openDeviceAdd">添加设备</el-button>
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 8px; padding: 12px 16px">
+            <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap">
+              <h2 style="margin: 0">设备概况</h2>
+              <span style="color: #909399; font-size: 12px">登记新设备：探测 → 确认注册（两步）</span>
+            </div>
+            <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
+            <el-button v-else type="primary" plain disabled style="cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
           </div>
 
           <el-row :gutter="12" style="margin: 14px 0">
@@ -1719,7 +1727,10 @@ const legendRole = [
               </el-card>
             </el-col>
           </el-row>
-          <el-empty v-if="!deviceOverview.length" description="没有已分类设备" />
+          <el-empty v-if="!deviceOverview.length" description="还没有已分类的设备，先登记一台吧">
+            <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
+            <span v-else style="color: #909399; font-size: 12px">添加设备需要管理员权限，请联系管理员登记</span>
+          </el-empty>
         </div>
 
         <!-- 品类详情 -->
@@ -1728,6 +1739,9 @@ const legendRole = [
             <el-button size="small" @click="backToOverview">返回概况</el-button>
             <h2 style="margin: 0">{{ detailTitle }}</h2>
             <el-tag size="small" type="info">共 {{ detailCounts.all }} 台</el-tag>
+            <el-button v-if="me.role === 'admin'" type="primary" style="margin-left: auto"
+              @click="openDeviceAdd(prefillType)">＋ 添加 {{ detailTitle }} 设备</el-button>
+            <el-button v-else type="primary" plain disabled style="margin-left: auto; cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 10px 0">
             <el-tabs v-model="detailStatusTab" style="flex: 1; min-width: 280px">
@@ -1805,6 +1819,12 @@ const legendRole = [
                 plain
                 @click="showAllInDetail"
               >查看全部 {{ detailCounts.all }} 台</el-button>
+              <el-button
+                v-if="me.role === 'admin' && !detailCounts.all"
+                type="primary"
+                style="margin-left: 8px"
+                @click="openDeviceAdd(prefillType)"
+              >{{ prefillType ? '＋ 添加 ' + prefillType + ' 设备' : '＋ 添加设备' }}</el-button>
             </el-empty>
           <div v-if="detailFilteredDevices.length" class="detail-pager">
             <span class="detail-range">共 {{ detailFilteredDevices.length }} 台，第 {{ detailRangeStart }}-{{ detailRangeEnd }} 台</span>
