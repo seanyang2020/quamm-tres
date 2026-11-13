@@ -138,6 +138,10 @@ def res_product_type_upsert(
     jenkins_url: str | None = None,
     db_project_name: str | None = None,
     notes: str | None = None,
+    chip_model: str | None = None,
+    float_abi: str | None = None,
+    has_fpu: bool | None = None,
+    build_server_id: str | None = None,
     new_type_code: str | None = None,
 ) -> dict:
     """新增或更新机型/品类（仅管理员）。
@@ -171,7 +175,8 @@ def res_product_type_upsert(
         pt = session.get(ProductType, code)
         created = pt is None
         if created:
-            pt = ProductType(type_code=code, display_name=name)
+            # created_at 是 NOT NULL 且无服务端默认值，新增时必须显式给
+            pt = ProductType(type_code=code, display_name=name, created_at=utcnow())
             session.add(pt)
         pt.display_name = name
         pt.has_screen = bool(has_screen)
@@ -188,9 +193,14 @@ def res_product_type_upsert(
             ("jenkins_url", jenkins_url),
             ("db_project_name", db_project_name),
             ("notes", notes),
+            ("chip_model", chip_model),
+            ("float_abi", float_abi),
+            ("build_server_id", build_server_id),
         ):
             if value is not None:
                 setattr(pt, field, value)
+        if has_fpu is not None:
+            pt.has_fpu = bool(has_fpu)
         session.flush()
 
         moved = {"devices": 0, "flash_jobs": 0, "queue_entries": 0}
@@ -229,12 +239,23 @@ def res_product_type_upsert(
             code = new_code
 
         session.commit()
+        row = session.get(ProductType, code)
         return {
             "ok": True,
             "type_code": code,
             "created": created,
             "renamed_from": type_code if new_code and new_code != (type_code or "").strip() else None,
             "migrated": moved,
+            "effective": {
+                "display_name": row.display_name if row else name,
+                "has_screen": row.has_screen if row else bool(has_screen),
+                "has_led": row.has_led if row else bool(has_led),
+                "adb_port": row.adb_port if row else int(adb_port or 5555),
+                "enabled": row.enabled if row else bool(enabled),
+                "chip_model": getattr(row, "chip_model", None) if row else chip_model,
+                "float_abi": getattr(row, "float_abi", None) if row else float_abi,
+                "has_fpu": getattr(row, "has_fpu", None) if row else has_fpu,
+            },
         }
     except Exception as exc:  # noqa: BLE001
         session.rollback()
