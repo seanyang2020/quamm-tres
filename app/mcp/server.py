@@ -78,6 +78,172 @@ def res_list_products(keyword: str | None = None, only_available: bool = False) 
 
 
 @mcp.tool()
+def res_product_types(include_disabled: bool = False) -> list[dict]:
+    """列机型/品类字典（含能力位、工程元数据与在池设备数）。
+
+    能力位 has_screen/has_led 用于申请时按能力匹配；与设备实测 eng_config
+    互为补充（实测优先）。
+    """
+    from app.models import ProductType
+
+    session = SessionLocal()
+    try:
+        q = session.query(ProductType)
+        if not include_disabled:
+            q = q.filter(ProductType.enabled == True)  # noqa: E712
+        rows = q.order_by(ProductType.type_code.asc()).all()
+        out = []
+        for pt in rows:
+            counts = {"total": 0, "available": 0, "occupied": 0, "offline": 0, "pending": 0}
+            for d in session.query(Device).filter(
+                Device.model_class == pt.type_code, Device.status != "retired"
+            ).all():
+                counts["total"] += 1
+                if d.status in counts:
+                    counts[d.status] += 1
+            out.append(
+                {
+                    "type_code": pt.type_code,
+                    "display_name": pt.display_name,
+                    "has_screen": pt.has_screen,
+                    "has_led": pt.has_led,
+                    "serial_count": pt.serial_count,
+                    "adb_port": pt.adb_port,
+                    "enabled": pt.enabled,
+                    "model_pattern": pt.model_pattern,
+                    "defconfig": pt.defconfig,
+                    "db_project_name": getattr(pt, "db_project_name", None),
+                    "devices": counts,
+                }
+            )
+        return out
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def res_product_type_upsert(
+    type_code: str,
+    display_name: str,
+    has_screen: bool = False,
+    has_led: bool = False,
+    adb_port: int = 5555,
+    serial_count: int = 0,
+    enabled: bool = True,
+    model_pattern: str | None = None,
+    defconfig: str | None = None,
+    sdk_repo_cmd: str | None = None,
+    build_cmd: str | None = None,
+    image_path: str | None = None,
+    jenkins_url: str | None = None,
+    db_project_name: str | None = None,
+    notes: str | None = None,
+    new_type_code: str | None = None,
+) -> dict:
+    """新增或更新机型/品类（仅管理员）。
+
+    已存在的 type_code 视为更新，不存在则新增。new_type_code 用于改主键：
+    会级联迁移已有设备的 model_class、刷机任务与排队记录，再删旧行。
+    品类决定申请时的 product_type 池，也决定 Web 品类页入口。
+    """
+    from app.models import ProductType, FlashJob, QueueEntry
+
+    auth = require_auth()
+    if not auth.is_admin:
+        return {"error": "FORBIDDEN", "message": "仅管理员可维护机型字典"}
+
+    code = (type_code or "").strip()
+    if not code:
+        return {"error": "INVALID_ARGUMENT", "message": "type_code 不能为空"}
+    if len(code) > 64:
+        return {"error": "INVALID_ARGUMENT", "message": "type_code 过长（最多 64 字符）"}
+    if not all(c.isalnum() or c in "_.-" for c in code):
+        return {
+            "error": "INVALID_ARGUMENT",
+            "message": "type_code 只能包含字母、数字、下划线、点、连字符",
+        }
+    name = (display_name or "").strip()
+    if not name:
+        return {"error": "INVALID_ARGUMENT", "message": "display_name 不能为空"}
+
+    session = SessionLocal()
+    try:
+        pt = session.get(ProductType, code)
+        created = pt is None
+        if created:
+            pt = ProductType(type_code=code, display_name=name)
+            session.add(pt)
+        pt.display_name = name
+        pt.has_screen = bool(has_screen)
+        pt.has_led = bool(has_led)
+        pt.adb_port = int(adb_port or 5555)
+        pt.serial_count = int(serial_count or 0)
+        pt.enabled = bool(enabled)
+        for field, value in (
+            ("model_pattern", model_pattern),
+            ("defconfig", defconfig),
+            ("sdk_repo_cmd", sdk_repo_cmd),
+            ("build_cmd", build_cmd),
+            ("image_path", image_path),
+            ("jenkins_url", jenkins_url),
+            ("db_project_name", db_project_name),
+            ("notes", notes),
+        ):
+            if value is not None:
+                setattr(pt, field, value)
+        session.flush()
+
+        moved = {"devices": 0, "flash_jobs": 0, "queue_entries": 0}
+        new_code = (new_type_code or "").strip()
+        if new_code and new_code != code:
+            if len(new_code) > 64 or not all(c.isalnum() or c in "_.-" for c in new_code):
+                session.rollback()
+                return {"error": "INVALID_ARGUMENT", "message": "new_type_code 不合法"}
+            if session.get(ProductType, new_code) is not None:
+                session.rollback()
+                return {
+                    "error": "CONFLICT",
+                    "message": f"机型 {new_code} 已存在",
+                }
+            data = {c.name: getattr(pt, c.name) for c in ProductType.__table__.columns}
+            data["type_code"] = new_code
+            session.add(ProductType(**data))
+            session.flush()
+            moved["devices"] = (
+                session.query(Device)
+                .filter(Device.model_class == code)
+                .update({"model_class": new_code}, synchronize_session=False)
+            )
+            moved["flash_jobs"] = (
+                session.query(FlashJob)
+                .filter(FlashJob.product_type == code)
+                .update({"product_type": new_code}, synchronize_session=False)
+            )
+            moved["queue_entries"] = (
+                session.query(QueueEntry)
+                .filter(QueueEntry.target_type == "product", QueueEntry.target_code == code)
+                .update({"target_code": new_code}, synchronize_session=False)
+            )
+            session.expunge(pt)
+            session.delete(pt)
+            code = new_code
+
+        session.commit()
+        return {
+            "ok": True,
+            "type_code": code,
+            "created": created,
+            "renamed_from": type_code if new_code and new_code != (type_code or "").strip() else None,
+            "migrated": moved,
+        }
+    except Exception as exc:  # noqa: BLE001
+        session.rollback()
+        return {"error": "INTERNAL", "message": str(exc)[:200]}
+    finally:
+        session.close()
+
+
+@mcp.tool()
 def res_list_devices(
     model_class: str | None = None,
     status: str | None = None,
@@ -131,6 +297,7 @@ def res_apply(
     purpose: str | None = None,
     expected_minutes: int | None = None,
     priority: int = 0,
+    require: dict | None = None,
 ) -> dict:
     """申请设备（两种方式二选一）。
 
@@ -139,6 +306,10 @@ def res_apply(
     - device_id="xxx"：指定具体某台设备（兼容旧用法）。
     - target="xxx"：旧单参数用法（device_id 或 type_code），保留兼容历史客户端。
     - agent_info（必填）：调用方 Agent 名称/版本，如 "WorkBuddy/1.2"；缺失会被拒绝。
+    - require（v0.31，可选）：按能力自动挑设备，不必指定 device_id。支持键：
+      screen/lcd/touch/wifi/ethernet（bool）、wifi_chip（如 "sv6256"）、
+      hw_version_min（整数下限）。能力取设备实测的 /etc/config.gz 指纹，
+      老固件无指纹时回退机型声明的 has_screen，未知不排除。
 
     返回 GRANTED（含 adb_address）或 QUEUED（含 ticket_id 与位次）。
     """
@@ -151,6 +322,7 @@ def res_apply(
         expected_minutes=expected_minutes,
         priority=priority,
         agent_info=agent_info,
+        require=require,
     )
 
 

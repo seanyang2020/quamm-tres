@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import logging
 from datetime import timedelta
 
@@ -228,6 +230,69 @@ def _probe_pending_for_apply(
     return promoted
 
 
+def _device_caps(device, product=None) -> dict:
+    """设备能力画像：优先探测实测的 eng_config，回退 ProductType 声明。"""
+    eng = {}
+    raw = getattr(device, "eng_config", None)
+    if raw:
+        try:
+            eng = (json.loads(raw) or {}).get("eng_config") or {}
+        except (ValueError, TypeError):
+            eng = {}
+    caps = {
+        "lcd": eng.get("has_lcd"),
+        "touch": eng.get("has_touch"),
+        "wifi": eng.get("cfg_has_wifi"),
+        "ethernet": eng.get("has_ethernet"),
+        "wifi_chip": eng.get("wifi_chip"),
+        "hw_version": eng.get("hw_version"),
+        "product": eng.get("product"),
+    }
+    # 无实测指纹的老固件：退回机型声明（has_screen）与运行时 wifi 探测结果
+    if caps["lcd"] is None and product is not None:
+        caps["lcd"] = bool(product.has_screen)
+    if caps["wifi"] is None:
+        hw = getattr(device, "has_wifi", None)
+        caps["wifi"] = None if hw is None else bool(hw)
+    return caps
+
+
+def _device_matches_require(device, product, require: dict) -> tuple[bool, str | None]:
+    """按能力条件匹配设备；返回 (是否匹配, 不匹配原因)。
+
+    require 支持的键：screen / lcd / touch / wifi / ethernet（bool）、
+    wifi_chip（字符串，大小写不敏感）、hw_version_min（整数下限）。
+    能力未知（老固件无 eng_config）时不排除，避免把可用池清空。
+    """
+    if not require:
+        return True, None
+    caps = _device_caps(device, product)
+    for key in ("screen", "lcd", "touch", "wifi", "ethernet"):
+        want = require.get(key)
+        if want is None:
+            continue
+        cap_key = "lcd" if key in ("screen", "lcd") else key
+        have = caps.get(cap_key)
+        if have is None:
+            continue
+        if bool(have) != bool(want):
+            return False, f"{key}={have}(需 {want})"
+    chip = require.get("wifi_chip")
+    if chip:
+        have_chip = caps.get("wifi_chip")
+        if have_chip and str(have_chip).strip().lower() != str(chip).strip().lower():
+            return False, f"wifi_chip={have_chip}(需 {chip})"
+    hw_min = require.get("hw_version_min")
+    if hw_min not in (None, "", 0):
+        try:
+            have_hw = int(str(caps.get("hw_version") or "").strip())
+            if have_hw < int(str(hw_min).strip()):
+                return False, f"hw_version={have_hw}(需 >= {hw_min})"
+        except (TypeError, ValueError):
+            pass
+    return True, None
+
+
 def _find_available(
     session: Session,
     target_type: str,
@@ -237,6 +302,7 @@ def _find_available(
     email: str | None = None,
     agent_label: str | None = None,
     is_admin: bool = False,
+    require: dict | None = None,
 ) -> tuple[Device | None, bool, dict | None]:
     """按可用池口径找设备，并做 v0.14 固件版本门禁。
 
@@ -268,6 +334,23 @@ def _find_available(
     ]
     if not candidates:
         return None, False, None
+    if require:
+        matched, rejected = [], {}
+        for d in candidates:
+            ok, why = _device_matches_require(d, product, require)
+            if ok:
+                matched.append(d)
+            else:
+                rejected[d.device_id] = why
+        if not matched:
+            return None, True, {
+                "state": "REQUIRE_MISS",
+                "require_miss": True,
+                "require": require,
+                "rejected": rejected,
+                "reason": "；".join(f"{k}: {v}" for k, v in list(rejected.items())[:4]),
+            }
+        candidates = matched
 
     last_verdict: dict | None = None
     for device in candidates:
@@ -439,6 +522,7 @@ def apply(
     expected_minutes: int | None = None,
     priority: int = 0,
     agent_info: str | None = None,
+    require: dict | None = None,
 ) -> dict:
     principal = auth.principal
     credential_id = auth.credential.id
@@ -514,6 +598,7 @@ def apply(
     device, had_candidates, verdict = _find_available(
         session, target_type, target_code, gate_product,
         email=principal.email, agent_label=agent_info, is_admin=auth.is_admin,
+        require=require,
     )
     if device is None and not had_candidates:
         # v0.28：没有可用设备时，若还有待检设备就先现场探一次，探通即参与本次分配
@@ -524,8 +609,20 @@ def apply(
             device, had_candidates, verdict = _find_available(
                 session, target_type, target_code, gate_product,
                 email=principal.email, agent_label=agent_info, is_admin=auth.is_admin,
+                require=require,
             )
     if device is None and had_candidates:
+        if (verdict or {}).get("require_miss"):
+            raise DomainError(
+                "NO_MATCHING_DEVICE",
+                f"{target_code} 没有满足能力要求的可用设备："
+                f"{(verdict or {}).get('reason') or '不匹配'}",
+                {
+                    "target_code": target_code,
+                    "require": (verdict or {}).get("require"),
+                    "rejected": (verdict or {}).get("rejected"),
+                },
+            )
         # 有可用设备但固件版本全部不满足：不排队，明确报无兼容设备
         reason = (verdict or {}).get("reason") or "固件版本不满足要求"
         raise DomainError(
