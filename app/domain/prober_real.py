@@ -38,7 +38,8 @@ logger = logging.getLogger(__name__)
 ADB_TIMEOUT = 5  # 单条 adb 命令默认超时（对齐 adbscan；并发扫描时由调用方传入更大值）
 # v0.30.1：adb connect 单独放宽。冷启动 adb server（或对上位旧版 client 重起 server）
 # 实测会吃掉 5s，导致巡检把在线设备误判 L0/offline。
-ADB_CONNECT_TIMEOUT = 5  # TCP 预检已确认端口开，正常 adbd 秒连；5s 足够，避免挂死设备吃满超时
+ADB_CONNECT_TIMEOUT = 15  # 端口预检已滤掉不可达设备，剩下的要给足 adb 握手时间：
+# adbd 冷启/刚重启时首次 connect 常需 10s+，5s 会一直 rc=124 导致设备永远无法自动找回
 
 # v0.30.1：TCP 端口预检窗口。不可达设备（离线占多数）用 socket 亚秒级排除，
 # 不再为每台付满 adb connect 超时；adb 只用于端口已通的设备。
