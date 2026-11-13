@@ -31,7 +31,7 @@
       "size": 9374384,
       "critical": true,
       "source_repo": "~/github_gitee/linux-adb-update/prebuilt/xosadb2update",
-      "note": "必须位于 systemd unit PATH 最前的 ~/bin；同机旧副本 /usr/bin/xosadb2update=1.0.2、/usr/local/sbin/xosadb2update=1.0.34 会被 PATH 顺序遮蔽，不要依赖它们"
+      "note": "201 双位置：~/bin（worker PATH 首位，实际生效）+ /usr/local/sbin（root 一致副本），升级后两处都要更新；/usr/bin 旧副本已删，不要再放。部署流程见 linux-adb-update/doc/BUILD_AND_DEPLOY.md"
     },
     {
       "name": "adb",
