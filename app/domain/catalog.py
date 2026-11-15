@@ -400,6 +400,10 @@ def _apply_probe_result(
     probed_version = (result.extra or {}).get("firmware_version")
     if probed_version:
         device.firmware_version = probed_version
+    # v0.31：注册/手动探测路径也回填工程名（此前只有巡检路径写，project_name 长期为空）
+    probed_project = (result.extra or {}).get("project_name")
+    if probed_project:
+        device.project_name = probed_project
     _persist_eng_config(device, result)
     promoted = demoted = False
     if result.reachable_l3:

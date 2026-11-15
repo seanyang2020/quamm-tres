@@ -163,7 +163,7 @@ def audit_pool(session: Session) -> dict[str, Any]:
         )
 
     total = len(rows)
-    online = len([r for r in rows if r["health_level"] == "L3"])
+    online = len([r for r in rows if r["health_level"] in ("L2", "L3")])
     fp = [r for r in rows if r["state"] == "fingerprinted"]
     legacy = [r for r in rows if r["state"] == "legacy"]
     unknown = [r for r in rows if r["state"] == "unknown"]
