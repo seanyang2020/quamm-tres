@@ -99,6 +99,11 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
         probed_version = (result.extra or {}).get("firmware_version")
         if probed_version:
             d.firmware_version = probed_version
+        # v0.31：工程名回填。探测早已在 extra.project_name 返回，此前从未落库，
+        # 导致设备表/MCP 的 project_name 永远为空，配置检查只能靠 model_class 猜。
+        probed_project = (result.extra or {}).get("project_name")
+        if probed_project:
+            d.project_name = probed_project
         _persist_eng_config(d, result)
 
         if result.reachable_l3:

@@ -253,6 +253,8 @@ def _public_device(d: Device, session: Session, for_agent: bool = True,
                    holder_email: str | None = None) -> dict:
     """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。"""
     allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
+    from app.domain import consistency
+
     data = {
         "device_id": d.device_id,
         "display_name": d.display_name,
@@ -270,6 +272,8 @@ def _public_device(d: Device, session: Session, for_agent: bool = True,
         "locked": bool(d.locked),
         "holder_email": holder_email,
     }
+    # v0.31：工程配置指纹与一致性结论（Agent 视图也给精简版，便于申请前自查）
+    data["config"] = consistency.check_device(session, d)
     if not for_agent:
         data.update(
             {

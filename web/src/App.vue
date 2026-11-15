@@ -338,6 +338,24 @@ const deviceEditRow = ref(null)
 const deviceEditAgentInfo = ref({})
 const deviceEditAgentSeen = ref(new Set())
 const deviceEditAgentAuto = ref(new Set())
+function cfgTagType(verdict) {
+  if (verdict === 'ok') return 'success'
+  if (verdict === 'duplicate') return 'danger'
+  if (verdict === 'mismatch_defconfig' || verdict === 'mismatch_model') return 'warning'
+  return 'info'
+}
+
+function cfgTooltip(cfg) {
+  if (!cfg) return ''
+  const parts = []
+  if (cfg.defconfig) parts.push('defconfig: ' + cfg.defconfig)
+  if (cfg.sha8) parts.push('sha256: ' + cfg.sha8)
+  if (cfg.git) parts.push('git: ' + cfg.git)
+  if (cfg.built_at) parts.push('构建: ' + cfg.built_at + (cfg.host ? ' @' + cfg.host : ''))
+  if (cfg.issues && cfg.issues.length) parts.push('⚠ ' + cfg.issues.join('；'))
+  return parts.join('\n')
+}
+
 function canEditDevice(row) {
   return !!me.value && (me.value.role === 'admin' || row.registered_by === me.value.email)
 }
@@ -1761,7 +1779,7 @@ const legendRole = [
             </div>
           </div>
           <div class="device-table-wrap">
-          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1315px">
+          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1435px">
             <el-table-column label="操作" width="260">
               <template #default="{ row }">
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small"
@@ -1781,6 +1799,21 @@ const legendRole = [
               <template #default="{ row }">{{ row.register_agent || '-' }}</template>
             </el-table-column>
             <el-table-column prop="health_level" label="健康" width="55" />
+            <el-table-column label="配置" width="120">
+              <template #default="{ row }">
+                <el-tooltip v-if="row.config && row.config.state === 'fingerprinted'"
+                  :content="cfgTooltip(row.config)" placement="top">
+                  <el-tag size="small" :type="cfgTagType(row.config.verdict)">
+                    {{ row.config.defconfig_short || '?' }}
+                  </el-tag>
+                </el-tooltip>
+                <el-tooltip v-else-if="row.config && row.config.state === 'legacy'"
+                  content="能连但无 build-info（老固件）" placement="top">
+                  <el-tag size="small" type="info" effect="plain">老固件</el-tag>
+                </el-tooltip>
+                <span v-else style="color: #c0c4cc">-</span>
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="110">
               <template #default="{ row }">
                 <el-tag size="small" :type="statusTag[row.status] || 'info'">{{ row.status }}</el-tag>
