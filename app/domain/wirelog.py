@@ -568,6 +568,8 @@ def get_node(session, node_id):
         "config": node.config_json,
         "ports": [
             {"slot": b.slot, "tty": b.tty_name, "baud": b.baud,
+             "endpoint": b.endpoint, "com_name": b.com_name,
+             "probe": _json_or_none(b.probe_json),
              "shell_reachable": b.shell_reachable, "shell_mac": b.shell_mac,
              "shell_ip": b.shell_ip, "bound_device_id": b.bound_device_id,
              "bound_device": _device_summary(session, b.bound_device_id),
