@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal, get_session
 from app.domain import wirelog
 from app.domain.catalog import DomainError
+from app.domain.prober_uart import RAW_TCP_AUTH
 from app.models import Credential, Principal, WireLogNode, WireLogPortBinding
 from app.utils import utcnow
 from app import web_auth
@@ -198,9 +199,10 @@ def _ws_identity(session, ws):
 async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
     """把浏览器接到日志机某一路串口的 raw TCP 交互口（简易版 serial-bridge lsb）。
 
-    协议（serialhub 1.0.0 实测）：TCP 连上 -> 出现 ``login: `` ->
-    发 ``<local_token>\\n`` -> 回 ``OK`` -> 发 ``WRITE\\n`` -> 回 ``WRITE OK``
-    拿到写锁后，后续字节直通被串联口。行结束必须是 LF（CR 不认）。
+    协议：serialhub 默认 ``raw_tcp_auth=0``，raw TCP 端口是**裸串口字节流**——
+    连上即可收发，没有 ``login:`` 提示、也不认 ``WRITE`` 控制语义，与 PC 端宿主程序一致。
+    仅当目标日志机仍配 ``raw_tcp_auth=1``（``RAW_TCP_AUTH=True``）才走旧的
+    ``login: -> token -> OK -> WRITE -> WRITE OK`` 流程。
 
     前端消息（JSON）：上行 ``{"type":"data","data":"..."}``；下行
     ``{"type":"out","data":"..."}`` / ``{"type":"status",...}`` / ``{"type":"error",...}``。
@@ -273,33 +275,45 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         return buf.decode("utf-8", "replace")
 
     try:
-        banner = await read_until("login:", 3.0)
-        if banner:
-            await send({"type": "out", "data": banner})
-        if token:
-            await loop.sock_sendall(sock, (token + "\n").encode())
-            resp = await read_until("OK", SHELL_LOGIN_TIMEOUT_S)
-            if resp:
-                await send({"type": "out", "data": resp})
-            if "OK" not in resp:
-                await send({"type": "status", "state": "login-failed",
-                            "message": "serialhub 登录失败（local_token 可能已轮换）"})
-        if can_write:
-            await loop.sock_sendall(sock, b"WRITE\n")
-            resp = await read_until("WRITE OK", SHELL_LOGIN_TIMEOUT_S)
-            if resp:
-                await send({"type": "out", "data": resp})
-            writable = "WRITE OK" in resp
-            await send({"type": "status",
-                        "state": "ready" if writable else "readonly",
-                        "can_write": writable,
-                        "message": "" if writable else "写锁未拿到（可能被其它会话占用），当前只读"})
+        if not RAW_TCP_AUTH:
+            # 裸 TCP：连上即是串口字节流。送一个回车唤醒 shell 并吃掉可能残留的半行，
+            # 然后直接进入交互（写权限由 TRES 账号角色决定，不由串口服务器判定）。
+            await loop.sock_sendall(sock, b"\r")
+            await asyncio.sleep(0.2)
+            tail = await read_until("", 0.3)
+            if tail:
+                await send({"type": "out", "data": tail})
+            await send({"type": "status", "state": "ready",
+                        "can_write": bool(can_write),
+                        "message": "" if can_write else "当前账号无写授权，只读查看输出"})
         else:
-            await send({"type": "status", "state": "ready", "can_write": False,
-                        "message": "当前账号无写授权，只读查看输出"})
+            banner = await read_until("login:", 3.0)
+            if banner:
+                await send({"type": "out", "data": banner})
+            if token:
+                await loop.sock_sendall(sock, (token + "\n").encode())
+                resp = await read_until("OK", SHELL_LOGIN_TIMEOUT_S)
+                if resp:
+                    await send({"type": "out", "data": resp})
+                if "OK" not in resp:
+                    await send({"type": "status", "state": "login-failed",
+                                "message": "serialhub 登录失败（local_token 可能已轮换）"})
+            if can_write:
+                await loop.sock_sendall(sock, b"WRITE\n")
+                resp = await read_until("WRITE OK", SHELL_LOGIN_TIMEOUT_S)
+                if resp:
+                    await send({"type": "out", "data": resp})
+                writable = "WRITE OK" in resp
+                await send({"type": "status",
+                            "state": "ready" if writable else "readonly",
+                            "can_write": writable,
+                            "message": "" if writable else "写锁未拿到（可能被其它会话占用），当前只读"})
+            else:
+                await send({"type": "status", "state": "ready", "can_write": False,
+                            "message": "当前账号无写授权，只读查看输出"})
     except Exception as exc:                     # noqa: BLE001
         sock.close()
-        await send({"type": "error", "message": f"串口登录阶段失败：{exc}"})
+        await send({"type": "error", "message": f"串口接入阶段失败：{exc}"})
         await ws.close(code=1011)
         return
 

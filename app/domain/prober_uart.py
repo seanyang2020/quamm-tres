@@ -1,8 +1,10 @@
 """经 WireLog 串口（serialhub raw TCP）的 uart 探测（ADR-9）。
 
 ADB 不可达时的兜底通道：经 ``wl_port_binding`` 找到设备所在日志机的
-raw TCP（node.ip:9001，登录式 token），登录后 WRITE 拿 TTL 锁，向被测
-设备 shell 写短命令并按定界块解析。不主动写则无回包，故必须写命令。
+raw TCP（node.ip:9001）。serialhub 默认 raw_tcp_auth=0，端口是**裸串口字节流**
+（不发 login: 提示、不认 WRITE 控制语义），与 PC 端宿主程序口径一致；
+因此连上直接向被测设备 shell 写短命令，按定界块解析。
+``RAW_TCP_AUTH`` 置 True 可回退到旧登录式部署（raw_tcp_auth=1）。
 
 两种模式（周期/写入量分离）：
 - keepalive（轻量）：仅 echo 探针，确认 shell 可达。
@@ -24,10 +26,16 @@ DEFAULT_RAW_TCP_PORT = 9001
 CONNECT_TIMEOUT_S = 3.0
 READ_SLICE_S = 0.1
 
+# serialhub raw_tcp_auth=0（默认）：裸 TCP，不做登录校验。
+# 仅当目标日志机仍配置 raw_tcp_auth=1 时才需要置 True。
+RAW_TCP_AUTH = False
+
 
 class UartProber:
-    def __init__(self, connect_timeout: float = CONNECT_TIMEOUT_S):
+    def __init__(self, connect_timeout: float = CONNECT_TIMEOUT_S,
+                 auth: bool = RAW_TCP_AUTH):
         self.connect_timeout = connect_timeout
+        self.auth = auth
 
     # -------------------------------------------------- 定位
     def _endpoint_for(self, session, device_id: str):
@@ -74,7 +82,8 @@ class UartProber:
         ep = self._endpoint_for(session, device_id)
         if ep is None:
             logger.debug("uart: no binding for %s", device_id)
-            return ProbeResult(level=HealthLevel.L0, extra={"uart": "no_binding"})
+            return ProbeResult(level=HealthLevel.L0,
+                               extra={"uart": "no_binding", "raw_auth": self.auth})
         return self._probe(ep["host"], ep["port"], ep["token"], timeout, full)
 
     def probe(self, host, port=DEFAULT_RAW_TCP_PORT, timeout=8,
@@ -86,18 +95,25 @@ class UartProber:
         try:
             conn = socket.create_connection((host, port), timeout=self.connect_timeout)
             conn.settimeout(READ_SLICE_S)
-            self._read_until(conn, "login:", 2.0)
-            conn.sendall((str(token) + "\n").encode())
-            welcome = self._read_until(conn, "OK", 2.0)
-            if "OK" not in welcome:
-                return ProbeResult(level=HealthLevel.L0,
-                                   extra={"uart": "login_failed"})
-            # 拿 TTL 写锁，才能向 shell 写命令
-            self._cmd(conn, "WRITE", wait=0.5)
-            lock = self._read_until(conn, "WRITE OK", 2.0)
-            if "WRITE OK" not in lock:
-                return ProbeResult(level=HealthLevel.L0,
-                                   extra={"uart": "lock_failed"})
+            if self.auth:
+                # 兼容 raw_tcp_auth=1 的旧部署：登录 + WRITE 取 TTL 锁
+                self._read_until(conn, "login:", 2.0)
+                conn.sendall((str(token) + "\n").encode())
+                welcome = self._read_until(conn, "OK", 2.0)
+                if "OK" not in welcome:
+                    return ProbeResult(level=HealthLevel.L0,
+                                       extra={"uart": "login_failed"})
+                self._cmd(conn, "WRITE", wait=0.5)
+                lock = self._read_until(conn, "WRITE OK", 2.0)
+                if "WRITE OK" not in lock:
+                    return ProbeResult(level=HealthLevel.L0,
+                                       extra={"uart": "lock_failed"})
+            else:
+                # 裸 TCP：连上即是串口字节流。先送一个回车唤醒 shell，
+                # 并吃掉上次会话可能残留的半行，再开始发命令。
+                conn.sendall(b"\r")
+                time.sleep(0.2)
+                self._read_until(conn, None, 0.3)
 
             self._cmd(conn, "echo BEG", wait=0.3)
             if full:
