@@ -338,6 +338,53 @@ const deviceEditRow = ref(null)
 const deviceEditAgentInfo = ref({})
 const deviceEditAgentSeen = ref(new Set())
 const deviceEditAgentAuto = ref(new Set())
+const cfgAuditBusy = ref(false)
+async function showConfigAudit() {
+  cfgAuditBusy.value = true
+  try {
+    const r = await api('/api/config-audit')
+    const lines = []
+    lines.push('设备总数 ' + r.total + ' 台，当前在线 ' + r.online + ' 台')
+    lines.push('配置指纹 ' + r.fingerprinted + ' 台（占全池 ' + r.coverage.vs_total_pct
+      + '%，占在线 ' + r.coverage.vs_online_pct + '%）')
+    lines.push('老固件 ' + r.legacy + ' 台，未知 ' + r.unknown + ' 台')
+    if (r.duplicate_groups && r.duplicate_groups.length) {
+      lines.push('')
+      lines.push('⚠ 重复登记 ' + r.duplicate_groups.length + ' 组：')
+      r.duplicate_groups.forEach(g => lines.push('  ' + g.join('  <->  ')))
+    }
+    if (r.mismatches && r.mismatches.length) {
+      lines.push('')
+      lines.push('⚠ 机型/配置不符 ' + r.mismatches.length + ' 台：')
+      r.mismatches.forEach(m => lines.push('  ' + m.device_id + ' [' + (m.model_class || '-') + '] '
+        + (m.issues || []).join('；')))
+    }
+    const defs = Object.keys(r.by_defconfig || {})
+    if (defs.length) {
+      lines.push('')
+      lines.push('配置分布：')
+      defs.forEach(k => {
+        const v = r.by_defconfig[k]
+        lines.push('  ' + k + '：' + v.count + ' 台，' + v.shas.length + ' 种 sha'
+          + (v.shas.length > 1 ? '（同配置名不同内容）' : ''))
+      })
+    }
+    const gits = Object.keys(r.git_versions || {})
+    if (gits.length) {
+      lines.push('')
+      lines.push('git 版本：' + Object.entries(r.git_versions).map(([k, v]) => k + '×' + v).join('，'))
+    }
+    await ElMessageBox.alert(lines.join('\n'), '全池配置体检', {
+      customStyle: { whiteSpace: 'pre-line', maxWidth: '600px' },
+      confirmButtonText: '知道了',
+    })
+  } catch (e) {
+    ElMessage.error('体检失败：' + (e && e.message ? e.message : e))
+  } finally {
+    cfgAuditBusy.value = false
+  }
+}
+
 function cfgTagType(verdict) {
   if (verdict === 'ok') return 'success'
   if (verdict === 'duplicate') return 'danger'
@@ -1757,6 +1804,7 @@ const legendRole = [
             <el-button size="small" @click="backToOverview">返回概况</el-button>
             <h2 style="margin: 0">{{ detailTitle }}</h2>
             <el-tag size="small" type="info">共 {{ detailCounts.all }} 台</el-tag>
+            <el-button size="small" plain :loading="cfgAuditBusy" @click="showConfigAudit">配置体检</el-button>
             <el-button v-if="me.role === 'admin'" type="primary" style="margin-left: auto"
               @click="openDeviceAdd(prefillType)">＋ 添加 {{ detailTitle }} 设备</el-button>
             <el-button v-else type="primary" plain disabled style="margin-left: auto; cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
