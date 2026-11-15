@@ -77,8 +77,10 @@ ports_json() {
     mac=${probe%%|*}; ip=${probe##*|}
     reachable=false
     [ -n "$mac" ] && reachable=true
-    printf '{"slot":%d,"tty":"%s","baud":115200,"shell_reachable":%s' \
-      "$slot" "$tty" "$reachable"
+    # v0.32：补 endpoint/com/probe，与 PC 端宿主同一套串口资源口径。
+    # endpoint 端口规则对齐 raw_tcp_base(9000)+slot，客户端直连不再登录。
+    printf '{"slot":%d,"tty":"%s","com":"%s","endpoint":"tcp://%s:%d","baud":115200,"shell_reachable":%s,"probe":{"open":true,"probe_via":"uart_shell","checked_at":"%s"}' \
+      "$slot" "$tty" "$(basename "$tty")" "${IP:-127.0.0.1}" "$((9000 + slot))" "$reachable" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     [ -n "$mac" ] && printf ',"shell_mac":"%s"' "$mac"
     [ -n "$ip" ] && printf ',"shell_ip":"%s"' "$ip"
     printf '}'

@@ -399,6 +399,16 @@ def _upsert_binding(session, node, port):
         binding.shell_mac = port["shell_mac"]
     if port.get("shell_ip"):
         binding.shell_ip = port["shell_ip"]
+    # v0.32：TCP COM 资源接入。endpoint 是客户端直连地址，com 是宿主侧物理口名，
+    # probe 是宿主自检快照（能否打开 / 多久收到回包 / 读到的标识）。
+    if port.get("endpoint"):
+        binding.endpoint = str(port["endpoint"]).strip()
+    if port.get("com") or port.get("port_name"):
+        binding.com_name = str(port.get("com") or port.get("port_name")).strip()
+    if port.get("health_state"):
+        binding.health_state = str(port["health_state"])
+    if port.get("probe") is not None:
+        binding.probe_json = json.dumps(port["probe"], ensure_ascii=False)[:8000]
     binding.last_checked_at = utcnow()
     return binding
 
@@ -657,3 +667,152 @@ def refresh_status(session):
         elif age > HEARTBEAT_INTERVAL_S:
             node.status = "stale"
     session.commit()
+
+
+# ---------------------------------------------------- v0.32 TCP COM 资源接入
+
+def provision_host(session, display_name=None, model_class=None,
+                   operator=None, note=None):
+    """给 PC 端串口宿主签发接入凭据（不需要 adb 写 uboot-env）。
+
+    与 enroll 的区别：enroll 假定宿主是嵌入式日志机、要经 adb 把 token 写进
+    uboot-env；PC 端是普通 Windows 机器，token 直接落到本地配置文件即可。
+    明文 token 只在返回值出现一次，库内只存哈希。
+    """
+    now = utcnow()
+    node_id = new_id("wl", 8)
+    plain = new_token()
+    node = WireLogNode(
+        node_id=node_id,
+        display_name=display_name or node_id,
+        model_class=model_class,
+        node_token_hash=hash_token(plain),
+        token_prefix=token_prefix(plain),
+        hmac_key=secrets.token_hex(16),
+        status="enrolled",
+        provisioned_at=now,
+        created_at=now,
+    )
+    session.add(node)
+    session.flush()  # 先落父行，满足 wl_enrollment 外键
+    session.add(WireLogEnrollment(
+        node_id=node_id, operator=operator, uboot_var=None, result="ok",
+        detail=note or "PC 串口宿主：token 直接下发到本地配置", created_at=now,
+    ))
+    _audit(session, node_id, "provision_host", actor=operator,
+           detail={"model_class": model_class, "note": note})
+    session.commit()
+    return {
+        "node_id": node_id,
+        "node_token": plain,                       # 一次性明文
+        "hmac_key": node.hmac_key,
+        "register_url": "/api/wirelog/register",
+        "heartbeat_url": "/api/wirelog/heartbeat",
+        "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
+    }
+
+
+def _json_or_none(raw):
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, TypeError):
+        return raw
+
+
+def list_serial_resources(session, node_id=None):
+    """串口资源清单：宿主 → 各路串口 → 是否已绑定设备。"""
+    q = session.query(WireLogPortBinding)
+    if node_id:
+        q = q.filter(WireLogPortBinding.node_id == node_id)
+    rows = q.order_by(WireLogPortBinding.node_id, WireLogPortBinding.slot).all()
+    nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
+    out = []
+    for r in rows:
+        node = nodes.get(r.node_id)
+        dev = session.get(Device, r.bound_device_id) if r.bound_device_id else None
+        out.append({
+            "node_id": r.node_id,
+            "node_name": node.display_name if node else None,
+            "node_status": node.status if node else None,
+            "node_ip": node.ip if node else None,
+            "slot": r.slot,
+            "endpoint": r.endpoint,
+            "com_name": r.com_name,
+            "tty_name": r.tty_name,
+            "baud": r.baud,
+            "shell_reachable": r.shell_reachable,
+            "shell_ip": r.shell_ip,
+            "shell_mac": r.shell_mac,
+            "health_state": r.health_state,
+            "last_checked_at": (r.last_checked_at.isoformat()
+                                if r.last_checked_at else None),
+            "bound_device_id": r.bound_device_id,
+            "bound_device": (None if dev is None else {
+                "device_id": dev.device_id,
+                "display_name": dev.display_name,
+                "model_class": dev.model_class,
+                "status": dev.status,
+                "health_level": dev.health_level,
+                "source": dev.source,
+            }),
+            "probe": _json_or_none(r.probe_json),
+        })
+    return out
+
+
+def create_device_from_binding(session, node_id, slot, owner=None,
+                               display_name=None, position_code=None,
+                               actor=None):
+    """把一路串口落地成一台「只提供串口」的独立设备（无 ADB）。
+
+    这类设备靠 tcp com 探测判活（宿主每轮上报 shell_reachable），
+    探得到就转正进可用池；没有 ip 也不走 adb 分支。
+    """
+    binding = _get_binding_or_raise(session, node_id, slot)
+    if binding.bound_device_id:
+        dev = session.get(Device, binding.bound_device_id)
+        if dev is not None and dev.status != DeviceStatus.RETIRED:
+            raise DomainError(
+                "WL_SLOT_ALREADY_BOUND",
+                f"路 {slot} 已绑定设备 {binding.bound_device_id}",
+            )
+    now = utcnow()
+    name = display_name or (
+        f"{binding.com_name or binding.tty_name or ('slot' + str(slot))}@{node_id}"
+    )
+    device = Device(
+        device_id=new_device_id(),
+        display_name=name,
+        model_class=None,
+        owner=owner or actor or "system",
+        position_code=position_code,
+        status=DeviceStatus.PENDING,
+        health_level=HealthLevel.L0,
+        registered_by=actor,
+        register_channel=RegisterChannel.SERIAL_HOST,
+        source="serial",
+        ip=None,
+        created_at=now,
+    )
+    session.add(device)
+    session.flush()
+    binding.bound_device_id = device.device_id
+    _audit(session, node_id, "create_device_from_serial", actor=actor,
+           detail={"slot": slot, "device": device.device_id,
+                   "endpoint": binding.endpoint, "com": binding.com_name})
+    session.commit()
+    return {"device_id": device.device_id, "node_id": node_id, "slot": slot,
+            "display_name": name, "source": "serial"}
+
+
+def detach_binding(session, node_id, slot, actor=None):
+    """解绑：把该路串口从设备上摘下来（设备本体不删）。"""
+    binding = _get_binding_or_raise(session, node_id, slot)
+    old = binding.bound_device_id
+    binding.bound_device_id = None
+    _audit(session, node_id, "detach_serial_slot", actor=actor,
+           detail={"slot": slot, "detached_device_id": old})
+    session.commit()
+    return {"node_id": node_id, "slot": slot, "detached_device_id": old}

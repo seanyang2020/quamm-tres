@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.domain.probe import ProbeResult, probe_device
 from app.domain.prober_real import tcp_port_open
-from app.models import Device, Lease, PatrolRun
+from app.models import Device, Lease, PatrolRun, WireLogPortBinding
 from app.utils import new_run_id, utcnow
 
 
@@ -81,11 +81,15 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
     failures: list[dict] = []
 
     for d in devices:
-        if not d.ip:
+        # v0.32：只提供串口的独立设备（source=serial）没有 ADB，按它绑定的那路
+        # 串口探测结果记账；既不能走 adb 分支，也不能因为没 ip 被直接跳过。
+        if d.source == "serial":
+            result = _serial_device_result(session, d)
+        elif not d.ip:
             continue
         # device 表的 ip/adb_port 即探测地址；端口缺失时按 ip:5555 组。
         # 按 device.source 分流：mock 永远走 HTTP /probe，real 走 adb 读文件。
-        if d.source == "real" and port_open.get(d.device_id) is False:
+        elif d.source == "real" and port_open.get(d.device_id) is False:
             # 端口不通：直接用 L0 结果记账，跳过 adb（pending 的敲门恢复分支仍会照常尝试）。
             result = ProbeResult(level=HealthLevel.L0)
         else:
@@ -191,3 +195,28 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
     session.add(run)
     session.commit()
     return run
+
+
+def _serial_device_result(session: Session, d: Device):
+    """只提供串口的设备：采信宿主上报的串口可达性，不在 TRES 侧重复连串口。
+
+    资源在人家机器上（PC 或日志机），TRES 主动去连既越权也没必要；
+    宿主每轮 heartbeat/register 上报 ports[].shell_reachable（实测能否收到回包）。
+    """
+    b = (
+        session.query(WireLogPortBinding)
+        .filter(WireLogPortBinding.bound_device_id == d.device_id)
+        .order_by(WireLogPortBinding.slot)
+        .first()
+    )
+    if b is None:
+        return ProbeResult(level=HealthLevel.L0, extra={"reason": "no_binding"})
+    if b.shell_reachable:
+        return ProbeResult(
+            level=HealthLevel.L3,
+            extra={"serial_endpoint": b.endpoint, "com": b.com_name,
+                   "via": "serial_host"},
+        )
+    return ProbeResult(level=HealthLevel.L0,
+                       extra={"reason": "serial_unreachable",
+                              "com": b.com_name, "endpoint": b.endpoint})

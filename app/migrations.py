@@ -103,6 +103,13 @@ _PRODUCT_TYPE_BUILD_COLUMNS = {
     "build_server_id": "VARCHAR(32)",
 }
 
+# wl_port_binding 表新增列（v0.32 TCP COM 资源接入）-> DDL 片段（inspect 判列后 ADD，幂等）
+_WL_PORT_COLUMNS = {
+    "endpoint": "VARCHAR(128)",
+    "com_name": "VARCHAR(64)",
+    "probe_json": "TEXT",
+}
+
 # v0.14：当前 5 个真实机型的 DB 工程名（用 dbxostest.py -ls + 设备 /etc/fw_version
 # 构建号对照确认）。只回填空值，不覆盖人工修改。
 _DB_PROJECT_BACKFILL = {
@@ -131,6 +138,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "product_type", _PRODUCT_TYPE_BUILD_COLUMNS)
     _rebuild_build_server_for_principal(session)
     _ensure_device_position_index(session)
+    _ensure_columns(session, "wl_port_binding", _WL_PORT_COLUMNS)
 
 
 def _ensure_device_position_index(session: Session) -> None:

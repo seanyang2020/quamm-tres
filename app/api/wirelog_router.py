@@ -348,3 +348,47 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
             pass
 
 
+# ------------------------------------ v0.32 TCP COM 资源接入（PC 宿主 / 独立串口设备）
+
+@router.post("/nodes/provision")
+def post_provision_host(payload: dict = Body(default={}),
+                        session: Session = Depends(get_session),
+                        identity=Depends(web_auth.require_admin)):
+    """给 PC 端串口宿主签发接入凭据（明文 token 只返回一次）。"""
+    return _domain_http(
+        wirelog.provision_host, session,
+        display_name=payload.get("display_name"),
+        model_class=payload.get("model_class"),
+        operator=identity.email,
+        note=payload.get("note"),
+    )
+
+
+@router.get("/serial-resources")
+def get_serial_resources(node_id: str | None = None,
+                         session: Session = Depends(get_session),
+                         identity=Depends(web_auth.require_login)):
+    return {"resources": wirelog.list_serial_resources(session, node_id)}
+
+
+@router.post("/nodes/{node_id}/slots/{slot}/create-device")
+def post_create_serial_device(node_id: str, slot: int,
+                              payload: dict = Body(default={}),
+                              session: Session = Depends(get_session),
+                              identity=Depends(web_auth.require_admin)):
+    """把一路串口落地成独立设备（无 ADB，靠串口探测判活）。"""
+    return _domain_http(
+        wirelog.create_device_from_binding, session, node_id, slot,
+        owner=payload.get("owner"),
+        display_name=payload.get("display_name"),
+        position_code=payload.get("position_code"),
+        actor=identity.email,
+    )
+
+
+@router.post("/nodes/{node_id}/slots/{slot}/detach")
+def post_detach_serial_slot(node_id: str, slot: int,
+                            session: Session = Depends(get_session),
+                            identity=Depends(web_auth.require_admin)):
+    return _domain_http(wirelog.detach_binding, session, node_id, slot,
+                        actor=identity.email)

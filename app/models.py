@@ -636,6 +636,12 @@ class WireLogPortBinding(Base):
     )
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
+    # v0.32：串口以 TCP COM 资源形式接入（PC 端 standalone 串口宿主 / WireLog）。
+    # 客户端直连 endpoint，不经 MCP；这里只描述「资源在哪、叫什么、自检到什么」。
+    endpoint: Mapped[str | None] = mapped_column(String(128), nullable=True)   # tcp://ip:port
+    com_name: Mapped[str | None] = mapped_column(String(64), nullable=True)    # COM11 / ttyUSB0
+    probe_json: Mapped[str | None] = mapped_column(Text, nullable=True)        # 宿主自检快照
+
     __table_args__ = (
         Index("uq_wl_port", "node_id", "slot", unique=True),
     )

@@ -96,6 +96,8 @@ class RegisterChannel:
     ADMIN_WEB = "admin_web"
     MCP_AGENT = "mcp_agent"
     WIRELOG_UART = "wirelog_uart"
+    # v0.32：经 PC/WireLog 宿主注册的串口资源落地成的设备
+    SERIAL_HOST = "serial_host"
 
 
 # 可申请状态（available 且在池内、L3）
