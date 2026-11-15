@@ -275,6 +275,14 @@ def devices(
     return catalog.list_devices(session, model_class=model_class, status=status, limit=limit, for_agent=False)
 
 
+@router.get("/config-audit")
+def config_audit(session: Session = Depends(get_session)):
+    """全池工程配置体检（只读）：覆盖率 / 错配 / 重复登记 / 指纹分布。"""
+    from app.domain import consistency
+
+    return consistency.audit_pool(session)
+
+
 @router.get("/devices/{device_id}")
 def device_detail(device_id: str, session: Session = Depends(get_session)):
     try:

@@ -286,6 +286,26 @@ def res_list_devices(
 
 
 @mcp.tool()
+def res_config_audit() -> dict:
+    """全池工程配置体检（只读）：覆盖率、机型-配置错配、重复登记、指纹分布。
+
+    回答「池里现在哪些设备带的固件能自证配置」：
+    - fingerprinted/legacy/unknown 三态与覆盖率（按全池、按在线两种口径）
+    - duplicate_groups：同 IP 或同 config_sha256 的重复登记
+    - mismatches：登记机型与实况矛盾、或实际 defconfig 与机型期望不符
+    - by_defconfig / git_versions：同配置不同 sha、固件版本分布
+    """
+    from app.db import SessionLocal
+    from app.domain import consistency
+
+    session = SessionLocal()
+    try:
+        return consistency.audit_pool(session)
+    finally:
+        session.close()
+
+
+@mcp.tool()
 def res_list_positions() -> list[dict]:
     """查询所有已注册设备的位置清单（含 IP / ADB 地址 / 责任人 / 状态）。
 

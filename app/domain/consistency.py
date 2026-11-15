@@ -68,7 +68,11 @@ def check_device(session: Session, d: Device) -> dict[str, Any]:
 
     if bi or defconfig:
         state = "fingerprinted"
-    elif d.last_probe_at is not None:
+    elif d.health_level in ("L2", "L3"):
+        # 当前可达但不能读 build-info：老固件
+        state = "legacy"
+    elif d.last_seen_at is not None:
+        # 曾经可达、现在离线：仍按老固件记录，但离线不计入在线覆盖率
         state = "legacy"
     else:
         state = "unknown"
@@ -125,4 +129,102 @@ def check_device(session: Session, d: Device) -> dict[str, Any]:
         "expected_short": defconfig_short(expected),
         "verdict": verdict,
         "issues": issues,
+    }
+
+
+def audit_pool(session: Session) -> dict[str, Any]:
+    """全池配置体检：覆盖率、机型-配置错配、重复登记、指纹分布。
+
+    只读，不修改任何设备状态。
+    """
+    devices = (
+        session.query(Device).filter(Device.status != "retired").all()
+    )
+    rows = []
+    for d in devices:
+        c = check_device(session, d)
+        rows.append(
+            {
+                "device_id": d.device_id,
+                "display_name": d.display_name,
+                "model_class": d.model_class,
+                "position_code": d.position_code,
+                "health_level": d.health_level,
+                "status": d.status,
+                "state": c["state"],
+                "defconfig": c["defconfig"],
+                "defconfig_short": c["defconfig_short"],
+                "sha8": c["sha8"],
+                "git": c["git"],
+                "expected_defconfig": c["expected_defconfig"],
+                "verdict": c["verdict"],
+                "issues": c["issues"],
+            }
+        )
+
+    total = len(rows)
+    online = len([r for r in rows if r["health_level"] == "L3"])
+    fp = [r for r in rows if r["state"] == "fingerprinted"]
+    legacy = [r for r in rows if r["state"] == "legacy"]
+    unknown = [r for r in rows if r["state"] == "unknown"]
+
+    # 重复登记：按 IP 与按指纹分组
+    by_ip: dict[str, list[str]] = {}
+    by_sha: dict[str, list[str]] = {}
+    for d in devices:
+        ip = (d.ip or "").strip()
+        if ip:
+            by_ip.setdefault(ip, []).append(d.device_id)
+    for r in fp:
+        if r["sha8"]:
+            by_sha.setdefault(r["sha8"], []).append(r["device_id"])
+
+    dup_groups: list[list[str]] = []
+    seen_key: set[str] = set()
+    for group in list(by_ip.values()) + list(by_sha.values()):
+        if len(group) <= 1:
+            continue
+        key = "|".join(sorted(group))
+        if key in seen_key:
+            continue
+        seen_key.add(key)
+        dup_groups.append(sorted(group))
+
+    def _pct(n: int, base: int) -> float:
+        return round(100.0 * n / base, 1) if base else 0.0
+
+    mismatches = [r for r in rows if r["verdict"] in ("mismatch_defconfig", "mismatch_model")]
+
+    by_defconfig: dict[str, list[str]] = {}
+    for r in fp:
+        if r["defconfig"]:
+            by_defconfig.setdefault(r["defconfig"], []).append(r["sha8"] or "?")
+
+    git_count: dict[str, int] = {}
+    for r in fp:
+        g = r["git"] or "unknown"
+        git_count[g] = git_count.get(g, 0) + 1
+
+    return {
+        "total": total,
+        "online": online,
+        "fingerprinted": len(fp),
+        "legacy": len(legacy),
+        "unknown": len(unknown),
+        "coverage": {
+            "vs_total_pct": _pct(len(fp), total),
+            "vs_online_pct": _pct(len(fp), online),
+        },
+        "verdicts": {
+            v: len([r for r in rows if r["verdict"] == v])
+            for v in ("ok", "duplicate", "mismatch_defconfig", "mismatch_model", "unknown")
+        },
+        "duplicate_groups": dup_groups,
+        "mismatches": mismatches,
+        "by_defconfig": {
+            k: {"count": len(v), "shas": sorted(set(v))}
+            for k, v in sorted(by_defconfig.items())
+        },
+        "git_versions": dict(sorted(git_count.items(), key=lambda kv: -kv[1])),
+        "devices": rows,
     }
