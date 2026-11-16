@@ -155,15 +155,16 @@ def _try_recover_for_apply(session: Session, device: Device,
 
     if r1.reachable_l3:
         device.status = DeviceStatus.AVAILABLE
-        device.health_level = r1.health_level
+        device.health_level = r1.level
         device.consecutive_failures = 0
         device.last_seen_at = utcnow()
         device.last_probe_at = utcnow()
-        if r1.firmware_version:
-            device.firmware_version = r1.firmware_version
+        probed_version = (r1.extra or {}).get("firmware_version")
+        if probed_version:
+            device.firmware_version = probed_version
         audit.record(
             session, actor=principal.email, action="apply_recover_ready",
-            device_id=device.device_id, detail={"health": r1.health_level},
+            device_id=device.device_id, detail={"health": r1.level},
         )
         session.commit()
     else:
