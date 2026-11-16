@@ -1830,7 +1830,7 @@ const legendRole = [
           <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1435px">
             <el-table-column label="操作" width="260">
               <template #default="{ row }">
-                <el-button v-if="me.role === 'admin'" link type="primary" size="small"
+                <el-button v-if="canEditDevice(row)" link type="primary" size="small"
                   :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>

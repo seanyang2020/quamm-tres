@@ -356,7 +356,7 @@ def web_device_probe(
 @router.post("/devices/{device_id}/probe")
 def web_device_probe_registered(
     device_id: str,
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
     """v0.28：手动探测一台已注册设备（设备页「探测」按钮）。"""

@@ -609,6 +609,21 @@ def res_device_unregister(device_id: str) -> dict:
         session.close()
 
 
+@mcp.tool()
+def res_device_reprobe(device_id: str) -> dict:
+    """重探一台已注册设备（注册人或管理员）；非注册人返回 FORBIDDEN。"""
+    auth = require_auth()
+    session = SessionLocal()
+    try:
+        return catalog.device_probe_registered(
+            session, device_id=device_id, actor_email=auth.email, is_admin=auth.is_admin,
+        )
+    except DomainError as e:
+        return _err(e)
+    finally:
+        session.close()
+
+
 # ---------- 固件（v0.14） ----------
 
 @mcp.tool()
