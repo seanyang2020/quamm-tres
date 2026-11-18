@@ -9,7 +9,7 @@ v0.11 起接入登录：rr_ token 可在 /api/auth/login 换 HttpOnly 会话 coo
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
@@ -64,7 +64,28 @@ router = APIRouter(prefix="/api")
 
 
 def _iso(dt) -> str | None:
-    return dt.isoformat() if dt else None
+    """Naive UTC → ISO8601 with Z; aware datetimes converted to UTC then Z."""
+    if not dt:
+        return None
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            return dt.isoformat() + "Z"
+        return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return str(dt)
+
+
+def _patrol_view(run: PatrolRun | None) -> dict | None:
+    if run is None:
+        return None
+    return {
+        "run_id": run.run_id,
+        "ended_at": _iso(run.ended_at),
+        "l3_count": run.l3_count,
+        "suspect_count": run.suspect_count,
+        "offline_count": run.offline_count,
+        "scanned_count": run.scanned_count,
+        "mode": run.mode or "full",
+    }
 
 
 def _contact_name(session: Session, email: str | None) -> str | None:
@@ -197,20 +218,40 @@ def dashboard(
     identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
     session: Session = Depends(get_session),
 ):
-    total = session.query(func.count(Device.device_id)).scalar() or 0
-    by_status = dict(
-        session.query(Device.status, func.count(Device.device_id)).group_by(Device.status).all()
+    retired_count = (
+        session.query(func.count(Device.device_id))
+        .filter(Device.status == DeviceStatus.RETIRED)
+        .scalar()
+        or 0
     )
+    # 设备页 list_devices 默认排除 retired；看板总数与四态计数对齐该口径。
+    device_rows = session.query(Device).filter(Device.status != DeviceStatus.RETIRED).all()
+    total = len(device_rows)
+    status_counts = dict(
+        session.query(Device.status, func.count(Device.device_id))
+        .filter(Device.status != DeviceStatus.RETIRED)
+        .group_by(Device.status)
+        .all()
+    )
+    by_status = {
+        DeviceStatus.AVAILABLE: status_counts.get(DeviceStatus.AVAILABLE, 0),
+        DeviceStatus.OCCUPIED: status_counts.get(DeviceStatus.OCCUPIED, 0),
+        DeviceStatus.OFFLINE: status_counts.get(DeviceStatus.OFFLINE, 0),
+        DeviceStatus.PENDING: status_counts.get(DeviceStatus.PENDING, 0),
+        DeviceStatus.RETIRED: retired_count,
+    }
+    for st, cnt in status_counts.items():
+        if st not in by_status:
+            by_status[st] = cnt
     # 可用池口径：available 且探测健康（默认仅 L3）。suspect 仍显示 available 状态，
-    # 但不可申请，因此 dashboard 的 available 必须按"真实可申请数"回落。
-    device_rows = session.query(Device).all()
+    # 但不可申请，因此 dashboard.available 按"真实可申请数"回落；
+    # by_status.available 保持设备状态计数，不与 retired 混算。
     allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     available = sum(
         1 for d in device_rows
         if is_claimable(d.status, d.health_level, allow_suspect)
     )
     suspect = sum(1 for d in device_rows if d.status == DeviceStatus.AVAILABLE) - available
-    by_status["available"] = available
     active_leases = (
         session.query(func.count(Lease.lease_id)).filter(Lease.state.in_(LeaseState.ACTIVE)).scalar() or 0
     )
@@ -230,9 +271,21 @@ def dashboard(
     projects = [
         {"project_name": pn or "-", "count": cnt} for pn, cnt in project_rows
     ]
-    last_patrol = session.query(PatrolRun).order_by(PatrolRun.ended_at.desc()).first()
+    last_patrol = (
+        session.query(PatrolRun)
+        .filter(PatrolRun.mode == "full")
+        .order_by(PatrolRun.ended_at.desc())
+        .first()
+    )
+    last_recover_patrol = (
+        session.query(PatrolRun)
+        .filter(PatrolRun.mode == "recover")
+        .order_by(PatrolRun.ended_at.desc())
+        .first()
+    )
     result = {
         "total_devices": total,
+        "retired_count": retired_count,
         "available": available,
         "suspect": suspect,
         "by_status": by_status,
@@ -241,16 +294,8 @@ def dashboard(
         "active_leases": active_leases,
         "queued": queued,
         "products": products,
-        "last_patrol": {
-            "run_id": last_patrol.run_id,
-            "ended_at": _iso(last_patrol.ended_at),
-            "l3_count": last_patrol.l3_count,
-            "suspect_count": last_patrol.suspect_count,
-            "offline_count": last_patrol.offline_count,
-            "scanned_count": last_patrol.scanned_count,
-        }
-        if last_patrol
-        else None,
+        "last_patrol": _patrol_view(last_patrol),
+        "last_recover_patrol": _patrol_view(last_recover_patrol),
     }
     # 普通用户看得到可用池，但看不到「谁在用 / 占用与排队详情」。
     if _is_user_view(identity):
@@ -785,6 +830,7 @@ def patrol_runs(session: Session = Depends(get_session)):
             "suspect_count": r.suspect_count,
             "offline_count": r.offline_count,
             "failures": r.failures,
+            "mode": r.mode or "full",
         }
         for r in rows
     ]

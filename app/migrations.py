@@ -110,6 +110,11 @@ _WL_PORT_COLUMNS = {
     "probe_json": "TEXT",
 }
 
+# patrol_run 表新增列：区分全量巡检 / 待检+离线快轮询；旧行 DEFAULT full，不做回填推断
+_PATROL_RUN_COLUMNS = {
+    "mode": "VARCHAR(16) NOT NULL DEFAULT 'full'",
+}
+
 # v0.14：当前 5 个真实机型的 DB 工程名（用 dbxostest.py -ls + 设备 /etc/fw_version
 # 构建号对照确认）。只回填空值，不覆盖人工修改。
 _DB_PROJECT_BACKFILL = {
@@ -139,6 +144,7 @@ def migrate(session: Session) -> None:
     _rebuild_build_server_for_principal(session)
     _ensure_device_position_index(session)
     _ensure_columns(session, "wl_port_binding", _WL_PORT_COLUMNS)
+    _ensure_columns(session, "patrol_run", _PATROL_RUN_COLUMNS)
 
 
 def _ensure_device_position_index(session: Session) -> None:

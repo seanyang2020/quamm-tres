@@ -58,7 +58,9 @@ def _has_active_lease(session: Session, device_id: str) -> bool:
     )
 
 
-def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> PatrolRun:
+def run_patrol_round(
+    session: Session, device_ids: list[str] | None = None, mode: str = "full",
+) -> PatrolRun:
     started = utcnow()
     q = session.query(Device).filter(Device.status != DeviceStatus.RETIRED)
     if device_ids:
@@ -191,6 +193,7 @@ def run_patrol_round(session: Session, device_ids: list[str] | None = None) -> P
         offline_count=offline,
         failures=failures,
         created_at=ended,
+        mode=mode or "full",
     )
     session.add(run)
     session.commit()

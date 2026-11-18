@@ -327,6 +327,7 @@ class PatrolRun(Base):
     offline_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     failures: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
+    mode: Mapped[str] = mapped_column(String(16), default="full", nullable=False)
 
 
 class Contact(Base):

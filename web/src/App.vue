@@ -32,7 +32,17 @@ const devices = ref([])
 // v0.17：设备按机型分组 + 关键字搜索 / 机型筛选
 const deviceSearch = ref('')
 const ALL_DEVICES = '__all__'       // 概况「全部设备」明细的特殊标识，不是真实机型
+const UNCLASSIFIED = '__unclassified__'  // model_class 为空的非 retired 设备伪分组
+const UNCLASSIFIED_LABEL = '未分类'
 const selectedDeviceType = ref(null) // null=概况、'__all__'=全部设备、其它=具体机型
+
+function modelClassKey(d) {
+  const mc = (d && d.model_class != null) ? String(d.model_class).trim() : ''
+  return mc || UNCLASSIFIED
+}
+function modelClassLabel(key) {
+  return key === UNCLASSIFIED ? UNCLASSIFIED_LABEL : key
+}
 const detailStatusTab = ref('all')
 const detailPage = ref(1)
 const detailPageSize = ref(25)
@@ -51,7 +61,7 @@ const screenshotHistoryLoading = ref(false)
 const screenshotStats = ref(null)
 const screenshotStatsLoading = ref(false)
 const rotateOptions = [0, 90, 180, 270]
-const classifiedDevices = computed(() => devices.value.filter((d) => d.model_class))
+const classifiedDevices = computed(() => devices.value.filter((d) => d && d.status !== 'retired'))
 const deviceTotals = computed(() => {
   const list = classifiedDevices.value
   return {
@@ -65,22 +75,28 @@ const deviceTotals = computed(() => {
 const deviceOverview = computed(() => {
   const map = new Map()
   for (const d of classifiedDevices.value) {
-    if (!map.has(d.model_class)) map.set(d.model_class, [])
-    map.get(d.model_class).push(d)
+    const key = modelClassKey(d)
+    if (!map.has(key)) map.set(key, [])
+    map.get(key).push(d)
   }
   return [...map.entries()].map(([type, list]) => ({
     type,
+    label: modelClassLabel(type),
     count: list.length,
     available: list.filter((d) => d.status === 'available').length,
     occupied: list.filter((d) => d.status === 'occupied').length,
     offline: list.filter((d) => d.status === 'offline').length,
     pending: list.filter((d) => d.status === 'pending').length,
-  })).sort((a, b) => a.type.localeCompare(b.type))
+  })).sort((a, b) => {
+    if (a.type === UNCLASSIFIED) return 1
+    if (b.type === UNCLASSIFIED) return -1
+    return a.type.localeCompare(b.type)
+  })
 })
 // 当前明细的原始集合（不含状态与搜索过滤），用于 tab 计数
 const detailBaseDevices = computed(() => {
   if (selectedDeviceType.value === ALL_DEVICES) return classifiedDevices.value
-  return classifiedDevices.value.filter((d) => d.model_class === selectedDeviceType.value)
+  return classifiedDevices.value.filter((d) => modelClassKey(d) === selectedDeviceType.value)
 })
 // 状态 tab 计数基于原始集合，与搜索无关
 const detailCounts = computed(() => {
@@ -111,9 +127,17 @@ const detailDevices = computed(() => {
   const start = (detailPage.value - 1) * detailPageSize.value
   return detailFilteredDevices.value.slice(start, start + detailPageSize.value)
 })
-const detailTitle = computed(() => selectedDeviceType.value === ALL_DEVICES ? '全部设备' : selectedDeviceType.value)
-// 品类详情页点「添加设备」时预填该品类（全部设备页不预填）
-const prefillType = computed(() => selectedDeviceType.value === ALL_DEVICES ? '' : (selectedDeviceType.value || ''))
+const detailTitle = computed(() => {
+  if (selectedDeviceType.value === ALL_DEVICES) return '全部设备'
+  if (selectedDeviceType.value === UNCLASSIFIED) return UNCLASSIFIED_LABEL
+  return selectedDeviceType.value
+})
+// 品类详情页点「添加设备」时预填该品类（全部设备 / 未分类页不预填）
+const prefillType = computed(() => {
+  const t = selectedDeviceType.value
+  if (!t || t === ALL_DEVICES || t === UNCLASSIFIED) return ''
+  return t
+})
 const detailRangeStart = computed(() => detailFilteredDevices.value.length === 0 ? 0 : (detailPage.value - 1) * detailPageSize.value + 1)
 const detailRangeEnd = computed(() => Math.min(detailPage.value * detailPageSize.value, detailFilteredDevices.value.length))
 
@@ -652,11 +676,23 @@ async function loadDevices() {
     ElMessage.error('设备列表加载失败：' + e.message)
   }
 }
-// UTC ISO -> 本地时区可读时间
+// UTC ISO -> 本地时区可读时间。无时区后缀的 naive UTC 先补 Z，避免被当成本地时间。
+function parseUtcDate(iso) {
+  if (!iso) return null
+  let s = String(iso)
+  if (!/[zZ]$/.test(s) && !/[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z'
+  const d = new Date(s)
+  return isNaN(d.getTime()) ? null : d
+}
 function formatLocal(iso) {
   if (!iso) return '-'
-  const d = new Date(iso)
-  return isNaN(d.getTime()) ? iso : d.toLocaleString()
+  const d = parseUtcDate(iso)
+  return d ? d.toLocaleString() : iso
+}
+function formatLocalHm(iso) {
+  if (!iso) return '-'
+  const d = parseUtcDate(iso)
+  return d ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : iso
 }
 function humanBytes(n) {
   if (n == null) return '-'
@@ -1714,8 +1750,14 @@ const legendRole = [
           <el-col :span="4"><el-card class="dash-card" @click="goScheduling('leases')"><div class="dash-label">活跃租约</div><div class="dash-num">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
           <el-col :span="4"><el-card class="dash-card" @click="goScheduling('queue')"><div class="dash-label">排队中</div><div class="dash-num">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
         </el-row>
+        <p v-if="dashboard" style="color: #909399; margin: 10px 0 0">
+          退役 {{ dashboard.retired_count || 0 }} 台（不计入设备总数）
+        </p>
         <p v-if="dashboard && dashboard.last_patrol" style="color: #909399">
-          上次巡检：{{ dashboard.last_patrol.ended_at }}（L3 {{ dashboard.last_patrol.l3_count }} / suspect {{ dashboard.last_patrol.suspect_count }} / offline {{ dashboard.last_patrol.offline_count }}）
+          上次全量巡检：{{ formatLocal(dashboard.last_patrol.ended_at) }}（L3 {{ dashboard.last_patrol.l3_count }} / suspect {{ dashboard.last_patrol.suspect_count }} / offline {{ dashboard.last_patrol.offline_count }}）
+        </p>
+        <p v-if="dashboard && dashboard.last_recover_patrol" style="color: #909399">
+          最近快轮询 {{ formatLocalHm(dashboard.last_recover_patrol.ended_at) }}，离线 {{ dashboard.last_recover_patrol.offline_count }}
         </p>
         <h3>机型余量</h3>
         <el-table :data="dashboard ? dashboard.products : []" border>
@@ -1780,7 +1822,7 @@ const legendRole = [
             <el-col v-for="g in deviceOverview" :key="g.type" :span="8" :xs="24" :sm="12" :md="8" style="margin-bottom: 12px">
               <el-card shadow="hover" class="cat-card" @click="openDeviceType(g.type)">
                 <div style="display: flex; align-items: center; justify-content: space-between">
-                  <span style="font-weight: 700; font-size: 15px">{{ g.type }}</span>
+                  <span style="font-weight: 700; font-size: 15px">{{ g.label || g.type }}</span>
                   <el-tag size="small" type="info">共 {{ g.count }}</el-tag>
                 </div>
                 <div style="display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap">
@@ -1792,7 +1834,7 @@ const legendRole = [
               </el-card>
             </el-col>
           </el-row>
-          <el-empty v-if="!deviceOverview.length" description="还没有已分类的设备，先登记一台吧">
+          <el-empty v-if="!deviceOverview.length" description="还没有设备，先登记一台吧">
             <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
             <span v-else style="color: #909399; font-size: 12px">添加设备需要管理员权限，请联系管理员登记</span>
           </el-empty>
@@ -1933,7 +1975,7 @@ const legendRole = [
           <el-table-column prop="name" label="申请人姓名" width="140" />
           <el-table-column prop="purpose" label="用途" />
           <el-table-column prop="agent_label" label="Agent" width="140" />
-          <el-table-column prop="expires_at" label="到期" width="200" />
+          <el-table-column label="到期" width="200"><template #default="{ row }">{{ formatLocal(row.expires_at) }}</template></el-table-column>
           <el-table-column prop="state" label="状态" width="100" />
           <el-table-column v-if="me.role === 'admin'" label="操作" width="120" fixed="right">
             <template #default="{ row }">
@@ -1980,7 +2022,7 @@ const legendRole = [
           <el-table-column prop="state" label="状态" width="110" />
           <el-table-column label="已等待" width="130"><template #default="{ row }">{{ row.waited_text }}</template></el-table-column>
           <el-table-column label="offer 倒计时" width="130"><template #default="{ row }">{{ offerCountdown(row) }}</template></el-table-column>
-          <el-table-column prop="joined_at" label="入队时间" width="200" />
+          <el-table-column label="入队时间" width="200"><template #default="{ row }">{{ formatLocal(row.joined_at) }}</template></el-table-column>
         </el-table>
           </el-tab-pane>
 
@@ -1994,7 +2036,7 @@ const legendRole = [
           <el-table-column prop="position_code" label="位置" width="130" />
           <el-table-column prop="health_level" label="健康" width="80" />
           <el-table-column prop="consecutive_failures" label="连续失败" width="90" />
-          <el-table-column prop="last_seen_at" label="最后在线" width="200" />
+          <el-table-column label="最后在线" width="200"><template #default="{ row }">{{ formatLocal(row.last_seen_at) }}</template></el-table-column>
         </el-table>
         <h3>suspect（降级未掉线）</h3>
         <el-table :data="anomalies ? anomalies.suspect : []" border>
@@ -2012,18 +2054,21 @@ const legendRole = [
           <el-table-column prop="owner" label="责任人" width="150" />
           <el-table-column prop="position_code" label="位置" width="130" />
           <el-table-column prop="days_pending" label="pending 天数" width="120" />
-          <el-table-column prop="created_at" label="登记时间" width="200" />
+          <el-table-column label="登记时间" width="200"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
         </el-table>
         <h3>通知流水</h3>
         <el-table :data="notices" border>
-          <el-table-column prop="created_at" label="时间" width="200" />
+          <el-table-column label="时间" width="200"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
           <el-table-column prop="event_type" label="类型" width="160" />
           <el-table-column prop="title" label="标题" />
           <el-table-column prop="severity" label="级别" width="90" />
         </el-table>
         <h3>最近巡检</h3>
         <el-table :data="patrolRuns" border>
-          <el-table-column prop="ended_at" label="时间" width="200" />
+          <el-table-column label="时间" width="200"><template #default="{ row }">{{ formatLocal(row.ended_at) }}</template></el-table-column>
+          <el-table-column label="模式" width="90">
+            <template #default="{ row }">{{ row.mode === 'recover' ? '快轮询' : '全量' }}</template>
+          </el-table-column>
           <el-table-column prop="scanned_count" label="扫描" width="90" />
           <el-table-column prop="l3_count" label="L3" width="80" />
           <el-table-column prop="suspect_count" label="suspect" width="100" />
@@ -2096,8 +2141,8 @@ const legendRole = [
               <el-table-column prop="token_prefix" label="token 前缀" width="140" />
               <el-table-column prop="agent_label" label="Agent" width="140" />
               <el-table-column prop="note" label="备注" width="140" />
-              <el-table-column prop="expires_at" label="到期时间" width="200" />
-              <el-table-column prop="created_at" label="创建时间" width="200" />
+              <el-table-column label="到期时间" width="200"><template #default="{ row }">{{ formatLocal(row.expires_at) }}</template></el-table-column>
+              <el-table-column label="创建时间" width="200"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
               <el-table-column label="操作" width="180" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" @click="renewCredential(row.id)">续期</el-button>
@@ -2114,7 +2159,7 @@ const legendRole = [
               <el-table-column prop="token_prefix" label="token 前缀" width="140" />
               <el-table-column prop="agent_label" label="Agent" width="140" />
               <el-table-column prop="note" label="备注" width="140" />
-              <el-table-column prop="expires_at" label="到期时间" width="200" />
+              <el-table-column label="到期时间" width="200"><template #default="{ row }">{{ formatLocal(row.expires_at) }}</template></el-table-column>
               <el-table-column label="操作" width="300" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" type="warning" @click="restoreCredential(row.id)">恢复</el-button>
@@ -2149,7 +2194,7 @@ const legendRole = [
             </el-table-column>
             <el-table-column prop="ip" label="IP" min-width="130" />
             <el-table-column prop="sw_version" label="版本" width="90" />
-            <el-table-column prop="last_heartbeat_at" label="最近心跳" min-width="190" />
+            <el-table-column label="最近心跳" min-width="190"><template #default="{ row }">{{ formatLocal(row.last_heartbeat_at) }}</template></el-table-column>
             <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="row.status !== 'retired'" size="small"
@@ -2433,7 +2478,7 @@ const legendRole = [
               <el-table-column prop="email" label="邮箱" width="240" />
               <el-table-column prop="name" label="姓名" width="160" />
               <el-table-column prop="note" label="备注" />
-              <el-table-column prop="created_at" label="创建时间" width="200" />
+              <el-table-column label="创建时间" width="200"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
               <el-table-column label="操作" width="150">
                 <template #default="{ row }">
                   <el-button size="small" @click="openEdit(row)">编辑</el-button>
@@ -2474,7 +2519,7 @@ const legendRole = [
               </el-select>
             </div>
             <el-table :data="audit ? audit.events : []" border>
-              <el-table-column prop="created_at" label="时间" width="200" />
+              <el-table-column label="时间" width="200"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
               <el-table-column prop="actor" label="主体" width="180" />
               <el-table-column prop="action" label="动作" width="160" />
               <el-table-column prop="object" label="对象" width="150" />
@@ -2492,7 +2537,7 @@ const legendRole = [
               </el-select>
             </div>
             <el-table :data="feedbackList" border>
-              <el-table-column prop="created_at" label="时间" width="170" />
+              <el-table-column label="时间" width="170"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
               <el-table-column label="类别" width="100">
                 <template #default="{ row }">
                   <el-tag size="small" :type="row.category === 'bug' ? 'danger' : (row.category === 'praise' ? 'success' : 'info')">{{ row.category }}</el-tag>

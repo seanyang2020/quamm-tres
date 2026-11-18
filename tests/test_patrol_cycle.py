@@ -59,7 +59,7 @@ def test_patrol_cycle_offline_and_recover(db):
         d2 = _dash(db)
         assert d2["available"] == 3, d2
         assert d2["suspect"] == 2, d2
-        assert d2["by_status"]["available"] == 3
+        assert d2["by_status"]["available"] == 5  # 状态仍 available（含 2 台 suspect）
 
         s = db.session()
         d = s.get(Device, ids[0])

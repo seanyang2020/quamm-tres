@@ -67,10 +67,10 @@ def _serial_token_job() -> None:
 def _patrol_job() -> None:
     session = SessionLocal()
     try:
-        run = patrol.run_patrol_round(session)
+        run = patrol.run_patrol_round(session, mode="full")
         logger.info(
-            "patrol done: scanned=%s l3=%s suspect=%s offline=%s",
-            run.scanned_count, run.l3_count, run.suspect_count, run.offline_count,
+            "patrol done: mode=%s scanned=%s l3=%s suspect=%s offline=%s",
+            run.mode, run.scanned_count, run.l3_count, run.suspect_count, run.offline_count,
         )
     except Exception:  # noqa: BLE001
         logger.exception("patrol failed")
@@ -107,10 +107,10 @@ def _pending_patrol_job() -> None:
         _last_pending_patrol_at = now
         if not recover_ids:
             return
-        run = patrol.run_patrol_round(session, device_ids=recover_ids)
+        run = patrol.run_patrol_round(session, device_ids=recover_ids, mode="recover")
         logger.info(
-            "recover patrol done: scanned=%s l3=%s (interval=%smin)",
-            run.scanned_count, run.l3_count, interval,
+            "recover patrol done: mode=%s scanned=%s l3=%s (interval=%smin)",
+            run.mode, run.scanned_count, run.l3_count, interval,
         )
     except Exception:  # noqa: BLE001
         logger.exception("pending patrol failed")
