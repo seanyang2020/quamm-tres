@@ -71,7 +71,7 @@ async def add_static_cache_headers(request, call_next):
     """按路径给静态看板响应补缓存头（仅改本文件，不动路由顺序与挂载位置）。
 
     - /assets/*（vite 产物带内容哈希）：长期强缓存 immutable
-    - / 与 /index.html：协商缓存 no-cache，每次回源验证
+    - / 与 /index.html：no-store，禁止缓存入口 HTML
     - 其它路径（API / MCP / 健康检查等）不动
     """
     response = await call_next(request)
@@ -79,11 +79,27 @@ async def add_static_cache_headers(request, call_next):
     if path.startswith("/assets/"):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     elif path == "/" or path == "/index.html":
-        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        response.headers["Cache-Control"] = "no-store"
     return response
 
 
 if os.path.isdir(_WEB_DIST) and os.path.isfile(os.path.join(_WEB_DIST, "index.html")):
+    # 显式 / 路由必须在 StaticFiles mount 之前注册，避免 StaticFiles 对入口 HTML
+    # 做 If-None-Match / If-Modified-Since 协商并返回 304（客户端会继续用旧 index）。
+    _INDEX_HTML_PATH = os.path.join(_WEB_DIST, "index.html")
+
+    @app.get("/", response_class=HTMLResponse)
+    def _spa_index():
+        with open(_INDEX_HTML_PATH, encoding="utf-8") as f:
+            body = f.read()
+        return HTMLResponse(
+            content=body,
+            headers={
+                "Cache-Control": "no-store",
+                "Pragma": "no-cache",
+            },
+        )
+
     app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 else:
     @app.get("/", response_class=HTMLResponse)
