@@ -1750,9 +1750,6 @@ const legendRole = [
           <el-col :span="4"><el-card class="dash-card" @click="goScheduling('leases')"><div class="dash-label">活跃租约</div><div class="dash-num">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
           <el-col :span="4"><el-card class="dash-card" @click="goScheduling('queue')"><div class="dash-label">排队中</div><div class="dash-num">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
         </el-row>
-        <p v-if="dashboard" style="color: #909399; margin: 10px 0 0">
-          退役 {{ dashboard.retired_count || 0 }} 台（不计入设备总数）
-        </p>
         <p v-if="dashboard && dashboard.last_patrol" style="color: #909399">
           上次全量巡检：{{ formatLocal(dashboard.last_patrol.ended_at) }}（L3 {{ dashboard.last_patrol.l3_count }} / suspect {{ dashboard.last_patrol.suspect_count }} / offline {{ dashboard.last_patrol.offline_count }}）
         </p>
