@@ -66,6 +66,23 @@ fetch('/api/dashboard').then(r=>r.json()).then(d=>{
 }).catch(e=>{document.getElementById('hint').textContent='加载失败：'+e;});
 </script></body></html>"""
 
+@app.middleware("http")
+async def add_static_cache_headers(request, call_next):
+    """按路径给静态看板响应补缓存头（仅改本文件，不动路由顺序与挂载位置）。
+
+    - /assets/*（vite 产物带内容哈希）：长期强缓存 immutable
+    - / 与 /index.html：协商缓存 no-cache，每次回源验证
+    - 其它路径（API / MCP / 健康检查等）不动
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/" or path == "/index.html":
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
+
 if os.path.isdir(_WEB_DIST) and os.path.isfile(os.path.join(_WEB_DIST, "index.html")):
     app.mount("/", StaticFiles(directory=_WEB_DIST, html=True), name="web")
 else:
