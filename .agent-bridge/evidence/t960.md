@@ -24,7 +24,7 @@ task_id: t960
 
 ## c. 版本/提交证据
 
-3a187dd / 3a187ddd06614952b8387e70dda950f94ea351c2  ← HEAD
+153ef20 / 153ef20b51cf5ebfc6f0e1c179a7b399f6dddccd  ← HEAD
 
 Gerrit change：不适用。
 
