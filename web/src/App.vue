@@ -925,14 +925,20 @@ function resolveLegacyRoute() {
   try {
     const hash = String(window.location.hash || '').replace(/^#\/?/, '').split('?')[0]
     const path = String(window.location.pathname || '').replace(/^\//, '').split('/')[0]
-    const key = hash || path
-    if (LEGACY_BOARD_KEYS.has(key)) {
-      active.value = 'devices'
+    const key = (hash || path || '').toLowerCase()
+    if (LEGACY_BOARD_KEYS.has(key) || LEGACY_BOARD_KEYS.has(hash) || LEGACY_BOARD_KEYS.has(path)) {
       if (window.location.hash && /board|dashboard/i.test(window.location.hash)) {
         history.replaceState(null, '', window.location.pathname + window.location.search)
       }
+      if (active.value !== 'devices') {
+        switchPage('devices')
+      } else {
+        active.value = 'devices'
+      }
+      return true
     }
   } catch (e) { /* ignore */ }
+  return false
 }
 async function loadLeases() { leases.value = await api('/api/leases') }
 async function loadCredentials() { credentials.value = await api('/api/credentials') }
@@ -1663,7 +1669,10 @@ async function boot() {
     loadDevices()
   }
 }
-onMounted(boot)
+onMounted(() => {
+  boot()
+  window.addEventListener('hashchange', () => { resolveLegacyRoute() })
+})
 
 async function offerBrowserSave(email, password) {
   // SPA 异步登录不会自动触发浏览器保存提示，显式调用 Credential Management API
