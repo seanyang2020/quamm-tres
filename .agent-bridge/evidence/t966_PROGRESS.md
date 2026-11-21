@@ -14,12 +14,12 @@
 | 三 回填 | `scripts/backfill_enroll_applies.py`；真库 esl2-122 → approved/token | ✅ |
 | 四 写权限 | shell WS：approved→can_write；write-grant 兼容保留 | ✅ |
 | 五 前端 | 授权列显示来源；shell 去掉「申请写权限」文案 | ✅ |
-| 六 单测 | `tests/test_auth_source_and_write.py` 7 passed | ✅ |
+| 六 单测 | `tests/test_auth_source_and_write.py` 7 passed（含 comres_apply 共 14） | ✅ |
 | 七 构建 | `cd web && npm run build` exit 0 | ✅ |
 
 ## 提交
 
-- （待 commit 后回填）
+- `937f7f2` / `937f7f29b86e9c4509b0da9dd1d714f7434e44de`
 
 ## 说明
 

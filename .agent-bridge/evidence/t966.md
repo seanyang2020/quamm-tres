@@ -33,17 +33,23 @@ task_id: t966
 
 ## c. 版本/提交证据
 
-（commit 后回填 `git log -1` / `git status --short` / `git diff --stat`）
+```
+937f7f2 fix(comres): 统一节点授权口径并默认开放串口写权限
+937f7f29b86e9c4509b0da9dd1d714f7434e44de
+```
 
-Gerrit change：不适用。
+- `git status --short`：干净（证据哈希回填前可能有 docs 未提交，见后续 evidence commit）
+- `git diff --stat HEAD~1..HEAD`：14 files, +672/-56
+- Gerrit change：不适用
 
 ## d. 验证/自测
 
 | 项 | 命令/操作 | 结果 |
 |---|---|---|
 | 回填 dry-run | `scripts/backfill_enroll_applies.py --dry-run` | candidates=1（esl2-122） |
-| 回填执行 | `scripts/backfill_enroll_applies.py` | created enroll apply；二次 dry-run candidates=0 |
-| 库备份 | `cp quamm_res.db ~/tmp/quamm_res_pre_t966_*.db` | 已备份 |
-| 真库 API | `GET /api/wirelog/nodes`（9100，重启后） | esl2-122: `auth_status=approved, auth_source=token`；DT28: `approved/apply` |
-| 单测 | pytest 上述文件 | 14 passed |
+| 回填执行 | `scripts/backfill_enroll_applies.py` | created；二次 dry-run=0 |
+| 库备份 | `~/tmp/quamm_res_pre_t966_20261121_193112.db` | 已备份 |
+| 服务重启 | `systemctl --user restart quamm-tres.service` | active；/api/health 200 |
+| 真库 API | `GET http://127.0.0.1:9100/api/wirelog/nodes` | esl2-122: `approved`/`token`；DT28: `approved`/`apply` |
+| 单测 | pytest 上述 | 14 passed exit 0 |
 | 前端构建 | `npm run build` | exit 0 |
