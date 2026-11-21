@@ -695,6 +695,11 @@ class WireLogPortBinding(Base):
     allocated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     allocated_expire: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
+    # t969：TRES→endpoint TCP 可达性（与节点自报 health_state / shell_reachable 分口径）
+    reach_ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    reach_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    reach_checked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
     __table_args__ = (
         Index("uq_wl_port", "node_id", "slot", unique=True),
         # COMRes Q5：同 node 下 ip:tcp_port 唯一；不同 node 可共存。SQLite 允许多 NULL。

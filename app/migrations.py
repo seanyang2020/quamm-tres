@@ -119,6 +119,13 @@ _WL_COMRES_COLUMNS = {
     "allocated_expire": "DATETIME",
 }
 
+# t969：TRES→endpoint 可达性（可空=未测；与节点自报 health_state 分口径）
+_WL_REACH_COLUMNS = {
+    "reach_ok": "BOOLEAN",
+    "reach_error": "VARCHAR(64)",
+    "reach_checked_at": "DATETIME",
+}
+
 # wl_node：管理面可复制 node_token（Fernet 密文，t942）
 _WL_NODE_COLUMNS = {
     "token_cipher": "TEXT",
@@ -164,6 +171,7 @@ def migrate(session: Session) -> None:
     _ensure_device_position_index(session)
     _ensure_columns(session, "wl_port_binding", _WL_PORT_COLUMNS)
     _ensure_columns(session, "wl_port_binding", _WL_COMRES_COLUMNS)
+    _ensure_columns(session, "wl_port_binding", _WL_REACH_COLUMNS)
     _ensure_columns(session, "wl_node", _WL_NODE_COLUMNS)
     _ensure_comres_unique_index(session)
     # t942：先清理历史重复，再补 (node_id, com_name) 唯一索引

@@ -15,7 +15,7 @@ from fastapi import (APIRouter, Body, Depends, Header, HTTPException, Response,
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_session
-from app.domain import comres_apply, wirelog
+from app.domain import comres, comres_apply, wirelog
 from app.domain.catalog import DomainError
 from app.domain.comres import _parse_ip_port
 from app.domain.prober_uart import RAW_TCP_AUTH
@@ -276,6 +276,7 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         return ws.send_text(json.dumps(obj, ensure_ascii=False))
 
     sock = None
+    reach_fail = None
     session = SessionLocal()
     try:
         ident = _ws_identity(session, ws)
@@ -299,8 +300,25 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         # t966：节点 approved 即默认可写；write_granted_to 保留兼容，不再作门槛
         can_write, write_mode, write_reason = _shell_write_access(session, node)
         node_name = node.display_name or node.node_id
+        # t969：打开前先做 TRES→endpoint 可达性探测，避免等 TCP 超时才报错
+        reach = comres.probe_reach(
+            session, node_id=node_id, slot=int(slot), timeout=1.5)
+        reach_fail = (reach.get("failed") or [None])[0] if reach.get("checked") else None
     finally:
         session.close()
+
+    if reach_fail is not None:
+        err_code = reach_fail.get("error") or "error"
+        ep = reach_fail.get("endpoint") or endpoint
+        await send({
+            "type": "error",
+            "code": "UNREACHABLE",
+            "message": (
+                f"TRES 到该节点不可达（{err_code}）：{ep}，请检查网段/路由"
+            ),
+        })
+        await ws.close(code=1011)
+        return
 
     loop = asyncio.get_running_loop()
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)

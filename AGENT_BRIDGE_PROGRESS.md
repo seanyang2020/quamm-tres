@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：t960 —— 设备中心统计卡（浅色 + 七列一排）  
-> task_id: t960
+> 任务：t969 —— 探测/健康状态口径：TRES 侧 reach 与自检分离  
+> task_id: t969
 
 ## 状态：已完成（停住等审）
 
@@ -9,15 +9,17 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 一 断点 | ≥1400 七列一排 / 1100–1400 四列 / 800–1100 三列 / &lt;800 两列 | ✅ |
-| 二 浅色 | 白底 #fbfcfe、#e5e8ef 边、12px 圆角、轻阴影；取消深色块 | ✅ |
-| 三 状态色 | 在线/空闲绿、离线红、待检橙、已分配蓝、总量/串口深灰 | ✅ |
-| 四 筛选高亮 | 蓝边框 + 淡蓝底 #eff6ff | ✅ |
-| 五 构建/单测 | npm build 0 + pytest 1 passed | ✅ |
+| 一 三层口径 | bind_health / reach / session 分列；reach_* 入库 | ✅ |
+| 二 probe_reach | TCP 探测 + 错误归一；timeout 重试优先 no_route | ✅ |
+| 三 HTTP/定时 | POST /reachability；worker 默认 300s | ✅ |
+| 四 打开前探测 | shell WS → UNREACHABLE + close(1011) | ✅ |
+| 五 前端 | 自检/可达列、测可达、chips、说明文案 | ✅ |
+| 六 单测/真机 | pytest 10 passed；ttyUSB0=no_route，本机 COM ok | ✅ |
 
 ## 提交
 
-- a195740 / a19574077cb884845893fb4229f196e0db78f747  ← HEAD
+- 改动：（待本轮 commit 后回填）
+- 证据：（待回填）
 
 ## 说明
 

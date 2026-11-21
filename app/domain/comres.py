@@ -2,12 +2,19 @@
 
 契约 §2.7。复用 wl_node / wl_port_binding / wl_audit；与旧 wirelog 北向并存。
 唯一键（t942）：node_id + com（com_name）；端点独占：ip 非空时 (ip, tcp_port) 全局互斥。
-com_key = "{ip}:{tcp_port}" 仍作端点索引。TRES 不主动连串口探活。
+com_key = "{ip}:{tcp_port}" 仍作端点索引。
+
+健康口径三层（勿合并）：
+- bind_health：节点自报 health_state / shell_reachable（板侧本地串口自检）
+- reach：TRES→endpoint TCP 连通性（probe_reach 写 reach_*）
+- session：当前是否占用/打开（allocated / shell 会话）
 """
 from __future__ import annotations
 
+import errno
 import json
 import re
+import socket
 from datetime import timedelta
 
 from sqlalchemy.orm import Session
@@ -956,10 +963,108 @@ def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, *,
         "bound_device_id": b.bound_device_id if include_device else None,
         "state": state,
         "inactive": inactive,
+        # reach_*：None/空 = 未测（勿当成失败）
+        "reach_ok": b.reach_ok,
+        "reach_error": b.reach_error,
+        "reach_checked_at": (
+            b.reach_checked_at.isoformat() if b.reach_checked_at else None
+        ),
     }
     if inactive:
         item["inactive_reason"] = _inactive_reason(b, node)
     return item
+
+
+def _classify_reach_error(exc: BaseException) -> str:
+    """把 socket 异常归一为 reach_error 短码。"""
+    if isinstance(exc, socket.gaierror):
+        return "dns"
+    if isinstance(exc, TimeoutError) or isinstance(exc, socket.timeout):
+        return "timeout"
+    en = getattr(exc, "errno", None)
+    if en == errno.ECONNREFUSED:
+        return "refused"
+    if en in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+        return "no_route"
+    if en == errno.ETIMEDOUT:
+        return "timeout"
+    if en is not None:
+        return f"error:{en}"
+    return f"error:{type(exc).__name__}"
+
+
+def _tcp_probe(endpoint: str, timeout: float) -> tuple[bool, str | None]:
+    """对 tcp://host:port 做 create_connection；返回 (ok, error_code)。
+
+    不可达主机 ICMP 常被限速，单次易 TimeoutError；若首次为 timeout
+    再试一次同预算，优先落到 no_route/refused。
+    """
+    try:
+        host, port = parse_endpoint(endpoint)
+    except SerialConfigError:
+        return False, "error:bad_endpoint"
+    budget = max(0.2, float(timeout))
+    last_err = "timeout"
+    for _attempt in range(2):
+        try:
+            with socket.create_connection((host, int(port)), timeout=budget):
+                return True, None
+        except Exception as exc:  # noqa: BLE001 - 归一后写库
+            last_err = _classify_reach_error(exc)
+            if last_err != "timeout":
+                return False, last_err
+    return False, last_err
+
+
+def probe_reach(session: Session, node_id: str | None = None,
+                slot: int | None = None, timeout: float = 1.5) -> dict:
+    """TRES→endpoint TCP 可达性探测，写 wl_port_binding.reach_*。
+
+    - 未限定 node_id/slot：只扫 status=online 节点上有 endpoint 的端口
+    - 限定 node_id/slot：按条件扫（打开串口前预检）
+    返回 ``{checked, ok, failed:[{node_id,slot,com,endpoint,error}]}``。
+    """
+    q = session.query(WireLogPortBinding)
+    if node_id:
+        q = q.filter(WireLogPortBinding.node_id == str(node_id))
+    if slot is not None:
+        q = q.filter(WireLogPortBinding.slot == int(slot))
+    if not node_id and slot is None:
+        online_ids = [
+            n.node_id for n in session.query(WireLogNode)
+            .filter(WireLogNode.status == "online").all()
+        ]
+        if not online_ids:
+            return {"checked": 0, "ok": 0, "failed": []}
+        q = q.filter(WireLogPortBinding.node_id.in_(online_ids))
+
+    rows = [b for b in q.order_by(
+        WireLogPortBinding.node_id, WireLogPortBinding.slot).all()
+        if (b.endpoint or "").strip()]
+    now = utcnow()
+    checked = 0
+    ok_n = 0
+    failed: list[dict] = []
+    for b in rows:
+        ep = (b.endpoint or "").strip()
+        ok, err = _tcp_probe(ep, timeout)
+        b.reach_ok = bool(ok)
+        b.reach_error = None if ok else (err or "error")
+        b.reach_checked_at = now
+        checked += 1
+        if ok:
+            ok_n += 1
+        else:
+            failed.append({
+                "node_id": b.node_id,
+                "slot": b.slot,
+                "com": b.com_name,
+                "endpoint": ep,
+                "error": b.reach_error,
+            })
+    if checked:
+        session.commit()
+    return {"checked": checked, "ok": ok_n, "failed": failed}
 
 
 def list_resources(session: Session) -> dict:
@@ -1025,7 +1130,14 @@ def list_resources(session: Session) -> dict:
             item["auth_status"] = auth_status
             item["auth_source"] = auth_source
             pool.append(item)
+    all_items = allocated + bound + pool + inactive
+    reach_total = len(all_items)
+    reach_ok_n = sum(1 for x in all_items if x.get("reach_ok") is True)
+    reach_fail_n = sum(1 for x in all_items if x.get("reach_ok") is False)
     return {
         "allocated": allocated, "bound": bound, "pool": pool,
         "inactive": inactive,
+        "reach_summary": {
+            "total": reach_total, "ok": reach_ok_n, "fail": reach_fail_n,
+        },
     }

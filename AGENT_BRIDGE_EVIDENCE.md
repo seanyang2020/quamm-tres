@@ -1,30 +1,38 @@
 ---
-task_id: t960
+task_id: t969
 ---
 
-# t960：统计卡浅色配色 + 宽屏七列一排
+# t969：TRES 侧可达性探测（reach）与自检分口径
 
 ## a. 编译/构建
 
 - 命令：`cd web && npm run build`
 - 退出码：`0`
-- 关键结果：`built in 4.58s`；产物 `web/dist/index.html`、`web/dist/assets/index-CUykPCCz.js`、`web/dist/assets/index-14VofpKn.css`
+- 关键结果：`built in 4.41s`；产物 `web/dist/index.html`、`web/dist/assets/index-BFzzaYKL.js`、`web/dist/assets/index-14VofpKn.css`
 
-- 命令：`.venv/bin/python -m pytest tests/test_device_stats.py -q --tb=short`
+- 命令：`.venv/bin/python -m pytest tests/test_comres_reach.py -q --tb=short`
 - 退出码：`0`
-- 关键结果：`1 passed`
+- 关键结果：`10 passed`
 
 ## b. 改动文件清单
 
+- `app/models.py`
+- `app/migrations.py`
+- `app/config.py`
+- `app/domain/comres.py`
+- `app/api/comres_router.py`
+- `app/api/wirelog_router.py`
+- `app/workers/main.py`
 - `web/src/App.vue`
+- `tests/test_comres_reach.py`
 - `AGENT_BRIDGE_EVIDENCE.md`
 - `AGENT_BRIDGE_PROGRESS.md`
-- `.agent-bridge/evidence/t960.md`
-- `.agent-bridge/evidence/t960_PROGRESS.md`
+- `.agent-bridge/evidence/t969.md`
+- `.agent-bridge/evidence/t969_PROGRESS.md`
 
 ## c. 版本/提交证据
 
-a195740 / a19574077cb884845893fb4229f196e0db78f747  ← HEAD
+（待 commit 后回填 `git log -1`）
 
 Gerrit change：不适用。
 
@@ -32,7 +40,7 @@ Gerrit change：不适用。
 
 | 项 | 命令/操作 | 结果 |
 |---|---|---|
-| 前端构建 | `cd web && npm run build` | exit 0；CSS 含 `min-width: 1400px/1100px/800px`、`#fbfcfe`、`#eff6ff`、`#16a34a` |
-| 断点 | ≥1400 七列等分(min 150px) / ≥1100 四列 / ≥800 三列 / &lt;800 两列 | 已写入 CSS |
-| 浅色卡 | 白底边框圆角轻阴影；状态色数字；筛选蓝边+淡蓝底 | 已替换深色块 |
-| 单测 | `pytest tests/test_device_stats.py -q` | 1 passed |
+| 单测 | `pytest tests/test_comres_reach.py -q` | 10 passed；exit 0 |
+| 前端构建 | `cd web && npm run build` | exit 0 |
+| 真机可达 | `POST /api/comres/reachability` | `checked=6 ok=5`；`wl8e9a154c0e5b35f3/ttyUSB0` → `reach_ok=false, reach_error=no_route`；COM16/21/4/27/24 → ok |
+| 打开串口 | WS `/api/wirelog/nodes/wl8e9a154c0e5b35f3/ports/1/shell` | 立刻 `{"type":"error","code":"UNREACHABLE","message":"…（no_route）：tcp://172.16.60.122:9001…"}` |

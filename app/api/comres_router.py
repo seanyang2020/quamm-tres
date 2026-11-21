@@ -86,6 +86,29 @@ def resources(session: Session = Depends(get_session),
     return comres.list_resources(session)
 
 
+@router.post("/reachability")
+def post_reachability(payload: dict = Body(default={}),
+                      session: Session = Depends(get_session),
+                      _id=Depends(web_auth.require_login)):
+    """TRES→endpoint TCP 可达性探测；body 可选 ``{node_id?, slot?, timeout?}``。"""
+    payload = payload or {}
+    node_id = payload.get("node_id") or None
+    slot = payload.get("slot")
+    if slot is not None:
+        try:
+            slot = int(slot)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="slot 必须为整数")
+    timeout = payload.get("timeout", 1.5)
+    try:
+        timeout = float(timeout)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="timeout 必须为数字")
+    return comres.probe_reach(
+        session, node_id=node_id, slot=slot, timeout=timeout,
+    )
+
+
 # ---------------- 客户端自助申请（无需登录，限流） ----------------
 
 @router.post("/apply")

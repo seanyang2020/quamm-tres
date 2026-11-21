@@ -1168,8 +1168,10 @@ const comresAllocated = ref([])
 const comresBound = ref([])
 const comresPool = ref([])
 const comresInactive = ref([])
+const comresReachSummary = ref({ total: 0, ok: 0, fail: 0 })
 const comresError = ref('')
 const comresLoading = ref(false)
+const comresReachBusy = ref(false)
 const comresShowInactiveOnly = ref(false)
 const comresPruneBusy = ref(false)
 
@@ -1359,6 +1361,26 @@ function comresInactiveLabel(row) {
   return map[reason] || reason || '失效'
 }
 
+/** 可达列展示：未测 / 可连 / 无路由|拒连|超时|错误码 */
+function comresReachLabel(row) {
+  if (!row || row.reach_ok == null || row.reach_checked_at == null) {
+    return { text: '未测', ok: null, tip: '尚未做 TRES→endpoint 探测' }
+  }
+  if (row.reach_ok === true) {
+    return { text: '✓ 可连', ok: true, tip: (row.endpoint || '') + ' ok' }
+  }
+  const err = row.reach_error || 'error'
+  const map = {
+    no_route: '✗ 无路由',
+    refused: '✗ 拒连',
+    timeout: '✗ 超时',
+    dns: '✗ DNS',
+  }
+  const text = map[err] || ('✗ ' + err)
+  const tip = (row.endpoint || '') + ' · ' + err
+  return { text, ok: false, tip }
+}
+
 async function loadComresResources() {
   comresLoading.value = true
   comresError.value = ''
@@ -1368,15 +1390,43 @@ async function loadComresResources() {
     comresBound.value = Array.isArray(r && r.bound) ? r.bound : []
     comresPool.value = Array.isArray(r && r.pool) ? r.pool : []
     comresInactive.value = Array.isArray(r && r.inactive) ? r.inactive : []
+    const rs = (r && r.reach_summary) || {}
+    comresReachSummary.value = {
+      total: Number(rs.total) || 0,
+      ok: Number(rs.ok) || 0,
+      fail: Number(rs.fail) || 0,
+    }
   } catch (e) {
     comresAllocated.value = []
     comresBound.value = []
     comresPool.value = []
     comresInactive.value = []
+    comresReachSummary.value = { total: 0, ok: 0, fail: 0 }
     comresError.value = String(e.message || e)
     ElMessage.error('COMRes 资源加载失败：' + comresError.value)
   } finally {
     comresLoading.value = false
+  }
+}
+
+async function runComresReachability() {
+  comresReachBusy.value = true
+  try {
+    const r = await api('/api/comres/reachability', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    const failN = Array.isArray(r && r.failed) ? r.failed.length : 0
+    ElMessage.success(
+      `可达探测完成：检查 ${r && r.checked != null ? r.checked : 0}，`
+      + `成功 ${r && r.ok != null ? r.ok : 0}，失败 ${failN}`,
+    )
+    await loadComresResources()
+  } catch (e) {
+    ElMessage.error('可达探测失败：' + String(e.message || e))
+  } finally {
+    comresReachBusy.value = false
   }
 }
 
@@ -2861,8 +2911,23 @@ const legendRole = [
                 <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.endpoint || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="health_state" width="110">
+            <el-table-column width="90">
+              <template #header>
+                <el-tooltip content="节点自报，非 TRES 连通性" placement="top">
+                  <span>自检</span>
+                </el-tooltip>
+              </template>
               <template #default="{ row }">{{ row.health_state || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="可达" width="100">
+              <template #default="{ row }">
+                <el-tooltip :content="comresReachLabel(row).tip" placement="top">
+                  <span :style="{ color: comresReachLabel(row).ok === true ? '#16a34a' : (comresReachLabel(row).ok === false ? '#dc2626' : undefined) }"
+                        :class="{ 'comres-muted': comresReachLabel(row).ok == null }">
+                    {{ comresReachLabel(row).text }}
+                  </span>
+                </el-tooltip>
+              </template>
             </el-table-column>
             <el-table-column label="allocated" width="90">
               <template #default="{ row }">
@@ -2983,6 +3048,9 @@ const legendRole = [
                 <el-tag size="small" type="success" style="margin-left:4px">已绑定 {{ comresBound.length }}</el-tag>
                 <el-tag size="small" type="info" style="margin-left:4px">池 {{ comresPool.length }}</el-tag>
                 <el-tag size="small" type="info" effect="plain" style="margin-left:4px">失效 {{ comresInactive.length }}</el-tag>
+                <el-tag size="small" :type="comresReachSummary.fail ? 'danger' : 'success'" style="margin-left:4px">
+                  可达 {{ comresReachSummary.ok }}/{{ comresReachSummary.total }}
+                </el-tag>
               </span>
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
                 <el-switch v-model="comresShowInactiveOnly" size="small"
@@ -2990,6 +3058,8 @@ const legendRole = [
                 <el-button size="small" type="warning" plain :loading="comresPruneBusy"
                            @click="runComresPrune">清理无效资源</el-button>
                 <el-button size="small" :loading="comresLoading" @click="loadComresResources">刷新资源</el-button>
+                <el-button size="small" type="primary" plain :loading="comresReachBusy"
+                           @click="runComresReachability">测可达</el-button>
               </div>
             </div>
           </template>
@@ -3008,7 +3078,24 @@ const legendRole = [
                 <span :class="{ 'comres-muted': !portHasSerial(row) || row.inactive }">{{ row.endpoint || '—' }}</span>
               </template>
             </el-table-column>
-            <el-table-column prop="health_state" label="health_state" width="110" />
+            <el-table-column width="90">
+              <template #header>
+                <el-tooltip content="节点自报，非 TRES 连通性" placement="top">
+                  <span>自检</span>
+                </el-tooltip>
+              </template>
+              <template #default="{ row }">{{ row.health_state || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="可达" width="100">
+              <template #default="{ row }">
+                <el-tooltip :content="comresReachLabel(row).tip" placement="top">
+                  <span :style="{ color: comresReachLabel(row).ok === true ? '#16a34a' : (comresReachLabel(row).ok === false ? '#dc2626' : undefined) }"
+                        :class="{ 'comres-muted': comresReachLabel(row).ok == null }">
+                    {{ comresReachLabel(row).text }}
+                  </span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
             <el-table-column label="原因" min-width="110">
               <template #default="{ row }">
                 <span v-if="row.inactive" class="comres-muted">{{ comresInactiveLabel(row) }}</span>
@@ -3063,7 +3150,7 @@ const legendRole = [
           <el-empty v-if="!comresAllRows.length && !comresLoading && !comresError"
                     description="暂无 COMRes 资源" />
           <p class="comres-muted" style="font-size:12px;margin:8px 0 0">
-            可分配池仅含已授权节点端口；待审批 / 已拒绝 / 已撤销节点的端口不入池，避免误领。
+            自检=节点本地探测；可达=TRES 到 endpoint 的连通性；不可达时打开会失败。可分配池仅含已授权节点端口。
           </p>
         </el-card>
 

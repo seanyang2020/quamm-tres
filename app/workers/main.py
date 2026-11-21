@@ -181,6 +181,28 @@ def _comres_prune_job() -> None:
         session.close()
 
 
+def _comres_reach_job() -> None:
+    """t969：对 online 节点端口做 TRES→endpoint TCP 可达性探测（默认定时 300s；可关）。"""
+    if not getattr(settings, "comres_reach_enabled", True):
+        return
+    session = SessionLocal()
+    try:
+        from app.domain import comres
+
+        result = comres.probe_reach(session, timeout=1.5)
+        if result.get("checked"):
+            logger.info(
+                "comres reach: checked=%s ok=%s fail=%s",
+                result.get("checked"), result.get("ok"),
+                len(result.get("failed") or []),
+            )
+    except Exception:  # noqa: BLE001
+        logger.exception("comres reach probe failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
@@ -212,6 +234,12 @@ def run_worker() -> None:
         interval_s = max(60, int(getattr(settings, "comres_prune_interval_s", 3600) or 3600))
         scheduler.add_job(
             _comres_prune_job, "interval", seconds=interval_s, id="comres_prune",
+        )
+    # t969：TRES→endpoint 可达性（默认 300s）
+    if getattr(settings, "comres_reach_enabled", True):
+        reach_s = max(30, int(getattr(settings, "comres_reach_interval_s", 300) or 300))
+        scheduler.add_job(
+            _comres_reach_job, "interval", seconds=reach_s, id="comres_reach",
         )
     scheduler.start()
     logger.info("worker started (lease_scan=%ss, patrol=%smin)", settings.lease_scan_seconds, settings.patrol_interval_minutes)

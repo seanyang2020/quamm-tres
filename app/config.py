@@ -123,6 +123,9 @@ class Settings(BaseSettings):
     comres_offline_dormant_s: int = 24 * 3600
     # enrolled 从未心跳超过此时长 → retired
     comres_enrolled_retire_s: int = 2 * 3600
+    # t969：TRES→endpoint TCP 可达性探测（默认定时 300s；可关）
+    comres_reach_enabled: bool = True
+    comres_reach_interval_s: int = 300
 
 
 @lru_cache
