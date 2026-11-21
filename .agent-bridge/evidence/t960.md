@@ -28,10 +28,10 @@ task_id: t960
 ```
 80e65bf feat(web): 设备中心恢复分类统计卡片并可点击筛选
   80e65bf5c486f312828941c926dfcc15d9dad687
-64f4fef docs(evidence): 回填 t960 统计卡片恢复验收证据
-  49ad93e / 49ad93edc65395afd27e7fe0e0992798ed4b115c
+bfc4b3e docs(evidence): 修正 t960 验收证据正文
+  bfc4b3edb0334e0b5bd23477f13956160d983486  ← 证据链 HEAD（以本仓 git log -1 复核）
 
-git status --short  # 证据文件已同步
+git status --short  # clean
 git diff --stat 80e65bf^..80e65bf
   web/src/App.vue / tests/test_device_stats.py / AGENT_BRIDGE_*.md / .agent-bridge/evidence/t960*
 ```
