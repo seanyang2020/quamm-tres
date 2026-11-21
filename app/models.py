@@ -643,8 +643,18 @@ class WireLogPortBinding(Base):
     com_name: Mapped[str | None] = mapped_column(String(64), nullable=True)    # COM11 / ttyUSB0
     probe_json: Mapped[str | None] = mapped_column(Text, nullable=True)        # 宿主自检快照
 
+    # COMRes（§2.7）：资源唯一键 node_id + ip + tcp_port；com_key = "{ip}:{tcp_port}"。
+    # allocated_* 描述占用方续约；超时释放回资源池。旧 wirelog 行这些列可为 NULL。
+    tcp_port: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    com_key: Mapped[str | None] = mapped_column(String(96), nullable=True)  # "{ip}:{tcp_port}"
+    allocated_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    allocated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    allocated_expire: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
     __table_args__ = (
         Index("uq_wl_port", "node_id", "slot", unique=True),
+        # COMRes Q5：同 node 下 ip:tcp_port 唯一；不同 node 可共存。SQLite 允许多 NULL。
+        Index("uq_wl_comres_key", "node_id", "com_key", unique=True),
     )
 
 

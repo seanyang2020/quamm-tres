@@ -110,6 +110,15 @@ _WL_PORT_COLUMNS = {
     "probe_json": "TEXT",
 }
 
+# wl_port_binding COMRes 扩展（§2.7）：唯一键 node_id+ip+tcp_port → com_key；占用续约字段
+_WL_COMRES_COLUMNS = {
+    "tcp_port": "INTEGER",
+    "com_key": "VARCHAR(96)",
+    "allocated_by": "VARCHAR(128)",
+    "allocated_at": "DATETIME",
+    "allocated_expire": "DATETIME",
+}
+
 # patrol_run 表新增列：区分全量巡检 / 待检+离线快轮询；旧行 DEFAULT full，不做回填推断
 _PATROL_RUN_COLUMNS = {
     "mode": "VARCHAR(16) NOT NULL DEFAULT 'full'",
@@ -144,6 +153,8 @@ def migrate(session: Session) -> None:
     _rebuild_build_server_for_principal(session)
     _ensure_device_position_index(session)
     _ensure_columns(session, "wl_port_binding", _WL_PORT_COLUMNS)
+    _ensure_columns(session, "wl_port_binding", _WL_COMRES_COLUMNS)
+    _ensure_comres_unique_index(session)
     _ensure_columns(session, "patrol_run", _PATROL_RUN_COLUMNS)
 
 
@@ -190,6 +201,27 @@ def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> No
             added.append(name)
     if added:
         session.commit()
+
+
+def _ensure_comres_unique_index(session: Session) -> None:
+    """COMRes：幂等补建 uq_wl_comres_key (node_id, com_key)。
+
+    com_key 形如 ``{ip}:{tcp_port}``；SQLite/PG 上 NULL com_key 不参与唯一冲突，
+    旧 wirelog 仅按 slot 的行可继续共存。
+    """
+    engine = session.get_bind()
+    if "wl_port_binding" not in inspect(engine).get_table_names():
+        return
+    indexes = {idx["name"] for idx in inspect(engine).get_indexes("wl_port_binding")}
+    if "uq_wl_comres_key" in indexes:
+        return
+    session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_wl_comres_key "
+            "ON wl_port_binding(node_id, com_key)"
+        )
+    )
+    session.commit()
 
 
 def _backfill_admin_role(session: Session) -> None:
