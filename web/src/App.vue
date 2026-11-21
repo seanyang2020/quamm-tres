@@ -3,15 +3,15 @@ import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const pages = [
-  { key: 'dashboard', label: '看板' },
-  { key: 'devices', label: '设备' },
+  { key: 'devices', label: '设备中心' },
   { key: 'scheduling', label: '资源调度' },
   { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
   { key: 'wirelog', label: 'COMRes' },
   { key: 'settings', label: '设置' },
 ]
-const active = ref('dashboard')
+const active = ref('devices')
+const LEGACY_BOARD_KEYS = new Set(['dashboard', 'board', '看板'])
 const settingsTab = ref('system')
 const schedulingTab = ref('leases')
 
@@ -46,6 +46,7 @@ function modelClassLabel(key) {
 const detailStatusTab = ref('all')
 const detailPage = ref(1)
 const detailPageSize = ref(25)
+const deviceProbeSort = ref('') // '' | ascending | descending
 // v0.23 截图预览 / v0.24 截图生命周期（元数据、重新截图、历史、存储管理）
 const screenshotVisible = ref(false)
 const screenshotUrl = ref('')
@@ -64,14 +65,30 @@ const rotateOptions = [0, 90, 180, 270]
 const classifiedDevices = computed(() => devices.value.filter((d) => d && d.status !== 'retired'))
 const deviceTotals = computed(() => {
   const list = classifiedDevices.value
+  const occupied = list.filter((d) => d.status === 'occupied').length
+  const available = list.filter((d) => d.status === 'available').length
+  const offline = list.filter((d) => d.status === 'offline').length
+  const pending = list.filter((d) => d.status === 'pending').length
   return {
     total: list.length,
-    occupied: list.filter((d) => d.status === 'occupied').length,
-    available: list.filter((d) => d.status === 'available').length,
-    offline: list.filter((d) => d.status === 'offline').length,
-    pending: list.filter((d) => d.status === 'pending').length,
+    occupied,
+    available,
+    offline,
+    pending,
+    online: available + occupied,
   }
 })
+// 机型余量 chips：沿用 /api/dashboard.products（可用/已租）
+const productChips = computed(() => {
+  const products = (dashboard.value && dashboard.value.products) || []
+  return products
+    .filter((p) => p && (p.total > 0 || p.available > 0 || p.leased > 0 || p.occupied > 0))
+    .map((p) => ({
+      type: p.type_code,
+      label: `${p.type_code} ${p.available || 0}/${p.leased || 0}`,
+    }))
+})
+const patrolBusy = ref(false)
 const deviceOverview = computed(() => {
   const map = new Map()
   for (const d of classifiedDevices.value) {
@@ -109,7 +126,7 @@ const detailCounts = computed(() => {
     pending: list.filter((d) => d.status === 'pending').length,
   }
 })
-// 状态 + 搜索过滤后的完整列表（分页前）
+// 状态 + 搜索过滤后的完整列表（分页前）；支持按最近探测排序
 const detailFilteredDevices = computed(() => {
   let list = detailBaseDevices.value
   if (detailStatusTab.value !== 'all') list = list.filter((d) => d.status === detailStatusTab.value)
@@ -120,8 +137,23 @@ const detailFilteredDevices = computed(() => {
        d.status, d.health_level, d.mac, d.register_agent]
         .filter((v) => v !== null && v !== undefined).join(' ').toLowerCase().includes(kw))
   }
+  const order = deviceProbeSort.value
+  if (order === 'ascending' || order === 'descending') {
+    const mul = order === 'ascending' ? 1 : -1
+    list = list.slice().sort((a, b) => {
+      const ta = parseUtcDate(deviceProbeAt(a))
+      const tb = parseUtcDate(deviceProbeAt(b))
+      const va = ta ? ta.getTime() : 0
+      const vb = tb ? tb.getTime() : 0
+      if (va === vb) return 0
+      return va < vb ? -mul : mul
+    })
+  }
   return list
 })
+function onDeviceSortChange({ prop, order }) {
+  deviceProbeSort.value = (prop === 'last_probe_at' && order) ? order : ''
+}
 // 当前页数据
 const detailDevices = computed(() => {
   const start = (detailPage.value - 1) * detailPageSize.value
@@ -449,6 +481,8 @@ function openDeviceEdit(row) {
     allowed_agent_labels: Array.isArray(row.allowed_agent_labels) ? [...row.allowed_agent_labels] : [],
     locked: !!row.locked,
     locked_reason: row.locked_reason || '',
+    last_probe_at: row.last_probe_at || null,
+    last_seen_at: row.last_seen_at || null,
   }
   deviceEditVisible.value = true
 }
@@ -694,6 +728,26 @@ function formatLocalHm(iso) {
   const d = parseUtcDate(iso)
   return d ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : iso
 }
+/** 相对时间：3 分钟前 / 1 小时前 / 从未 */
+function formatRelative(iso) {
+  const d = parseUtcDate(iso)
+  if (!d) return '从未'
+  const sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000))
+  if (sec < 60) return '刚刚'
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`
+  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`
+  if (sec < 86400 * 30) return `${Math.floor(sec / 86400)} 天前`
+  return formatLocal(iso)
+}
+function deviceProbeAt(row) {
+  return (row && row.last_probe_at) || null
+}
+/** 探测来源：设备行无独立 source 字段时不伪造，仅在有 last_probe_at 时标注「探测记录」 */
+function deviceProbeSource(row) {
+  if (!row) return ''
+  if (row.last_probe_at) return '探测记录'
+  return ''
+}
 function humanBytes(n) {
   if (n == null) return '-'
   if (n < 1024) return n + ' B'
@@ -847,6 +901,38 @@ function goDevices() {
   deviceSearch.value = ''
   detailStatusTab.value = 'all'
   detailPage.value = 1
+}
+function applyProductChip(typeCode) {
+  if (!typeCode) return
+  openDeviceDetail(typeCode, 'all')
+}
+/** 立即巡检：沿用批量探测（pending+offline），再刷新看板数据与设备列表 */
+async function triggerPatrolNow() {
+  if (patrolBusy.value) return
+  patrolBusy.value = true
+  try {
+    if (me.value && me.value.role === 'admin') {
+      const r = await api('/api/devices/probe-batch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ statuses: ['pending', 'offline'], limit: 20 }),
+      })
+      ElMessage.success(`巡检完成：探测 ${r.scanned || 0} 台，转正 ${r.promoted || 0} 台，未通过 ${r.failed || 0} 台`)
+    }
+    await Promise.all([loadDashboard(), loadDevices()])
+  } catch (e) { ElMessage.error(e.message) } finally { patrolBusy.value = false }
+}
+function resolveLegacyRoute() {
+  try {
+    const hash = String(window.location.hash || '').replace(/^#\/?/, '').split('?')[0]
+    const path = String(window.location.pathname || '').replace(/^\//, '').split('/')[0]
+    const key = hash || path
+    if (LEGACY_BOARD_KEYS.has(key)) {
+      active.value = 'devices'
+      if (window.location.hash && /board|dashboard/i.test(window.location.hash)) {
+        history.replaceState(null, '', window.location.pathname + window.location.search)
+      }
+    }
+  } catch (e) { /* ignore */ }
 }
 async function loadLeases() { leases.value = await api('/api/leases') }
 async function loadCredentials() { credentials.value = await api('/api/credentials') }
@@ -1003,7 +1089,6 @@ const wlDetail = ref(null)
 const wlDetailId = ref(null)
 const wlNodesError = ref('')
 const wlDetailError = ref('')
-const wlEnrollForm = ref({ display_name: '', model_class: 'esl2_hk' })
 const wlConfigForm = ref({
   heartbeat_interval_s: 60,
   log_level: 'info',
@@ -1014,12 +1099,15 @@ const wlConfigForm = ref({
 })
 const wlGrantForm = ref({ slot: 1, principal: '' })
 
-// /api/comres/resources → { allocated, bound, pool }
+// /api/comres/resources → { allocated, bound, pool, inactive }
 const comresAllocated = ref([])
 const comresBound = ref([])
 const comresPool = ref([])
+const comresInactive = ref([])
 const comresError = ref('')
 const comresLoading = ref(false)
+const comresShowInactiveOnly = ref(false)
+const comresPruneBusy = ref(false)
 
 // COMRes 授权抽屉（客户端自助申请审批）
 const comresAuthDrawer = ref(false)
@@ -1032,11 +1120,18 @@ const comresAutoApprove = ref(true)
 const comresAuthFilter = ref('all') // all | pending | approved | rejected | revoked
 const comresAuthBusyId = ref(null)
 
-const comresAllRows = computed(() => [
-  ...(comresAllocated.value || []),
-  ...(comresBound.value || []),
-  ...(comresPool.value || []),
-])
+const comresAllRows = computed(() => {
+  const inactive = comresInactive.value || []
+  if (comresShowInactiveOnly.value) {
+    return inactive
+  }
+  return [
+    ...(comresAllocated.value || []),
+    ...(comresBound.value || []),
+    ...(comresPool.value || []),
+    ...inactive,
+  ]
+})
 
 const comresByNode = computed(() => {
   const m = Object.create(null)
@@ -1152,10 +1247,30 @@ function comresOccupancyLabel(row) {
 function comresRowClass({ row }) {
   const parts = []
   if (!portHasSerial(row)) parts.push('comres-no-serial')
+  if (row && (row.inactive || row.state === 'stale' || row.state === 'superseded'
+      || row.state === 'offline' || row.health_state === 'stale'
+      || row.health_state === 'superseded')) {
+    parts.push('comres-inactive')
+  }
   if (row && row.auth_status && row.auth_status !== 'approved' && row.auth_status !== 'none') {
     parts.push('comres-unauthorized')
   }
   return parts.join(' ')
+}
+
+function comresInactiveLabel(row) {
+  if (!row) return ''
+  const reason = row.inactive_reason || row.state || row.health_state || ''
+  const map = {
+    endpoint_superseded: '端点被取代',
+    heartbeat_stale: '心跳超时',
+    port_offline: '端口离线',
+    node_dormant: '节点休眠',
+    stale: '失效',
+    superseded: '已取代',
+    offline: '离线',
+  }
+  return map[reason] || reason || '失效'
 }
 
 async function loadComresResources() {
@@ -1166,15 +1281,71 @@ async function loadComresResources() {
     comresAllocated.value = Array.isArray(r && r.allocated) ? r.allocated : []
     comresBound.value = Array.isArray(r && r.bound) ? r.bound : []
     comresPool.value = Array.isArray(r && r.pool) ? r.pool : []
+    comresInactive.value = Array.isArray(r && r.inactive) ? r.inactive : []
   } catch (e) {
     comresAllocated.value = []
     comresBound.value = []
     comresPool.value = []
+    comresInactive.value = []
     comresError.value = String(e.message || e)
     ElMessage.error('COMRes 资源加载失败：' + comresError.value)
   } finally {
     comresLoading.value = false
   }
+}
+
+async function runComresPrune() {
+  comresPruneBusy.value = true
+  try {
+    const audit = await api('/api/comres/maintenance/audit')
+    const c = (audit && audit.counts) || {}
+    const lines = [
+      `重复组：${c.duplicates || 0}`,
+      `心跳超时节点：${c.stale || 0}（约 ${c.stale_ports || 0} 端口）`,
+      `孤儿/残留节点：${c.orphan_nodes || 0}（约 ${c.orphan_ports || 0} 端口）`,
+      `幽灵占用：${c.allocated_zombie || 0}`,
+    ]
+    const samples = []
+    for (const d of (audit.duplicates || []).slice(0, 2)) {
+      samples.push(`· 重复 ${d.kind} ${d.com || d.com_key || ''} ×${d.count}`)
+    }
+    for (const s of (audit.stale || []).slice(0, 2)) {
+      samples.push(`· stale ${s.node_id} (${s.display_name || ''})`)
+    }
+    for (const o of (audit.orphan_nodes || []).slice(0, 2)) {
+      samples.push(`· orphan ${o.node_id} → ${o.action}`)
+    }
+    const body = lines.join('\n')
+      + (samples.length ? '\n\n样例：\n' + samples.join('\n') : '')
+      + '\n\n确认后将按规则执行 prune（写审计）。'
+    await ElMessageBox.confirm(body, '清理无效资源（审计预览）', {
+      type: 'warning',
+      confirmButtonText: '执行清理',
+      cancelButtonText: '取消',
+      customClass: 'wl-enroll-box',
+    })
+    const r = await api('/api/comres/maintenance/prune', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dry_run: false }),
+    })
+    ElMessage.success('清理完成：处理 ' + (r.applied_count || 0) + ' 项')
+    loadWlNodes()
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    ElMessage.error(String(e.message || e))
+  } finally {
+    comresPruneBusy.value = false
+  }
+}
+
+function copyNodeToken() {
+  const t = wlDetail.value && wlDetail.value.node_token
+  if (!t) {
+    ElMessage.warning('无可用 token（历史节点可能未存密文，请让客户端重新申请）')
+    return
+  }
+  copyText(t, '已拷贝 node_token')
 }
 
 async function loadComresAuthSummary() {
@@ -1342,29 +1513,6 @@ function openWlShell(row) {
   window.open('/shell.html?' + q.toString(), '_blank')
 }
 
-async function submitWlEnroll() {
-  try {
-    const body = {
-      display_name: (wlEnrollForm.value.display_name || '').trim() || undefined,
-      model_class: (wlEnrollForm.value.model_class || '').trim() || undefined,
-    }
-    // 开放登记：签发 node_token，由 deskserialhub / wireserialhub 自注册；不再走 ADB/fw_setenv
-    const r = await api('/api/wirelog/nodes/provision', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-    ElMessage.success('已发放，明文 token 仅显示这一次，请立即复制到宿主配置')
-    const cred = 'node_id: ' + r.node_id + '\nnode_token: ' + r.node_token
-    await ElMessageBox.alert(
-      cred + '\n\n请将 token 写入 deskserialhub / wireserialhub 配置，宿主会自行 register/heartbeat。',
-      '节点发放结果（请妥善保存）',
-      { customClass: 'wl-enroll-box', confirmButtonText: '复制凭据' })
-    copyText(cred, '已拷贝 node_id / node_token')
-    wlEnrollForm.value = { display_name: '', model_class: 'esl2_hk' }
-    loadWlNodes()
-  } catch (e) { ElMessage.error(String(e.message || e)) }
-}
-
 async function saveWlConfig() {
   const config = { ...wlConfigForm.value }
   try {
@@ -1402,7 +1550,7 @@ async function wlRevoke(slot) {
 
 function wlStatusType(s) {
   return { online: 'success', enrolled: 'info', stale: 'warning',
-           offline: 'danger', retired: 'info' }[s] || 'info'
+           offline: 'danger', dormant: 'info', retired: 'info' }[s] || 'info'
 }
 
 async function wlRetire(node) {
@@ -1465,9 +1613,13 @@ async function openDeviceWlBindings(row) {
 }
 
 function switchPage(key) {
+  if (LEGACY_BOARD_KEYS.has(key)) key = 'devices'
   active.value = key
-  if (key === 'dashboard') loadDashboard()
-  else if (key === 'devices') { goDevices(); loadDevices() }
+  if (key === 'devices') {
+    goDevices()
+    loadDevices()
+    loadDashboard()
+  }
   else if (key === 'scheduling') {
     loadLeases(); loadQueue(); loadAnomalies(); loadNotices(); loadPatrol()
   }
@@ -1500,7 +1652,9 @@ async function boot() {
     } catch (e) { me.value = null }
   }
   booting.value = false
+  resolveLegacyRoute()
   if (me.value) {
+    active.value = 'devices'
     loadDashboard()
     loadVersionInfo()
     loadHealthInfo()
@@ -1532,15 +1686,16 @@ async function doLogin() {
     })
     await offerBrowserSave(me.value.email, token)
     loginToken.value = ''
-    active.value = 'dashboard'
+    active.value = 'devices'
     loadDashboard()
+    loadDevices()
   } catch (e) { loginError.value = e.message }
 }
 
 async function doLogout() {
   try { await api('/api/auth/logout', { method: 'POST' }) } catch (e) { /* ignore */ }
   me.value = null
-  active.value = 'dashboard'
+  active.value = 'devices'
   setupResult.value = null
 }
 
@@ -2042,82 +2197,41 @@ const legendRole = [
     </el-aside>
 
     <el-main>
-      <!-- 看板 -->
-      <div v-if="active === 'dashboard'">
-        <h2>看板</h2>
-        <el-row :gutter="12" v-if="dashboard">
-          <el-col :span="4"><el-card class="dash-card" @click="goDevices('')"><div class="dash-label">设备总数</div><div class="dash-num">{{ dashboard.total_devices }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="goDevices('available')"><div class="dash-label">可用</div><div class="dash-num" style="color: #67c23a">{{ dashboard.available }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="goDevices('occupied')"><div class="dash-label">占用</div><div class="dash-num" style="color: #e6a23c">{{ dashboard.by_status.occupied || 0 }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="goDevices('offline')"><div class="dash-label">离线</div><div class="dash-num" style="color: #f56c6c">{{ dashboard.by_status.offline || 0 }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="goScheduling('leases')"><div class="dash-label">活跃租约</div><div class="dash-num">{{ dashboard.active_leases == null ? '-' : dashboard.active_leases }}</div></el-card></el-col>
-          <el-col :span="4"><el-card class="dash-card" @click="goScheduling('queue')"><div class="dash-label">排队中</div><div class="dash-num">{{ dashboard.queued == null ? '-' : dashboard.queued }}</div></el-card></el-col>
-        </el-row>
-        <p v-if="dashboard && dashboard.last_patrol" style="color: #909399">
-          上次全量巡检：{{ formatLocal(dashboard.last_patrol.ended_at) }}（L3 {{ dashboard.last_patrol.l3_count }} / suspect {{ dashboard.last_patrol.suspect_count }} / offline {{ dashboard.last_patrol.offline_count }}）
-        </p>
-        <p v-if="dashboard && dashboard.last_recover_patrol" style="color: #909399">
-          最近快轮询 {{ formatLocalHm(dashboard.last_recover_patrol.ended_at) }}，离线 {{ dashboard.last_recover_patrol.offline_count }}
-        </p>
-        <h3>机型余量</h3>
-        <el-table :data="dashboard ? dashboard.products : []" border>
-          <el-table-column prop="type_code" label="机型" />
-          <el-table-column prop="display_name" label="名称" />
-          <el-table-column prop="total" label="总数" />
-          <el-table-column prop="available" label="可用" />
-          <el-table-column prop="leased" label="已租(leased)" width="120" />
-          <el-table-column prop="queued" label="排队(queued)" width="120" />
-          <el-table-column prop="occupied" label="占用" />
-        </el-table>
-      </div>
-
-      <!-- 设备 -->
-      <div v-else-if="active === 'devices'">
+      <!-- 设备中心（默认页；旧看板路由已重定向至此） -->
+      <div v-if="active === 'devices'">
+        <div class="device-status-bar">
+          <span>
+            上次全量巡检 {{ dashboard && dashboard.last_patrol ? formatLocal(dashboard.last_patrol.ended_at) : '—' }}
+            · 最近快轮询 {{ dashboard && dashboard.last_recover_patrol ? formatLocalHm(dashboard.last_recover_patrol.ended_at) : '—' }}
+            · 在线 {{ deviceTotals.online }}
+            · 离线 {{ deviceTotals.offline }}
+            · 待检 {{ deviceTotals.pending }}
+          </span>
+          <el-button v-if="me.role === 'admin'" size="small" link type="primary" :loading="patrolBusy" @click="triggerPatrolNow">立即巡检</el-button>
+          <el-button v-else size="small" link type="primary" :loading="patrolBusy" @click="triggerPatrolNow">刷新状态</el-button>
+        </div>
+        <div v-if="productChips.length" class="product-chips">
+          <button
+            v-for="c in productChips"
+            :key="c.type"
+            type="button"
+            class="product-chip"
+            :class="{ 'is-active': selectedDeviceType === c.type }"
+            @click="applyProductChip(c.type)"
+          >{{ c.label }}</button>
+        </div>
         <!-- 概况 -->
         <div v-if="!selectedDeviceType">
-          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 8px; padding: 12px 16px">
+          <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 8px">
             <div style="display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap">
-              <h2 style="margin: 0">设备概况</h2>
+              <h2 style="margin: 0">设备中心</h2>
               <span style="color: #909399; font-size: 12px">登记新设备：探测 → 确认注册（两步）</span>
             </div>
             <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
             <el-button v-else type="primary" plain disabled style="cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
           </div>
 
-          <el-row :gutter="12" style="margin: 14px 0">
-            <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('all')">
-                <div class="ov-label">设备总数</div>
-                <div class="ov-num">{{ deviceTotals.total }}</div>
-              </el-card>
-            </el-col>
-            <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('available')">
-                <div class="ov-label">可用</div>
-                <div class="ov-num" style="color: #67c23a">{{ deviceTotals.available }}</div>
-              </el-card>
-            </el-col>
-            <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('occupied')">
-                <div class="ov-label">占用</div>
-                <div class="ov-num" style="color: #e6a23c">{{ deviceTotals.occupied }}</div>
-              </el-card>
-            </el-col>
-            <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('offline')">
-                <div class="ov-label">离线</div>
-                <div class="ov-num" style="color: #f56c6c">{{ deviceTotals.offline }}</div>
-              </el-card>
-            </el-col>
-            <el-col :span="4" :xs="12" :sm="8" :md="4">
-              <el-card shadow="hover" class="ov-card clickable" @click="openOverviewStat('pending')">
-                <div class="ov-label">待检</div>
-                <div class="ov-num" style="color: #909399">{{ deviceTotals.pending }}</div>
-              </el-card>
-            </el-col>
-          </el-row>
-
-          <p style="color: #909399; margin: 12px 0 8px">共 {{ deviceOverview.length }} 个品类，点击卡片查看该品类设备明细。</p>
+          <p style="color: #909399; margin: 12px 0 8px">共 {{ deviceOverview.length }} 个品类，点击卡片或上方机型 chip 查看明细。</p>
           <el-row :gutter="12">
             <el-col v-for="g in deviceOverview" :key="g.type" :span="8" :xs="24" :sm="12" :md="8" style="margin-bottom: 12px">
               <el-card shadow="hover" class="cat-card" @click="openDeviceType(g.type)">
@@ -2169,7 +2283,7 @@ const legendRole = [
             </div>
           </div>
           <div class="device-table-wrap">
-          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1435px">
+          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1545px" @sort-change="onDeviceSortChange">
             <el-table-column label="操作" width="260">
               <template #default="{ row }">
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small"
@@ -2231,7 +2345,13 @@ const legendRole = [
                 <el-tag v-else size="small" type="success">公共</el-tag>
               </template>
             </el-table-column>
-            
+            <el-table-column label="最近探测" prop="last_probe_at" width="110" sortable="custom">
+              <template #default="{ row }">
+                <el-tooltip :content="deviceProbeAt(row) ? formatLocal(deviceProbeAt(row)) : '从未探测'" placement="top">
+                  <span>{{ formatRelative(deviceProbeAt(row)) }}</span>
+                </el-tooltip>
+              </template>
+            </el-table-column>
           </el-table>
           </div>
           <el-empty v-if="!detailFilteredDevices.length" :description="emptyDetailText">
@@ -2550,23 +2670,9 @@ const legendRole = [
               </template>
             </el-table-column>
           </el-table>
-
-          <el-divider />
-          <h3 style="margin-top:0">发放新节点</h3>
-          <p style="color:#909399;font-size:13px;margin:0 0 10px">
-            开放登记：只填名称/机型即可签发 token；宿主用 token 自注册，无需 ADB / fw_setenv。
+          <p class="comres-muted" style="font-size:12px;margin:12px 0 0">
+            新节点请由客户端自助申请（deskserialhub）；token 在节点详情中查看/复制。
           </p>
-          <el-form label-width="80" inline>
-            <el-form-item label="名称">
-              <el-input v-model="wlEnrollForm.display_name" placeholder="可选，如 desk-A" />
-            </el-form-item>
-            <el-form-item label="机型">
-              <el-input v-model="wlEnrollForm.model_class" placeholder="可选" />
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" @click="submitWlEnroll">发放 token</el-button>
-            </el-form-item>
-          </el-form>
         </el-card>
 
         <el-card v-else style="margin-bottom:16px">
@@ -2584,12 +2690,17 @@ const legendRole = [
             </el-descriptions-item>
             <el-descriptions-item label="IP">{{ wlDetail.ip }}</el-descriptions-item>
             <el-descriptions-item label="版本">{{ wlDetail.sw_version }}</el-descriptions-item>
-            <el-descriptions-item label="token 尾号">{{ wlDetail.token_prefix }}</el-descriptions-item>
+            <el-descriptions-item label="node_token">
+              <span class="comres-muted">{{ wlDetail.node_token_masked || (wlDetail.token_prefix ? wlDetail.token_prefix + '…' : '—') }}</span>
+              <el-button size="small" link type="primary" style="margin-left:8px"
+                         :disabled="!wlDetail.node_token"
+                         @click="copyNodeToken">复制</el-button>
+            </el-descriptions-item>
             <el-descriptions-item label="最近心跳">{{ wlDetail.last_heartbeat_at }}</el-descriptions-item>
             <el-descriptions-item label="在线端口数">{{ wlOnlinePortCount(wlDetail.node_id) }}</el-descriptions-item>
           </el-descriptions>
           <el-alert type="info" :closable="false" show-icon style="margin:12px 0 0"
-                    title="ADB / fw_setenv 发放方式已废弃，节点凭据由开放登记签发，宿主自行 register/heartbeat。" />
+                    title="节点凭据由客户端自助申请签发；详情可复制 node_token。宿主自行 register/heartbeat。" />
 
           <h3>端口明细</h3>
           <el-alert v-if="!(wlDetail.ports && wlDetail.ports.length)"
@@ -2723,16 +2834,23 @@ const legendRole = [
           </el-row>
         </el-card>
 
-        <!-- 资源池视图：/api/comres/resources → allocated / bound / pool -->
+        <!-- 资源池视图：/api/comres/resources → allocated / bound / pool / inactive -->
         <el-card>
           <template #header>
-            <div style="display:flex;justify-content:space-between;align-items:center">
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
               <span>资源池视图（/api/comres/resources）
                 <el-tag size="small" type="warning" style="margin-left:8px">已分配 {{ comresAllocated.length }}</el-tag>
                 <el-tag size="small" type="success" style="margin-left:4px">已绑定 {{ comresBound.length }}</el-tag>
                 <el-tag size="small" type="info" style="margin-left:4px">池 {{ comresPool.length }}</el-tag>
+                <el-tag size="small" type="info" effect="plain" style="margin-left:4px">失效 {{ comresInactive.length }}</el-tag>
               </span>
-              <el-button size="small" :loading="comresLoading" @click="loadComresResources">刷新资源</el-button>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <el-switch v-model="comresShowInactiveOnly" size="small"
+                           inline-prompt active-text="重复/失效" inactive-text="全部" />
+                <el-button size="small" type="warning" plain :loading="comresPruneBusy"
+                           @click="runComresPrune">清理无效资源</el-button>
+                <el-button size="small" :loading="comresLoading" @click="loadComresResources">刷新资源</el-button>
+              </div>
             </div>
           </template>
           <el-table :data="comresAllRows" border size="small" stripe v-loading="comresLoading"
@@ -2741,16 +2859,22 @@ const legendRole = [
             <el-table-column prop="node_ip" label="IP" width="120" />
             <el-table-column label="com" min-width="100">
               <template #default="{ row }">
-                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.com || '—' }}</span>
+                <span :class="{ 'comres-muted': !portHasSerial(row) || row.inactive }">{{ row.com || '—' }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="slot" label="slot" width="60" />
             <el-table-column label="endpoint" min-width="160" show-overflow-tooltip>
               <template #default="{ row }">
-                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.endpoint || '—' }}</span>
+                <span :class="{ 'comres-muted': !portHasSerial(row) || row.inactive }">{{ row.endpoint || '—' }}</span>
               </template>
             </el-table-column>
             <el-table-column prop="health_state" label="health_state" width="110" />
+            <el-table-column label="原因" min-width="110">
+              <template #default="{ row }">
+                <span v-if="row.inactive" class="comres-muted">{{ comresInactiveLabel(row) }}</span>
+                <span v-else class="comres-muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="allocated" width="90">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.allocated ? 'warning' : 'info'">
@@ -2763,7 +2887,8 @@ const legendRole = [
             </el-table-column>
             <el-table-column label="占用/池" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
-                <span v-if="!portHasSerial(row)" class="comres-muted">无串口资源</span>
+                <span v-if="row.inactive" class="comres-muted">{{ comresInactiveLabel(row) }}</span>
+                <span v-else-if="!portHasSerial(row)" class="comres-muted">无串口资源</span>
                 <span v-else>{{ comresOccupancyLabel(row) }}</span>
               </template>
             </el-table-column>
@@ -3390,6 +3515,14 @@ const legendRole = [
       <!-- v0.26 设备编辑 -->
       <el-dialog v-model="deviceEditVisible" title="编辑设备" width="720px" :close-on-click-modal="false">
         <el-form v-if="deviceEditRow" label-width="110px" class="settings-grid-form">
+          <el-form-item label="上次探测" class="settings-grid-full">
+            <span style="color: #606266">
+              {{ deviceEditRow.last_probe_at ? formatLocal(deviceEditRow.last_probe_at) : '从未' }}
+              <span v-if="deviceProbeSource(deviceEditRow)" style="color: #909399; margin-left: 6px">
+                （来源：{{ deviceProbeSource(deviceEditRow) }}）
+              </span>
+            </span>
+          </el-form-item>
           <el-form-item label="名称"><el-input v-model="deviceEditRow.display_name" /></el-form-item>
           <el-form-item label="责任人"><el-input v-model="deviceEditRow.owner" /></el-form-item>
           <el-form-item label="位置">
@@ -3620,18 +3753,23 @@ const legendRole = [
 .user-box { padding: 12px 16px; border-top: 1px solid #eee; }
 .mono { font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; word-break: break-all; }
 .mail-preview { background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 4px; padding: 12px; max-height: 260px; overflow: auto; font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; white-space: pre-wrap; }
-.dash-card { cursor: pointer; transition: box-shadow .2s, transform .2s; }
-.dash-card:hover { box-shadow: 0 4px 14px rgba(0,0,0,.12); transform: translateY(-2px); }
-.dash-card :deep(.el-card__body) { height: 96px; box-sizing: border-box; display: flex; flex-direction: column; justify-content: space-between; }
-.dash-label { color: #606266; font-size: 14px; }
-.dash-num { font-size: 28px; line-height: 1.2; }
 .version-foot { padding: 8px 16px; font-size: 11px; color: #b0b3b8; text-align: center; user-select: none; }
 .title-version { margin-left: 6px; font-size: 11px; font-weight: 400; color: #909399; }
-.ov-card { cursor: pointer; transition: box-shadow .2s, border-color .2s, transform .2s; }
-.ov-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); border-color: #409eff; transform: translateY(-2px); }
-.ov-card :deep(.el-card__body) { padding: 16px; }
-.ov-label { color: #606266; font-size: 14px; }
-.ov-num { font-size: 30px; line-height: 1.2; margin-top: 6px; font-weight: 600; }
+.device-status-bar {
+  display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+  background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 6px;
+  padding: 6px 12px; margin-bottom: 8px; color: #909399; font-size: 12px; line-height: 1.5;
+}
+.product-chips {
+  display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
+  -webkit-overflow-scrolling: touch;
+}
+.product-chip {
+  flex: 0 0 auto; border: 1px solid #dcdfe6; background: #fff; color: #606266;
+  border-radius: 999px; padding: 4px 12px; font-size: 12px; cursor: pointer; line-height: 1.4;
+}
+.product-chip:hover { border-color: #409eff; color: #409eff; }
+.product-chip.is-active { border-color: #409eff; background: #ecf5ff; color: #409eff; }
 .cat-card { cursor: pointer; transition: box-shadow .2s, border-color .2s, transform .2s; }
 .cat-card:hover { box-shadow: 0 6px 18px rgba(64, 158, 255, .18); border-color: #409eff; transform: translateY(-2px); }
 .search-match { color: #409eff; font-size: 13px; white-space: nowrap; }
@@ -3661,12 +3799,14 @@ const legendRole = [
 .intro-open { color: var(--el-color-primary); text-decoration: none; font-size: 13px; }
 .intro-open:hover { text-decoration: underline; }
 .form-hint { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; }
-/* COMRes：无串口资源灰显 */
+/* COMRes：无串口资源 / 失效资源灰显 */
 .comres-muted { color: #c0c4cc; }
 .comres-no-serial { color: #c0c4cc; }
 .comres-no-serial .cell { color: #c0c4cc; }
 .comres-unauthorized { color: #c0c4cc; }
 .comres-unauthorized .cell { color: #c0c4cc; }
+.comres-inactive { color: #c0c4cc; }
+.comres-inactive .cell { color: #c0c4cc; }
 .comres-auth-card {
   border: 1px solid var(--el-border-color-lighter, #ebeef5);
   border-radius: 8px;

@@ -135,7 +135,11 @@ def post_grant(node_id: str, payload: dict = Body(...),
 def post_enroll(payload: dict = Body(default={}),
                 session: Session = Depends(get_session),
                 identity=Depends(web_auth.require_admin)):
-    """开放登记发放节点。只读 name/model；adb_address 等旧字段可选，未知键忽略。"""
+    """[deprecated t942] 开放登记发放节点。
+
+    管理面「发放新节点」入口已移除；请走 ``POST /api/comres/apply``。
+    本接口保留兼容旧脚本 / MCP；不要从新 UI 调用。
+    """
     payload = payload or {}
     return wirelog.enroll(
         session,
@@ -412,7 +416,10 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
 def post_provision_host(payload: dict = Body(default={}),
                         session: Session = Depends(get_session),
                         identity=Depends(web_auth.require_admin)):
-    """给 PC 端串口宿主签发接入凭据（明文 token 只返回一次）。"""
+    """[deprecated t942] 给 PC 端串口宿主签发接入凭据。
+
+    管理面入口已移除；请走 ``POST /api/comres/apply``。保留兼容测试/脚本。
+    """
     return _domain_http(
         wirelog.provision_host, session,
         display_name=payload.get("display_name"),

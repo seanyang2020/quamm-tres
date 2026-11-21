@@ -20,6 +20,7 @@ from app.models import (
     WireLogNode,
     WireLogPortBinding,
 )
+from app.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils import hash_token, new_id, new_device_id, new_token, token_prefix, utcnow
 from app.domain.catalog import DomainError
 from app.constants import DeviceStatus, HealthLevel, RegisterChannel
@@ -69,10 +70,12 @@ def enroll(session, adb_address=None, operator=None, display_name=None,
            model_class="esl2_hk", reuse_existing=True, **_ignored):
     """生成 node_id + 明文 token，建节点与发放记录。
 
-    明文 token 只在返回值出现一次，库内只存哈希。
-    现行主路径是开放登记（可不传 adb_address）；adb_address / fw_setenv
-    仅作旧 wirelog 采集机兼容：同 adb 未退役节点可复用重发（ADR-7），
-    响应仍附带 fw_setenv 供老客户端，新 UI 不再展示。
+    .. deprecated:: t942
+        管理面「发放新节点」已移除；请走 ``POST /api/comres/apply`` 客户端自助申请。
+        本接口保留供板侧 / 旧脚本兼容，勿从新 UI 调用。
+
+    明文 token 在返回值出现；库内存哈希 + Fernet 密文（节点详情可复制）。
+    adb_address / fw_setenv 仅作旧 wirelog 采集机兼容。
     未知关键字参数被忽略，便于前后端字段演进。
     """
     now = utcnow()
@@ -86,6 +89,7 @@ def enroll(session, adb_address=None, operator=None, display_name=None,
         hmac_key = secrets.token_hex(16)
         node.node_token_hash = hash_token(plain)
         node.token_prefix = token_prefix(plain)
+        node.token_cipher = encrypt_secret(plain)
         node.hmac_key = hmac_key
         if display_name:
             node.display_name = display_name
@@ -102,6 +106,7 @@ def enroll(session, adb_address=None, operator=None, display_name=None,
             model_class=model_class,
             node_token_hash=hash_token(plain),
             token_prefix=token_prefix(plain),
+            token_cipher=encrypt_secret(plain),
             hmac_key=hmac_key,
             status="enrolled",
             provisioned_at=now,
@@ -574,6 +579,16 @@ def list_nodes(session):
     return [_node_brief(session, n, auth_map=auth_map) for n in nodes]
 
 
+def _plain_node_token(node: WireLogNode) -> str | None:
+    """从节点密文还原明文 token（管理面复制用）。"""
+    if not getattr(node, "token_cipher", None):
+        return None
+    try:
+        return decrypt_secret(node.token_cipher)
+    except ValueError:
+        return None
+
+
 def get_node(session, node_id):
     from app.domain import comres_apply
     node = session.get(WireLogNode, node_id)
@@ -582,21 +597,54 @@ def get_node(session, node_id):
     auth_map = comres_apply.auth_status_by_node(session)
     bindings = (session.query(WireLogPortBinding)
                 .filter_by(node_id=node_id).all())
+    plain = _plain_node_token(node)
+    # 兼容：apply 签发但节点尚未回填 cipher 时从申请表取
+    if plain is None:
+        from app.models import WireLogClientApply
+        row = (
+            session.query(WireLogClientApply)
+            .filter_by(issued_node_id=node_id, status="approved")
+            .order_by(WireLogClientApply.approved_at.desc())
+            .first()
+        )
+        if row and row.token_cipher:
+            try:
+                plain = decrypt_secret(row.token_cipher)
+                if plain and not node.token_cipher:
+                    node.token_cipher = row.token_cipher
+                    session.commit()
+            except ValueError:
+                plain = None
     return {
         **_node_brief(session, node, auth_map=auth_map),
+        "node_token": plain,  # 管理面复制；无密文时为 null
+        "node_token_masked": (
+            f"{node.token_prefix}…" if node.token_prefix else None
+        ),
         "caps": public_caps(node),
         "config": node.config_json,
-        "ports": [
-            {"slot": b.slot, "tty": b.tty_name, "baud": b.baud,
-             "endpoint": b.endpoint, "com_name": b.com_name,
-             "probe": _json_or_none(b.probe_json),
-             "shell_reachable": b.shell_reachable, "shell_mac": b.shell_mac,
-             "shell_ip": b.shell_ip, "bound_device_id": b.bound_device_id,
-             "bound_device": _device_summary(session, b.bound_device_id),
-             "write_granted_to": b.write_granted_to,
-             "health_state": b.health_state}
-            for b in bindings
-        ],
+        "ports": [_port_occupancy_fields(b) | {
+            "slot": b.slot, "tty": b.tty_name, "baud": b.baud,
+            "endpoint": b.endpoint, "com_name": b.com_name,
+            "probe": _json_or_none(b.probe_json),
+            "shell_reachable": b.shell_reachable, "shell_mac": b.shell_mac,
+            "shell_ip": b.shell_ip, "bound_device_id": b.bound_device_id,
+            "bound_device": _device_summary(session, b.bound_device_id),
+            "write_granted_to": b.write_granted_to,
+            "health_state": b.health_state,
+        } for b in bindings],
+    }
+
+
+def _port_occupancy_fields(binding) -> dict:
+    """F6：节点详情端口项补 allocated / bound / allocated_by。"""
+    from app.domain import comres
+    view = comres._port_allocated_view(binding)
+    return {
+        "allocated": view["allocated"],
+        "bound": view["bound"],
+        "allocated_by": view["allocated_by"],
+        "allocated_expire": view["allocated_expire"],
     }
 
 
@@ -704,8 +752,10 @@ def provision_host(session, display_name=None, model_class=None,
                    operator=None, note=None, **_ignored):
     """开放登记：给串口宿主签发接入凭据（不需要 adb / fw_setenv）。
 
-    明文 token 只在返回值出现一次，库内只存哈希；宿主用 token 走
-    register/heartbeat 自注册。未知关键字参数忽略。
+    .. deprecated:: t942
+        管理面入口已移除；请走 ``POST /api/comres/apply``。接口保留兼容测试/脚本。
+
+    明文 token 在返回值出现；库内存哈希 + Fernet 密文。未知关键字参数忽略。
     """
     now = utcnow()
     node_id = new_id("wl", 8)
@@ -716,6 +766,7 @@ def provision_host(session, display_name=None, model_class=None,
         model_class=model_class,
         node_token_hash=hash_token(plain),
         token_prefix=token_prefix(plain),
+        token_cipher=encrypt_secret(plain),
         hmac_key=secrets.token_hex(16),
         status="enrolled",
         provisioned_at=now,

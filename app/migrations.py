@@ -119,6 +119,11 @@ _WL_COMRES_COLUMNS = {
     "allocated_expire": "DATETIME",
 }
 
+# wl_node：管理面可复制 node_token（Fernet 密文，t942）
+_WL_NODE_COLUMNS = {
+    "token_cipher": "TEXT",
+}
+
 # patrol_run 表新增列：区分全量巡检 / 待检+离线快轮询；旧行 DEFAULT full，不做回填推断
 _PATROL_RUN_COLUMNS = {
     "mode": "VARCHAR(16) NOT NULL DEFAULT 'full'",
@@ -154,7 +159,12 @@ def migrate(session: Session) -> None:
     _ensure_device_position_index(session)
     _ensure_columns(session, "wl_port_binding", _WL_PORT_COLUMNS)
     _ensure_columns(session, "wl_port_binding", _WL_COMRES_COLUMNS)
+    _ensure_columns(session, "wl_node", _WL_NODE_COLUMNS)
     _ensure_comres_unique_index(session)
+    # t942：先清理历史重复，再补 (node_id, com_name) 唯一索引
+    _dedupe_comres_bindings(session)
+    _ensure_comres_node_com_unique_index(session)
+    _backfill_wl_node_token_cipher(session)
     _ensure_columns(session, "patrol_run", _PATROL_RUN_COLUMNS)
     _ensure_wl_client_apply_table(session)
 
@@ -233,6 +243,160 @@ def _ensure_comres_unique_index(session: Session) -> None:
             "ON wl_port_binding(node_id, com_key)"
         )
     )
+    session.commit()
+
+
+def _ensure_comres_node_com_unique_index(session: Session) -> None:
+    """t942：幂等补建 uq_wl_port_node_com (node_id, com_name)。"""
+    engine = session.get_bind()
+    if "wl_port_binding" not in inspect(engine).get_table_names():
+        return
+    indexes = {idx["name"] for idx in inspect(engine).get_indexes("wl_port_binding")}
+    if "uq_wl_port_node_com" in indexes:
+        return
+    session.execute(
+        text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_wl_port_node_com "
+            "ON wl_port_binding(node_id, com_name)"
+        )
+    )
+    session.commit()
+
+
+def _dedupe_comres_bindings(session: Session) -> None:
+    """t942 一次性迁移（幂等）：按 (node_id, com) / (ip, tcp_port) 去重。
+
+    - 同 node 同 com_name：保留 last_checked_at 最新一行，其余删除并写 audit；
+    - 同 com_key（ip:tcp_port）跨 node：保留 online 且 last_checked 最新，其余 health_state=superseded。
+    """
+    import json
+    from datetime import datetime
+
+    from app.models import WireLogAudit, WireLogNode, WireLogPortBinding
+    from app.utils import utcnow
+
+    engine = session.get_bind()
+    if "wl_port_binding" not in inspect(engine).get_table_names():
+        return
+
+    # 结构清理本身幂等：可重复跑
+    rows = session.query(WireLogPortBinding).all()
+    if not rows:
+        return
+
+    now = utcnow()
+    deleted = 0
+    superseded = 0
+
+    # ---- (node_id, com_name) 去重 ----
+    by_node_com: dict[tuple[str, str], list] = {}
+    for b in rows:
+        com = (b.com_name or "").strip()
+        if not com:
+            continue
+        key = (b.node_id, com)
+        by_node_com.setdefault(key, []).append(b)
+
+    for (node_id, com), group in by_node_com.items():
+        if len(group) < 2:
+            continue
+
+        def _seen(b):
+            return b.last_checked_at or datetime.min
+
+        group.sort(key=_seen, reverse=True)
+        keeper = group[0]
+        for dup in group[1:]:
+            session.add(WireLogAudit(
+                node_id=node_id,
+                action="comres_dedupe_delete",
+                actor="migrate",
+                result="ok",
+                detail=json.dumps({
+                    "com": com, "kept_id": keeper.id, "deleted_id": dup.id,
+                    "com_key": dup.com_key, "endpoint": dup.endpoint,
+                }, ensure_ascii=False),
+                created_at=now,
+            ))
+            session.delete(dup)
+            deleted += 1
+
+    session.flush()
+
+    # ---- (ip, tcp_port) / com_key 跨 node：保留 online+最新，其余 superseded ----
+    nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
+    remaining = (
+        session.query(WireLogPortBinding)
+        .filter(WireLogPortBinding.com_key.isnot(None))
+        .filter(WireLogPortBinding.com_key != "")
+        .all()
+    )
+    by_com_key: dict[str, list] = {}
+    for b in remaining:
+        hs = (b.health_state or "").lower()
+        if hs == "superseded":
+            continue
+        by_com_key.setdefault(b.com_key, []).append(b)
+
+    def _rank(b):
+        node = nodes.get(b.node_id)
+        online = 1 if node is not None and (node.status or "") == "online" else 0
+        seen = b.last_checked_at or datetime.min
+        return (online, seen)
+
+    for com_key, group in by_com_key.items():
+        if len(group) < 2:
+            continue
+        nodes_in = {b.node_id for b in group}
+        if len(nodes_in) < 2:
+            continue
+        group.sort(key=_rank, reverse=True)
+        keeper = group[0]
+        for other in group[1:]:
+            if other.node_id == keeper.node_id:
+                continue
+            was = other.health_state
+            other.health_state = "superseded"
+            session.add(WireLogAudit(
+                node_id=other.node_id,
+                action="comres_dedupe_supersede",
+                actor="migrate",
+                result="ok",
+                detail=json.dumps({
+                    "com_key": com_key, "com": other.com_name,
+                    "kept_node": keeper.node_id, "kept_id": keeper.id,
+                    "was_health_state": was,
+                }, ensure_ascii=False),
+                created_at=now,
+            ))
+            superseded += 1
+
+    if deleted or superseded:
+        session.commit()
+
+
+def _backfill_wl_node_token_cipher(session: Session) -> None:
+    """从 wl_client_apply 回填 wl_node.token_cipher（仅空值）。"""
+    engine = session.get_bind()
+    tables = set(inspect(engine).get_table_names())
+    if "wl_node" not in tables or "wl_client_apply" not in tables:
+        return
+    cols = {c["name"] for c in inspect(engine).get_columns("wl_node")}
+    if "token_cipher" not in cols:
+        return
+    session.execute(text(
+        "UPDATE wl_node SET token_cipher = ("
+        "  SELECT a.token_cipher FROM wl_client_apply a "
+        "  WHERE a.issued_node_id = wl_node.node_id "
+        "    AND a.token_cipher IS NOT NULL "
+        "    AND a.status = 'approved' "
+        "  ORDER BY a.approved_at DESC LIMIT 1"
+        ") WHERE (token_cipher IS NULL OR token_cipher = '') "
+        "AND EXISTS ("
+        "  SELECT 1 FROM wl_client_apply a "
+        "  WHERE a.issued_node_id = wl_node.node_id AND a.token_cipher IS NOT NULL"
+        ")"
+    ))
     session.commit()
 
 

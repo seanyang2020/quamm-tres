@@ -101,6 +101,7 @@ def _issue_node_and_token(session: Session, row: WireLogClientApply,
         else:
             node.node_token_hash = hash_token(plain)
             node.token_prefix = token_prefix(plain)
+            node.token_cipher = encrypt_secret(plain)
             if row.display_name:
                 node.display_name = row.display_name
             if row.model_class:
@@ -110,12 +111,14 @@ def _issue_node_and_token(session: Session, row: WireLogClientApply,
 
     if node is None:
         node_id = new_id("wl", 8)
+        cipher = encrypt_secret(plain)
         node = WireLogNode(
             node_id=node_id,
             display_name=row.display_name or node_id,
             model_class=row.model_class,
             node_token_hash=hash_token(plain),
             token_prefix=token_prefix(plain),
+            token_cipher=cipher,
             hmac_key=secrets.token_hex(16),
             status="enrolled",
             provisioned_at=now,
@@ -129,8 +132,12 @@ def _issue_node_and_token(session: Session, row: WireLogClientApply,
             actor=actor, detail={"client_id": row.client_id},
         )
 
-    row.token_cipher = encrypt_secret(plain)
+    cipher = encrypt_secret(plain)
+    row.token_cipher = cipher
     row.token_prefix = token_prefix(plain)
+    if node is not None:
+        node.token_cipher = cipher
+        node.token_prefix = token_prefix(plain)
     return plain
 
 
@@ -407,13 +414,26 @@ def reject_application(session: Session, request_id: int, reason: str,
     row.status = "rejected"
     row.rejected_at = now
     row.reject_reason = reason
-    # 不签发；若此前已有 token 也不清节点（拒绝通常发生在 pending）
+    # t942：reject 立即清理 binding（与 revoke 一致）
+    removed = 0
+    if row.issued_node_id:
+        removed = (
+            session.query(WireLogPortBinding)
+            .filter_by(node_id=row.issued_node_id)
+            .delete(synchronize_session=False)
+        )
     wirelog._audit(
         session, row.issued_node_id, "comres_apply_reject",
-        actor=actor, detail={"client_id": row.client_id, "reason": reason},
+        actor=actor, detail={
+            "client_id": row.client_id, "reason": reason,
+            "bindings_removed": removed,
+        },
     )
     session.commit()
-    return {"status": "rejected", "request_id": row.id, "reason": reason}
+    return {
+        "status": "rejected", "request_id": row.id, "reason": reason,
+        "bindings_removed": removed,
+    }
 
 
 def revoke_application(session: Session, request_id: int,

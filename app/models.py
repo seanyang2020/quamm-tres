@@ -580,11 +580,13 @@ class WireLogNode(Base):
     model_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
     node_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
     token_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Fernet 密文：管理面节点详情可复制 node_token；与 wl_client_apply.token_cipher 同源
+    token_cipher: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 反向验证 HMAC 对称密钥（ADR-6），经 adb 写入 uboot-env wl_hmac_key
     hmac_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(
         String(16), default="enrolled", server_default="enrolled", nullable=False
-    )  # enrolled | online | stale | offline | retired
+    )  # enrolled | online | stale | offline | dormant | retired
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
     sw_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     caps_json: Mapped[list | None] = mapped_column(JSON, nullable=True)
@@ -695,6 +697,8 @@ class WireLogPortBinding(Base):
         Index("uq_wl_port", "node_id", "slot", unique=True),
         # COMRes Q5：同 node 下 ip:tcp_port 唯一；不同 node 可共存。SQLite 允许多 NULL。
         Index("uq_wl_comres_key", "node_id", "com_key", unique=True),
+        # t942：同 node 同串口名唯一（register 按 com upsert）。SQLite 允许多 NULL。
+        Index("uq_wl_port_node_com", "node_id", "com_name", unique=True),
     )
 
 

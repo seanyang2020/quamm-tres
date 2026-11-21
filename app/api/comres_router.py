@@ -11,7 +11,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 from sqlalchemy.orm import Session
 
 from app.db import get_session
-from app.domain import comres, comres_apply
+from app.domain import comres, comres_apply, comres_prune
 from app.domain.catalog import DomainError
 from app import web_auth
 
@@ -171,3 +171,25 @@ def put_apply_settings(payload: dict = Body(...),
     else:
         enabled = bool(val)
     return {"auto_approve": comres_apply.set_auto_approve(session, enabled)}
+
+
+# ---------------- 维护：审计 / 清理无效资源（t942） ----------------
+
+@router.get("/maintenance/audit")
+def get_maintenance_audit(session: Session = Depends(get_session),
+                          _id=Depends(web_auth.require_login)):
+    """dry-run：duplicates / stale / orphan_nodes / allocated_zombie。"""
+    return comres_prune.audit_maintenance(session)
+
+
+@router.post("/maintenance/prune")
+def post_maintenance_prune(payload: dict = Body(default={}),
+                           session: Session = Depends(get_session),
+                           identity=Depends(web_auth.require_login)):
+    """按规则清理；body ``{dry_run?: bool}``，写 wl_audit。"""
+    payload = payload or {}
+    dry_run = bool(payload.get("dry_run", False))
+    return comres_prune.prune_maintenance(
+        session, dry_run=dry_run,
+        actor=getattr(identity, "email", None) or "admin",
+    )

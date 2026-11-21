@@ -1,8 +1,8 @@
 """COMRes 域：TCP COM 资源注册 / 解注册 / 心跳 / 自动匹配 / 占用续约。
 
 契约 §2.7。复用 wl_node / wl_port_binding / wl_audit；与旧 wirelog 北向并存。
-唯一键：node_id + ip + tcp_port（落库为 com_key = "{ip}:{tcp_port}"）。
-TRES 不主动连串口探活。
+唯一键（t942）：node_id + com（com_name）；端点独占：ip 非空时 (ip, tcp_port) 全局互斥。
+com_key = "{ip}:{tcp_port}" 仍作端点索引。TRES 不主动连串口探活。
 """
 from __future__ import annotations
 
@@ -25,8 +25,11 @@ HEARTBEAT_INTERVAL_S = 3600
 ALLOCATED_TTL_S = 15 * 60
 # auto:<basis> 占用：≥ 2 倍心跳，覆盖一次漏报仍保持专属口
 AUTO_ALLOCATED_TTL_S = 2 * HEARTBEAT_INTERVAL_S
-# 节点超 2 倍心跳无上报 → stale，释放该节点全部 auto 占用
+# 节点超 2 倍心跳无上报 → 释放该节点全部 auto 占用（与 prune 的 offline/stale 并存）
 NODE_STALE_S = 2 * HEARTBEAT_INTERVAL_S
+
+# 不进可分配池、资源池视图灰显
+_INACTIVE_HEALTH = frozenset({"offline", "stale", "superseded"})
 
 _ENDPOINT_RE = re.compile(r"^tcp://.+", re.IGNORECASE)
 
@@ -73,8 +76,8 @@ def make_com_key(ip: str | None, tcp_port: int | None) -> str | None:
     return f"{ip}:{int(tcp_port)}"
 
 
-def _is_allocated(binding: WireLogPortBinding, now=None) -> bool:
-    """占用有效：allocated_by 存在且未过期（与 bound 解耦，支撑三态视图）。"""
+def _allocation_marker_active(binding: WireLogPortBinding, now=None) -> bool:
+    """allocated_by 存在且未过期（含 auto:*；TTL 回收 / 续约用）。"""
     now = now or utcnow()
     if not binding.allocated_by:
         return False
@@ -87,22 +90,44 @@ def _is_auto_allocation(binding: WireLogPortBinding) -> bool:
     return bool(binding.allocated_by) and str(binding.allocated_by).startswith("auto:")
 
 
+def _is_allocated(binding: WireLogPortBinding, now=None) -> bool:
+    """真实租用占用：非 auto:* 且 marker 未过期。
+
+    F6：``auto:*`` 是自动绑定占位，展示/registrar 口径算 bound，不算已分配。
+    """
+    if not _allocation_marker_active(binding, now):
+        return False
+    return not _is_auto_allocation(binding)
+
+
+def _is_bound(binding: WireLogPortBinding, now=None) -> bool:
+    """已绑定：有 bound_device_id，或有效的 auto:* 占位。"""
+    if binding.bound_device_id:
+        return True
+    return _is_auto_allocation(binding) and _allocation_marker_active(binding, now)
+
+
 def _is_online_binding(binding: WireLogPortBinding) -> bool:
-    """在线视图口径：health_state=offline 的端口从 resources 三态中剔除。"""
-    return (binding.health_state or "").lower() != "offline"
+    """可分配/三态视图口径：offline/stale/superseded 不进 allocated/bound/pool。"""
+    return (binding.health_state or "").lower() not in _INACTIVE_HEALTH
 
 
 def _port_allocated_view(binding: WireLogPortBinding, now=None) -> dict:
+    now = now or utcnow()
     allocated = _is_allocated(binding, now)
+    bound = _is_bound(binding, now)
+    marker = _allocation_marker_active(binding, now)
     return {
         "com": binding.com_name,
         "slot": binding.slot,
         "endpoint": binding.endpoint,
         "allocated": allocated,
-        "allocated_by": binding.allocated_by if allocated else None,
+        "bound": bound,
+        # 保留 allocated_by 便于审计（含 auto:*），即使 allocated=false
+        "allocated_by": binding.allocated_by if marker else None,
         "allocated_expire": (
             binding.allocated_expire.isoformat()
-            if allocated and binding.allocated_expire else None
+            if marker and binding.allocated_expire else None
         ),
         "bound_device_id": binding.bound_device_id,
     }
@@ -126,23 +151,31 @@ def _clear_allocation(binding: WireLogPortBinding) -> dict:
 
 
 def expire_allocations(session: Session) -> list[dict]:
-    """超时未续约 → 解除占用；节点 stale → 释放该节点全部 auto 占用。
+    """超时未续约 → 解除占用（仅节点非 online）；节点失联 → 释放 auto 占用。
 
-    保留 bound_device_id，落入「已绑定未分配」。人工/资源池占用仍仅按 allocated_expire。
+    t942：已分配端口只在「节点非 online 且 allocated TTL 到期」时回收；
+    正常 online 节点上的续约窗口由占用方 allocated-heartbeat 维持，不因 TTL
+    单独清掉（避免幽灵占用与误伤并存时的口径漂移）。
+    保留 bound_device_id，落入「已绑定未分配」。
     """
     now = utcnow()
     released = []
+    nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
     rows = (session.query(WireLogPortBinding)
             .filter(WireLogPortBinding.allocated_expire.isnot(None))
             .filter(WireLogPortBinding.allocated_expire <= now)
             .all())
     for b in rows:
+        node = nodes.get(b.node_id)
+        if node is not None and (node.status or "") == "online":
+            continue
         detail = _clear_allocation(b)
+        detail["reason"] = "ttl_expired_node_not_online"
         _audit(session, b.node_id, "comres_release_expired",
                result="ok", detail=detail)
         released.append({"node_id": b.node_id, "com_key": b.com_key, **detail})
 
-    # 节点 stale：曾上报且超 2 倍心跳无再报 → 释放仍有效的 auto:* 占用
+    # 节点失联：曾上报且超 2 倍心跳无再报 → 释放仍有效的 auto:* 占用
     stale_before = now - timedelta(seconds=NODE_STALE_S)
     stale_nodes = (
         session.query(WireLogNode)
@@ -151,6 +184,9 @@ def expire_allocations(session: Session) -> list[dict]:
         .all()
     )
     for node in stale_nodes:
+        if (node.status or "") == "online":
+            # online 但心跳已超时：仍可清 auto（与 prune 转 offline 互补）
+            pass
         autos = (
             session.query(WireLogPortBinding)
             .filter_by(node_id=node.node_id)
@@ -160,7 +196,7 @@ def expire_allocations(session: Session) -> list[dict]:
         for b in autos:
             if not _is_auto_allocation(b):
                 continue
-            if not _is_allocated(b, now):
+            if not _allocation_marker_active(b, now):
                 continue
             detail = _clear_allocation(b)
             detail["reason"] = "node_stale"
@@ -191,7 +227,7 @@ def _mark_allocated(binding: WireLogPortBinding, by: str, ttl_s: int | None = No
 
 def _renew_auto_lease_if_needed(binding: WireLogPortBinding) -> None:
     """心跳/再上报时刷新 auto 占用，使其覆盖至下次 2 倍心跳窗口。"""
-    if _is_allocated(binding) and _is_auto_allocation(binding):
+    if _is_auto_allocation(binding) and _allocation_marker_active(binding):
         _mark_allocated(binding, by=binding.allocated_by)
 
 
@@ -256,9 +292,97 @@ def _find_binding(session, node_id: str, *, com_key=None, slot=None,
     return None
 
 
+def _endpoint_online_window_s() -> int:
+    """对方 last_seen「仍算更新」的窗口：与 prune stale 口径一致。"""
+    from app.domain.comres_prune import stale_timeout_s
+    return stale_timeout_s()
+
+
+def _holder_endpoint_active(other: WireLogPortBinding,
+                            other_node: WireLogNode | None,
+                            *, now=None, window_s: int | None = None) -> bool:
+    """占位方是否仍构成真冲突（F5）。
+
+    仅当：节点 online，且 binding 非 inactive，且 last_checked_at 在活跃窗口内。
+    """
+    now = now or utcnow()
+    window_s = window_s if window_s is not None else _endpoint_online_window_s()
+    if other_node is None or (other_node.status or "") != "online":
+        return False
+    hs = (other.health_state or "").lower()
+    if hs in _INACTIVE_HEALTH:
+        return False
+    checked = other.last_checked_at
+    if checked is None:
+        return False
+    return (now - checked).total_seconds() <= window_s
+
+
+def _resolve_endpoint_exclusivity(session: Session, node: WireLogNode,
+                                  host: str | None, tcp_port: int | None,
+                                  com_key: str | None) -> str | None:
+    """端点独占：ip 非空时 (ip, tcp_port) 全局唯一。
+
+    返回 None 表示可进池；返回 \"endpoint_conflict\" 表示对方仍活跃占位。
+    F5：对方非 online / health 非活跃 / last_checked 过期 → 接管（superseded +
+    ``comres_endpoint_takeover``）；已 superseded 的不重复写 takeover（幂等）。
+    """
+    if not host or tcp_port is None or not com_key:
+        return None
+    others = (
+        session.query(WireLogPortBinding)
+        .filter(WireLogPortBinding.com_key == com_key)
+        .filter(WireLogPortBinding.node_id != node.node_id)
+        .all()
+    )
+    if not others:
+        return None
+
+    now = utcnow()
+    window = _endpoint_online_window_s()
+    conflict = False
+    for other in others:
+        hs = (other.health_state or "").lower()
+        if hs == "superseded":
+            continue
+        other_node = session.get(WireLogNode, other.node_id)
+        if _holder_endpoint_active(other, other_node, now=now, window_s=window):
+            conflict = True
+            continue
+        # 失效占位 → 接管
+        was = other.health_state
+        node_status = other_node.status if other_node else None
+        reason = "holder_not_online"
+        if other_node is not None and (other_node.status or "") == "online":
+            if hs in _INACTIVE_HEALTH:
+                reason = "holder_inactive_health"
+            else:
+                reason = "holder_last_checked_stale"
+        other.health_state = "superseded"
+        _audit(session, other.node_id, "comres_endpoint_takeover",
+               actor=node.node_id, result="ok", detail={
+                   "com_key": com_key,
+                   "com": other.com_name,
+                   "ip": host,
+                   "tcp_port": int(tcp_port),
+                   "by_node": node.node_id,
+                   "was_health_state": was,
+                   "holder_node_status": node_status,
+                   "holder_last_checked_at": (
+                       other.last_checked_at.isoformat()
+                       if other.last_checked_at else None
+                   ),
+                   "reason": reason,
+               })
+    return "endpoint_conflict" if conflict else None
+
+
 def _upsert_comres_binding(session, node: WireLogNode, port: dict,
-                           local_ip: str | None) -> WireLogPortBinding:
-    """按 node_id+ip+tcp_port upsert；保留 slot 兼容旧唯一约束。"""
+                           local_ip: str | None) -> WireLogPortBinding | dict:
+    """按 (node_id, com) upsert；端点冲突时返回 dict(reason=endpoint_conflict)。
+
+    保留 slot / com_key 兼容旧唯一约束。
+    """
     raw_ep = port.get("endpoint")
     if "endpoint" in port:
         ep = _validate_endpoint(raw_ep)
@@ -273,9 +397,41 @@ def _upsert_comres_binding(session, node: WireLogNode, port: dict,
         host, tcp_port = parse_endpoint(ep_store)
     com_key = make_com_key(host, tcp_port)
 
+    com = port.get("com") or port.get("port_name") or port.get("com_name") or port.get("tty")
+    com_name = str(com).strip() if com else None
+
+    # 端点独占：冲突则本端口不进池
+    conflict = _resolve_endpoint_exclusivity(session, node, host, tcp_port, com_key)
+    if conflict:
+        _audit(session, node.node_id, "comres_endpoint_conflict",
+               result="conflict", detail={
+                   "com": com_name, "com_key": com_key, "endpoint": ep_store,
+                   "reason": conflict,
+               })
+        return {
+            "com": com_name,
+            "slot": port.get("slot"),
+            "endpoint": ep_store,
+            "allocated": False,
+            "allocated_by": None,
+            "tcp_port": int(tcp_port) if tcp_port is not None else None,
+            "com_key": com_key,
+            "health_state": None,
+            "bound_device_id": None,
+            "reason": conflict,
+        }
+
     slot_raw = port.get("slot")
     binding = None
-    if com_key:
+    # t942：优先按 (node_id, com) 定位，同 com 覆盖
+    if com_name:
+        binding = (
+            session.query(WireLogPortBinding)
+            .filter_by(node_id=node.node_id)
+            .filter(WireLogPortBinding.com_name == com_name)
+            .one_or_none()
+        )
+    if binding is None and com_key:
         binding = (session.query(WireLogPortBinding)
                    .filter_by(node_id=node.node_id, com_key=com_key)
                    .one_or_none())
@@ -295,19 +451,18 @@ def _upsert_comres_binding(session, node: WireLogNode, port: dict,
     if com_key:
         binding.com_key = com_key
 
-    com = port.get("com") or port.get("port_name") or port.get("com_name") or port.get("tty")
-    if com:
-        binding.com_name = str(com).strip()
+    if com_name:
+        binding.com_name = com_name
     if port.get("tty"):
         binding.tty_name = str(port["tty"]).strip()
-    elif com and not binding.tty_name:
-        binding.tty_name = str(com).strip()
+    elif com_name and not binding.tty_name:
+        binding.tty_name = com_name
     if port.get("baud") is not None:
         baud = int(port["baud"])
         if baud <= 0:
             raise DomainError("COMRES_BAD_BAUD", f"baud 必须 > 0: {baud}")
         binding.baud = baud
-    # 再次上报即恢复 online（含从 offline 恢复）；显式 health_state 优先
+    # 再次上报即恢复 online（含从 offline/stale/superseded 恢复）；显式 health_state 优先
     if port.get("health_state"):
         binding.health_state = str(port["health_state"])
     else:
@@ -387,14 +542,26 @@ def _other_binding_for_device(session: Session, device_id: str,
 
 def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                       local_ip: str | None) -> dict:
-    """匹配 / 自动建档 / 冲突进池；命中或建档则绑定并标记 allocated。"""
-    # 已在有效占用中：不重复匹配抢占；auto 占用刷新保活窗口
+    """匹配 / 自动建档 / 冲突进池；命中或建档则绑定并标记 auto:* 占位。
+
+    F6：auto 绑定响应 ``allocated=false, bound=true``，避免 registrar 误跳探活。
+    """
+    # 真实租用：不抢占
     if _is_allocated(binding):
-        _renew_auto_lease_if_needed(binding)
         return {
             "basis": "keep_allocated",
             "device_id": binding.bound_device_id,
             "allocated": True,
+            "bound": True,
+        }
+    # 已有 auto 占位：刷新 TTL，仍报 bound
+    if _is_auto_allocation(binding) and _allocation_marker_active(binding):
+        _renew_auto_lease_if_needed(binding)
+        return {
+            "basis": "keep_bound",
+            "device_id": binding.bound_device_id,
+            "allocated": False,
+            "bound": True,
         }
 
     sn, mac, _ip = _port_identity(port)
@@ -409,7 +576,8 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                        "basis": "miss", "sn": sn, "mac": mac,
                        "ip": port.get("ip") or port.get("shell_ip") or local_ip,
                    })
-            return {"basis": "miss", "device_id": None, "allocated": False}
+            return {"basis": "miss", "device_id": None,
+                    "allocated": False, "bound": False}
 
         device = _create_device_from_port(session, port, actor=local_ip)
         basis = "created"
@@ -424,7 +592,8 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                    "allocated_expire": binding.allocated_expire.isoformat()
                    if binding.allocated_expire else None,
                })
-        return {"basis": basis, "device_id": device.device_id, "allocated": True}
+        return {"basis": basis, "device_id": device.device_id,
+                "allocated": False, "bound": True}
 
     # 已存在：回填缺失字段
     filled = _fill_device_missing(device, port)
@@ -445,10 +614,11 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             "basis": "conflict",
             "device_id": None,
             "allocated": False,
+            "bound": False,
             "conflict_device_id": device.device_id,
         }
 
-    # 本端口已绑同一 device，或尚未绑定：幂等绑定 + 占用
+    # 本端口已绑同一 device，或尚未绑定：幂等绑定 + auto 占位
     binding.bound_device_id = device.device_id
     _mark_allocated(binding, by=f"auto:{basis}")
     # sn/mac 路径记 comres_device_register；纯 IP 命中仍走 comres_match
@@ -471,7 +641,8 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                    "allocated_expire": binding.allocated_expire.isoformat()
                    if binding.allocated_expire else None,
                })
-    return {"basis": basis, "device_id": device.device_id, "allocated": True}
+    return {"basis": basis, "device_id": device.device_id,
+            "allocated": False, "bound": True}
 
 
 def _auth_and_resolve_node(session, token: str, payload_node_id: str | None):
@@ -484,17 +655,26 @@ def _auth_and_resolve_node(session, token: str, payload_node_id: str | None):
     return node
 
 
-def _ports_response(bindings: list[WireLogPortBinding]) -> list[dict]:
+def _ports_response(items: list) -> list[dict]:
+    """bindings 或冲突 dict 混排 → 响应 ports[]。"""
     now = utcnow()
     out = []
-    for b in bindings:
+    for item in items:
+        if isinstance(item, dict) and item.get("reason"):
+            item.setdefault("allocated", False)
+            item.setdefault("bound", False)
+            out.append(item)
+            continue
+        b = item
         view = _port_allocated_view(b, now)
         out.append({
             "com": view["com"],
             "slot": view["slot"],
             "endpoint": view["endpoint"],
             "allocated": view["allocated"],
+            "bound": view["bound"],
             "allocated_by": view["allocated_by"],
+            "allocated_expire": view["allocated_expire"],
             "tcp_port": b.tcp_port,
             "com_key": b.com_key,
             "health_state": b.health_state,
@@ -545,7 +725,10 @@ def _mark_absent_ports_offline(session: Session, node_id: str,
 
 
 def register(session: Session, token: str, payload: dict) -> dict:
-    """节点注册 + 端口上报（全量 upsert）。响应带回 allocated。"""
+    """节点注册 + 端口上报（全量 upsert）。响应带回 allocated。
+
+    端点冲突的端口以 reason=endpoint_conflict 出现在 ports[]，不进池。
+    """
     expire_allocations(session)
     node = _auth_and_resolve_node(session, token, payload.get("node_id"))
     now = utcnow()
@@ -566,16 +749,21 @@ def register(session: Session, token: str, payload: dict) -> dict:
         if port.get("slot") is not None and int(port["slot"]) <= 0:
             raise DomainError("COMRES_BAD_SLOT", "slot 必须为正整数")
         binding = _upsert_comres_binding(session, node, port, node.ip)
+        if isinstance(binding, dict):
+            matches.append({"basis": "endpoint_conflict", "reason": binding.get("reason")})
+            touched.append(binding)
+            continue
         m = _apply_auto_match(session, binding, port, node.ip)
         matches.append(m)
         touched.append(binding)
 
     # 全量语义：未上报且未分配 → offline；已分配保持 health_state（不清绑定）
+    real_bindings = [b for b in touched if not isinstance(b, dict)]
     if ports_in:
-        _mark_absent_ports_offline(session, node.node_id, touched)
+        _mark_absent_ports_offline(session, node.node_id, real_bindings)
 
     _audit(session, node.node_id, "comres_register", actor=node.ip,
-           detail={"ports": len(touched), "matches": matches})
+           detail={"ports": len(real_bindings), "matches": matches})
     session.commit()
     return {
         "ok": True,
@@ -604,15 +792,16 @@ def heartbeat(session: Session, token: str, payload: dict) -> dict:
     touched = []
     for port in ports_in:
         binding = _upsert_comres_binding(session, node, port, node.ip)
-        # 未占用才重新匹配；已占用保持，auto 则续保活
-        if _is_allocated(binding):
-            _renew_auto_lease_if_needed(binding)
-        else:
-            _apply_auto_match(session, binding, port, node.ip)
+        if isinstance(binding, dict):
+            touched.append(binding)
+            continue
+        # 真实租用保持；auto 占位续 TTL；未占位则匹配
+        _apply_auto_match(session, binding, port, node.ip)
         touched.append(binding)
 
+    real_bindings = [b for b in touched if not isinstance(b, dict)]
     if ports_in:
-        _mark_absent_ports_offline(session, node.node_id, touched)
+        _mark_absent_ports_offline(session, node.node_id, real_bindings)
     else:
         # 无 ports 增量时仍回该节点全部资源的 allocated，便于节点同步停心跳
         touched = (session.query(WireLogPortBinding)
@@ -714,11 +903,37 @@ def allocated_heartbeat(session: Session, payload: dict,
     }
 
 
+def _inactive_reason(b: WireLogPortBinding, node: WireLogNode | None) -> str:
+    hs = (b.health_state or "").lower()
+    if hs == "superseded":
+        return "endpoint_superseded"
+    if hs == "stale":
+        return "heartbeat_stale"
+    if hs == "offline":
+        return "port_offline"
+    if node and (node.status or "") == "dormant":
+        return "node_dormant"
+    return hs or "inactive"
+
+
 def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, *,
-                   allocated: bool, include_device: bool) -> dict:
-    return {
+                   allocated: bool, bound: bool, include_device: bool,
+                   inactive: bool = False, now=None) -> dict:
+    now = now or utcnow()
+    hs = (b.health_state or "").lower()
+    if inactive:
+        state = hs if hs in _INACTIVE_HEALTH else "inactive"
+    elif allocated:
+        state = "allocated"
+    elif bound:
+        state = "bound"
+    else:
+        state = "pool"
+    marker = _allocation_marker_active(b, now)
+    item = {
         "node_id": b.node_id,
         "node_ip": node.ip if node else None,
+        "node_status": node.status if node else None,
         "com": b.com_name,
         "com_key": b.com_key,
         "tcp_port": b.tcp_port,
@@ -727,25 +942,32 @@ def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, *,
         "health_state": b.health_state,
         "baud": b.baud,
         "allocated": allocated,
-        "allocated_by": b.allocated_by if allocated else None,
-        "allocated_at": b.allocated_at.isoformat() if allocated and b.allocated_at else None,
+        "bound": bound,
+        # 审计保留 allocated_by（含 auto:*），即使 allocated=false
+        "allocated_by": b.allocated_by if marker else None,
+        "allocated_at": (
+            b.allocated_at.isoformat() if marker and b.allocated_at else None
+        ),
         "allocated_expire": (
-            b.allocated_expire.isoformat() if allocated and b.allocated_expire else None
+            b.allocated_expire.isoformat()
+            if marker and b.allocated_expire else None
         ),
         "device_id": b.bound_device_id if include_device else None,
         "bound_device_id": b.bound_device_id if include_device else None,
-        "state": (
-            "allocated" if allocated
-            else ("bound" if include_device and b.bound_device_id else "pool")
-        ),
+        "state": state,
+        "inactive": inactive,
     }
+    if inactive:
+        item["inactive_reason"] = _inactive_reason(b, node)
+    return item
 
 
 def list_resources(session: Session) -> dict:
-    """资源视图三态：已分配 / 已绑定未分配 / 纯池。
+    """资源视图三态：已分配 / 已绑定未分配 / 纯池 + inactive（灰显）。
 
-    在线视图契约：health_state=offline 的端口从 allocated/bound/pool 剔除
-    （绑定与设备关系仍保留在库内；再次上报恢复 online 后重新出现）。
+    F6：``auto:*`` 占位计入 bound，不计入 allocated。
+    在线视图契约：health_state=offline/stale/superseded 的端口从
+    allocated/bound/pool 剔除，放入 inactive（绑定关系仍保留；再次上报可恢复）。
 
     可分配池仅含已授权节点端口：pending/rejected/revoked 不入池
     （存量无申请记录的节点视为已授权，兼容开放登记）。
@@ -759,26 +981,41 @@ def list_resources(session: Session) -> dict:
             .order_by(WireLogPortBinding.node_id, WireLogPortBinding.slot)
             .all())
     now = utcnow()
-    allocated, bound, pool = [], [], []
+    allocated, bound, pool, inactive = [], [], [], []
     for b in rows:
-        if not _is_online_binding(b):
-            continue
         node = nodes.get(b.node_id)
         auth_status = auth_map.get(b.node_id) or "none"
-        item = None
-        if _is_allocated(b, now):
-            item = _resource_item(b, node, allocated=True, include_device=True)
+        if not _is_online_binding(b):
+            item = _resource_item(
+                b, node, allocated=False, bound=_is_bound(b, now),
+                include_device=True, inactive=True, now=now)
+            item["auth_status"] = auth_status
+            inactive.append(item)
+            continue
+        is_alloc = _is_allocated(b, now)
+        is_bound = _is_bound(b, now)
+        if is_alloc:
+            item = _resource_item(
+                b, node, allocated=True, bound=True,
+                include_device=True, now=now)
             item["auth_status"] = auth_status
             allocated.append(item)
-        elif b.bound_device_id:
-            item = _resource_item(b, node, allocated=False, include_device=True)
+        elif is_bound:
+            item = _resource_item(
+                b, node, allocated=False, bound=True,
+                include_device=True, now=now)
             item["auth_status"] = auth_status
             bound.append(item)
         else:
             # 未授权节点端口不出现在可分配池（避免误领）
             if not comres_apply.is_node_pool_authorized(b.node_id, auth_map):
                 continue
-            item = _resource_item(b, node, allocated=False, include_device=False)
+            item = _resource_item(
+                b, node, allocated=False, bound=False,
+                include_device=False, now=now)
             item["auth_status"] = auth_status
             pool.append(item)
-    return {"allocated": allocated, "bound": bound, "pool": pool}
+    return {
+        "allocated": allocated, "bound": bound, "pool": pool,
+        "inactive": inactive,
+    }

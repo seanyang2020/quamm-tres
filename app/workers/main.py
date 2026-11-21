@@ -162,6 +162,25 @@ def _cache_prune_job() -> None:
         logger.exception("cache prune failed")
 
 
+def _comres_prune_job() -> None:
+    """t942：COMRes 无效资源定时清理（默认每小时；可关）。"""
+    if not getattr(settings, "comres_prune_enabled", True):
+        return
+    session = SessionLocal()
+    try:
+        from app.domain import comres_prune
+
+        result = comres_prune.prune_maintenance(session, dry_run=False, actor="worker")
+        if result.get("applied_count"):
+            logger.info("comres prune: applied=%s counts=%s",
+                        result.get("applied_count"), result.get("counts"))
+    except Exception:  # noqa: BLE001
+        logger.exception("comres prune failed")
+        session.rollback()
+    finally:
+        session.close()
+
+
 def run_worker() -> None:
     init_db()
     with SessionLocal() as session:
@@ -188,6 +207,12 @@ def run_worker() -> None:
         _cache_prune_job, "interval",
         hours=max(1, settings.cache_prune_interval_hours), id="cache_prune",
     )
+    # t942：COMRes 无效资源清理（默认每小时）
+    if getattr(settings, "comres_prune_enabled", True):
+        interval_s = max(60, int(getattr(settings, "comres_prune_interval_s", 3600) or 3600))
+        scheduler.add_job(
+            _comres_prune_job, "interval", seconds=interval_s, id="comres_prune",
+        )
     scheduler.start()
     logger.info("worker started (lease_scan=%ss, patrol=%smin)", settings.lease_scan_seconds, settings.patrol_interval_minutes)
 
