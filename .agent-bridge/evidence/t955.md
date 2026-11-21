@@ -24,10 +24,11 @@ task_id: t955
 
 ## c. 版本/提交证据
 
-- `git log -1 --oneline`：`0f5f9e0 fix(comres): 硬删节点级联清空 apply FK，避免 500 并修正权限提示`
-- `git log -1 --format=%H`：`0f5f9e09c9b31ee317d1ba32286e257bf0d210ee`
-- `git status --short`：（提交后工作区干净，无未提交代码改动）
-- `git diff --stat HEAD~1`：`5 files changed, 287 insertions(+), 22 deletions(-)`
+- 代码提交：`0f5f9e0 fix(comres): 硬删节点级联清空 apply FK，避免 500 并修正权限提示`
+- 代码 `%H`：`0f5f9e09c9b31ee317d1ba32286e257bf0d210ee`
+- 证据提交（HEAD）：`c6484c5 docs(evidence): 回填 t955 硬删节点修复验收证据` / `c6484c53ddaad7c721b7107cf11619dc715c5141`
+- `git status --short`：仅本证据文件后续微调（若有）
+- 代码 diff：`5 files changed, 287 insertions(+), 22 deletions(-)`
 - Gerrit change：无/不适用
 
 ## d. 验证/自测
