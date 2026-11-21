@@ -29,5 +29,5 @@
 
 ## 说明
 
-- 提交在分支 `feat/comres`（任务文案写 master，COMRes 系列均在本分支）
+- 功能提交：`55e3ba5`；证据回填：`6453d50`（分支 `feat/comres`；任务文案写 master，COMRes 系列均在本分支）
 - 停住等审
