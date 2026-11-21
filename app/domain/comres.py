@@ -12,11 +12,12 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
+from app.constants import DeviceStatus, HealthLevel, RegisterChannel
 from app.domain.catalog import DomainError
 from app.domain import wirelog
 from app.models import Device, WireLogNode, WireLogPortBinding
 from app.serial_tcp import SerialConfigError, parse_endpoint
-from app.utils import utcnow
+from app.utils import new_device_id, utcnow
 
 # 未分配资源：节点侧默认心跳间隔（契约 §2.7）
 HEARTBEAT_INTERVAL_S = 3600
@@ -69,17 +70,13 @@ def make_com_key(ip: str | None, tcp_port: int | None) -> str | None:
 
 
 def _is_allocated(binding: WireLogPortBinding, now=None) -> bool:
-    """占用有效：有 allocated_by 且未过期；或仅有 bound_device_id 且 expire 未过期/未设。"""
+    """占用有效：allocated_by 存在且未过期（与 bound 解耦，支撑三态视图）。"""
     now = now or utcnow()
+    if not binding.allocated_by:
+        return False
     if binding.allocated_expire is not None and binding.allocated_expire <= now:
         return False
-    if binding.allocated_by:
-        return True
-    if binding.bound_device_id and binding.allocated_expire is not None:
-        return True
-    if binding.bound_device_id and binding.allocated_at is not None:
-        return True
-    return False
+    return True
 
 
 def _port_allocated_view(binding: WireLogPortBinding, now=None) -> dict:
@@ -94,12 +91,12 @@ def _port_allocated_view(binding: WireLogPortBinding, now=None) -> dict:
             binding.allocated_expire.isoformat()
             if allocated and binding.allocated_expire else None
         ),
-        "bound_device_id": binding.bound_device_id if allocated else None,
+        "bound_device_id": binding.bound_device_id,
     }
 
 
 def expire_allocations(session: Session) -> list[dict]:
-    """超时未续约 → 释放回资源池并记审计。返回被释放的摘要列表。"""
+    """超时未续约 → 解除占用（保留 bound_device_id，落入「已绑定未分配」）。"""
     now = utcnow()
     rows = (session.query(WireLogPortBinding)
             .filter(WireLogPortBinding.allocated_expire.isnot(None))
@@ -112,11 +109,12 @@ def expire_allocations(session: Session) -> list[dict]:
             "was_allocated_by": b.allocated_by,
             "was_device_id": b.bound_device_id,
             "allocated_expire": b.allocated_expire.isoformat() if b.allocated_expire else None,
+            "kept_bound_device_id": b.bound_device_id,
         }
         b.allocated_by = None
         b.allocated_at = None
         b.allocated_expire = None
-        b.bound_device_id = None
+        # 保留 bound_device_id：三态中「已绑定未分配」
         _audit(session, b.node_id, "comres_release_expired",
                result="ok", detail=detail)
         released.append({"node_id": b.node_id, "com_key": b.com_key, **detail})
@@ -261,9 +259,70 @@ def _upsert_comres_binding(session, node: WireLogNode, port: dict,
     return binding
 
 
+def _port_identity(port: dict) -> tuple[str | None, str | None, str | None]:
+    """从 port 提取 (sn, mac, ip)；缺失为 None，不臆造。"""
+    sn = (port.get("sn") or "").strip() or None
+    mac = (port.get("mac") or port.get("shell_mac") or "").strip().lower() or None
+    ip = (port.get("ip") or port.get("shell_ip") or "").strip() or None
+    return sn, mac, ip
+
+
+def _fill_device_missing(device: Device, port: dict) -> list[str]:
+    """仅回填设备缺失字段；返回实际写入的字段名。"""
+    sn, mac, ip = _port_identity(port)
+    filled = []
+    if sn and not device.sn:
+        device.sn = sn
+        filled.append("sn")
+    if mac and not device.mac:
+        device.mac = mac
+        filled.append("mac")
+    if ip and not device.ip:
+        device.ip = ip
+        filled.append("ip")
+    return filled
+
+
+def _create_device_from_port(session: Session, port: dict,
+                             actor: str | None = None) -> Device:
+    """port 带 sn 或 mac 且库中无匹配时建档；register_channel=comres_tcp。"""
+    sn, mac, ip = _port_identity(port)
+    if not sn and not mac:
+        raise DomainError("COMRES_NO_IDENTITY", "自动建档需要 sn 或 mac")
+    now = utcnow()
+    device = Device(
+        device_id=new_device_id(),
+        display_name=f"comres-{sn or mac}",
+        sn=sn,
+        mac=mac,
+        ip=ip,
+        owner=actor or "system",
+        status=DeviceStatus.PENDING,
+        health_level=HealthLevel.L0,
+        registered_by=actor,
+        register_channel=RegisterChannel.COMRES_TCP,
+        source="serial",
+        last_seen_at=now,
+        created_at=now,
+    )
+    session.add(device)
+    session.flush()
+    return device
+
+
+def _other_binding_for_device(session: Session, device_id: str,
+                              exclude_binding_id: int | None):
+    """同一 device 是否已被其它端口绑定（冲突判定）。"""
+    q = (session.query(WireLogPortBinding)
+         .filter(WireLogPortBinding.bound_device_id == device_id))
+    if exclude_binding_id is not None:
+        q = q.filter(WireLogPortBinding.id != exclude_binding_id)
+    return q.first()
+
+
 def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                       local_ip: str | None) -> dict:
-    """自动匹配并写审计；命中则绑定+标记 allocated。返回 match 摘要。"""
+    """匹配 / 自动建档 / 冲突进池；命中或建档则绑定并标记 allocated。"""
     # 已在有效占用中：不重复匹配抢占
     if _is_allocated(binding):
         return {
@@ -271,27 +330,81 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             "device_id": binding.bound_device_id,
             "allocated": True,
         }
-    device, basis = _match_device(session, port, local_ip)
-    if device is None:
-        _audit(session, binding.node_id, "comres_match",
-               result="miss", detail={
-                   "com": binding.com_name, "com_key": binding.com_key,
-                   "basis": "miss", "sn": port.get("sn"),
-                   "mac": port.get("mac") or port.get("shell_mac"),
-                   "ip": port.get("ip") or port.get("shell_ip") or local_ip,
-               })
-        return {"basis": "miss", "device_id": None, "allocated": False}
 
+    sn, mac, _ip = _port_identity(port)
+    device, basis = _match_device(session, port, local_ip)
+
+    # 未命中：有 sn/mac → 自动建档；否则进池
+    if device is None:
+        if not sn and not mac:
+            _audit(session, binding.node_id, "comres_match",
+                   result="miss", detail={
+                       "com": binding.com_name, "com_key": binding.com_key,
+                       "basis": "miss", "sn": sn, "mac": mac,
+                       "ip": port.get("ip") or port.get("shell_ip") or local_ip,
+                   })
+            return {"basis": "miss", "device_id": None, "allocated": False}
+
+        device = _create_device_from_port(session, port, actor=local_ip)
+        basis = "created"
+        binding.bound_device_id = device.device_id
+        _mark_allocated(binding, by=f"auto:{basis}")
+        _audit(session, binding.node_id, "comres_device_register",
+               result="ok", detail={
+                   "com": binding.com_name, "com_key": binding.com_key,
+                   "basis": basis, "device_id": device.device_id,
+                   "sn": device.sn, "mac": device.mac, "ip": device.ip,
+                   "allocated_by": binding.allocated_by,
+                   "allocated_expire": binding.allocated_expire.isoformat()
+                   if binding.allocated_expire else None,
+               })
+        return {"basis": basis, "device_id": device.device_id, "allocated": True}
+
+    # 已存在：回填缺失字段
+    filled = _fill_device_missing(device, port)
+
+    # 冲突：该 device 已被其它端口绑定 → 本端口进池，不覆盖
+    other = _other_binding_for_device(session, device.device_id, binding.id)
+    if other is not None:
+        _audit(session, binding.node_id, "comres_device_register",
+               result="conflict", detail={
+                   "com": binding.com_name, "com_key": binding.com_key,
+                   "basis": "conflict", "device_id": device.device_id,
+                   "held_by_node": other.node_id, "held_by_com": other.com_name,
+                   "held_by_com_key": other.com_key,
+                   "sn": sn, "mac": mac, "filled": filled,
+                   "warning": "device already bound elsewhere; left in pool",
+               })
+        return {
+            "basis": "conflict",
+            "device_id": None,
+            "allocated": False,
+            "conflict_device_id": device.device_id,
+        }
+
+    # 本端口已绑同一 device，或尚未绑定：幂等绑定 + 占用
     binding.bound_device_id = device.device_id
     _mark_allocated(binding, by=f"auto:{basis}")
-    _audit(session, binding.node_id, "comres_match",
-           result="ok", detail={
-               "com": binding.com_name, "com_key": binding.com_key,
-               "basis": basis, "device_id": device.device_id,
-               "allocated_by": binding.allocated_by,
-               "allocated_expire": binding.allocated_expire.isoformat()
-               if binding.allocated_expire else None,
-           })
+    # sn/mac 路径记 comres_device_register；纯 IP 命中仍走 comres_match
+    if basis in ("sn", "mac") or filled:
+        _audit(session, binding.node_id, "comres_device_register",
+               result="ok", detail={
+                   "com": binding.com_name, "com_key": binding.com_key,
+                   "basis": basis, "device_id": device.device_id,
+                   "filled": filled,
+                   "allocated_by": binding.allocated_by,
+                   "allocated_expire": binding.allocated_expire.isoformat()
+                   if binding.allocated_expire else None,
+               })
+    else:
+        _audit(session, binding.node_id, "comres_match",
+               result="ok", detail={
+                   "com": binding.com_name, "com_key": binding.com_key,
+                   "basis": basis, "device_id": device.device_id,
+                   "allocated_by": binding.allocated_by,
+                   "allocated_expire": binding.allocated_expire.isoformat()
+                   if binding.allocated_expire else None,
+               })
     return {"basis": basis, "device_id": device.device_id, "allocated": True}
 
 
@@ -319,7 +432,7 @@ def _ports_response(bindings: list[WireLogPortBinding]) -> list[dict]:
             "tcp_port": b.tcp_port,
             "com_key": b.com_key,
             "health_state": b.health_state,
-            "bound_device_id": b.bound_device_id if view["allocated"] else None,
+            "bound_device_id": view["bound_device_id"],
         })
     return out
 
@@ -480,7 +593,8 @@ def allocated_heartbeat(session: Session, payload: dict,
     }
 
 
-def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, allocated: bool) -> dict:
+def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, *,
+                   allocated: bool, include_device: bool) -> dict:
     return {
         "node_id": b.node_id,
         "node_ip": node.ip if node else None,
@@ -497,30 +611,30 @@ def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, allocated: b
         "allocated_expire": (
             b.allocated_expire.isoformat() if allocated and b.allocated_expire else None
         ),
-        "device_id": b.bound_device_id if allocated else None,
-        "bound_device_id": b.bound_device_id if allocated else None,
+        "device_id": b.bound_device_id if include_device else None,
+        "bound_device_id": b.bound_device_id if include_device else None,
+        "state": (
+            "allocated" if allocated
+            else ("bound" if include_device and b.bound_device_id else "pool")
+        ),
     }
 
 
 def list_resources(session: Session) -> dict:
-    """资源视图：已分配 / 资源池 两组。"""
+    """资源视图三态：已分配 / 已绑定未分配 / 纯池。"""
     expire_allocations(session)
     nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
     rows = (session.query(WireLogPortBinding)
             .order_by(WireLogPortBinding.node_id, WireLogPortBinding.slot)
             .all())
     now = utcnow()
-    allocated, pool = [], []
+    allocated, bound, pool = [], [], []
     for b in rows:
         node = nodes.get(b.node_id)
         if _is_allocated(b, now):
-            allocated.append(_resource_item(b, node, True))
+            allocated.append(_resource_item(b, node, allocated=True, include_device=True))
+        elif b.bound_device_id:
+            bound.append(_resource_item(b, node, allocated=False, include_device=True))
         else:
-            # 池内：无有效占用；若有过期残留字段，视图仍不带 device_id
-            allocated_flag = False
-            item = _resource_item(b, node, allocated_flag)
-            # 未占用但可能仍挂着历史 bound（理论不应）；池强制不带 device
-            item["device_id"] = None
-            item["bound_device_id"] = None
-            pool.append(item)
-    return {"allocated": allocated, "pool": pool}
+            pool.append(_resource_item(b, node, allocated=False, include_device=False))
+    return {"allocated": allocated, "bound": bound, "pool": pool}

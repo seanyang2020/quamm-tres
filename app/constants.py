@@ -98,6 +98,8 @@ class RegisterChannel:
     WIRELOG_UART = "wirelog_uart"
     # v0.32：经 PC/WireLog 宿主注册的串口资源落地成的设备
     SERIAL_HOST = "serial_host"
+    # COMRes：节点经 /api/comres 上报 sn/mac 自动建档
+    COMRES_TCP = "comres_tcp"
 
 
 # 可申请状态（available 且在池内、L3）
