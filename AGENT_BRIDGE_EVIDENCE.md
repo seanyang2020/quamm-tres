@@ -35,17 +35,21 @@ task_id: t948
 
 ## c. 版本/提交证据
 
-（提交后回填）
-
 ```text
 $ git log -1 --oneline
-（见提交后）
+d91cb8d feat(comres): 资源池去重 + auto 绑定口径 + 端点接管 + 移除发放入口
 
 $ git status --short
-（见提交后）
+?? .agent-bridge/evidence/t4-comres-heartbeat.md
+?? .agent-bridge/evidence/t857.md
+?? .agent-bridge/evidence/t870.md
+?? .agent-bridge/evidence/t880.md
+?? .agent-bridge/evidence/t902.md
+?? .agent-bridge/evidence/t915.md
+?? quamm_res.db.bak-20261121-180654-prune
 
 $ git diff --stat HEAD~1
-（见提交后）
+ 16 files changed, 1840 insertions(+), 293 deletions(-)
 ```
 
 分支：`feat/comres`  
