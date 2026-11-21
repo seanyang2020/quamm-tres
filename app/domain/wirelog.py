@@ -401,10 +401,14 @@ def _upsert_binding(session, node, port):
         binding.shell_ip = port["shell_ip"]
     # v0.32：TCP COM 资源接入。endpoint 是客户端直连地址，com 是宿主侧物理口名，
     # probe 是宿主自检快照（能否打开 / 多久收到回包 / 读到的标识）。
-    if port.get("endpoint"):
-        binding.endpoint = str(port["endpoint"]).strip()
-    if port.get("com") or port.get("port_name"):
-        binding.com_name = str(port.get("com") or port.get("port_name")).strip()
+    # endpoint 可为空串（契约：取不到就传空串、禁止补造）；键存在才更新，避免
+    # 心跳增量未带该字段时误清旧值。
+    if "endpoint" in port:
+        ep = str(port.get("endpoint") or "").strip()
+        binding.endpoint = ep or None
+    com = port.get("com") or port.get("port_name") or port.get("com_name")
+    if com:
+        binding.com_name = str(com).strip()
     if port.get("health_state"):
         binding.health_state = str(port["health_state"])
     if port.get("probe") is not None:
@@ -658,15 +662,18 @@ def audit_tail(session, node_id=None, limit=50):
 
 
 def refresh_status(session):
-    """按心跳时间把超时节点标 stale/offline（可由巡检周期调用）。"""
+    """按心跳时间把超时节点标 stale（可由巡检周期调用）。
+
+    契约 §2.5：距 last_heartbeat_at > 180s → stale；offline 仅由节点上报或人工置位，
+    不得因一次心跳超时直接 offline。
+    """
     now = utcnow()
-    for node in session.query(WireLogNode).filter(WireLogNode.status == "online"):
+    for node in session.query(WireLogNode).filter(
+            WireLogNode.status.in_(("online", "stale"))):
         if not node.last_heartbeat_at:
             continue
         age = (now - node.last_heartbeat_at).total_seconds()
         if age > STALE_AFTER_S:
-            node.status = "offline"
-        elif age > HEARTBEAT_INTERVAL_S:
             node.status = "stale"
     session.commit()
 
