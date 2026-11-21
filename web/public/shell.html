@@ -41,7 +41,7 @@
   <button id="btnClose" title="断开串口连接">断开</button>
 </div>
 <div id="term"></div>
-<div id="hint">经日志机 serialhub raw TCP 接入（登录 + 写锁）。只读账号只能看输出，要写串口请先在 WireLog「写授权」里授予当前账号。</div>
+  <div id="hint">经 COMRes / serialhub raw TCP 接入（登录 + 写锁）。只读账号只能看输出，要写串口请先在 COMRes「写授权」里授予当前账号。</div>
 
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
@@ -69,7 +69,7 @@
 
   if (!nodeId) {
     setState('缺少 node_id', 'err');
-    document.getElementById('term').textContent = 'URL 缺少 node_id 参数，请从 WireLog 页面点击「终端」进入。';
+    document.getElementById('term').textContent = 'URL 缺少 node_id 参数，请从 COMRes 页面点击「打开串口」进入。';
     return;
   }
 
@@ -118,7 +118,7 @@
   function updateHint() {
     hintEl.textContent = canWrite
       ? '已持写锁：键盘输入直接写入串口。只读账号只能看输出。'
-      : '只读模式：可以看输出，不能输入。需要在 WireLog「写授权」里把该路授予当前账号。';
+      : '只读模式：可以看输出，不能输入。需要在 COMRes「写授权」里把该路授予当前账号。';
   }
   updateHint();
 

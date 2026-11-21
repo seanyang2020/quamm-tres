@@ -8,7 +8,7 @@ const pages = [
   { key: 'scheduling', label: '资源调度' },
   { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
-  { key: 'wirelog', label: 'WireLog' },
+  { key: 'wirelog', label: 'COMRes' },
   { key: 'settings', label: '设置' },
 ]
 const active = ref('dashboard')
@@ -997,10 +997,12 @@ async function reviewFeedback(row, status) {
   } catch (e) { ElMessage.error(e.message) }
 }
 
-// ---------------- WireLog 日志机 ----------------
+// ---------------- COMRes（原 WireLog tab，同 key；节点视图 + 资源池） ----------------
 const wlNodes = ref([])
 const wlDetail = ref(null)
 const wlDetailId = ref(null)
+const wlNodesError = ref('')
+const wlDetailError = ref('')
 const wlEnrollForm = ref({ adb_address: '', display_name: '', model_class: 'esl2_hk' })
 const wlConfigForm = ref({
   heartbeat_interval_s: 60,
@@ -1012,33 +1014,176 @@ const wlConfigForm = ref({
 })
 const wlGrantForm = ref({ slot: 1, principal: '' })
 
+// /api/comres/resources → { allocated, bound, pool }
+const comresAllocated = ref([])
+const comresBound = ref([])
+const comresPool = ref([])
+const comresError = ref('')
+const comresLoading = ref(false)
+
+const comresAllRows = computed(() => [
+  ...(comresAllocated.value || []),
+  ...(comresBound.value || []),
+  ...(comresPool.value || []),
+])
+
+const comresByNode = computed(() => {
+  const m = Object.create(null)
+  for (const r of comresAllRows.value) {
+    const id = r && r.node_id
+    if (!id) continue
+    if (!m[id]) m[id] = []
+    m[id].push(r)
+  }
+  return m
+})
+
+function wlNodeSerialRows(nodeId) {
+  return (comresByNode.value && comresByNode.value[nodeId]) || []
+}
+function wlNodeHasSerial(nodeId) {
+  return wlNodeSerialRows(nodeId).length > 0
+}
+function wlOnlinePortCount(nodeId) {
+  return wlNodeSerialRows(nodeId).filter(
+    (r) => r && (r.health_state === 'online' || r.health_state === 'ready'),
+  ).length
+}
+function wlNodeRowClass({ row }) {
+  return wlNodeHasSerial(row.node_id) ? '' : 'comres-no-serial'
+}
+
+/** 端口/资源行是否具备可展示的串口信息（无则灰显，禁止打开） */
+function portHasSerial(row) {
+  if (!row) return false
+  return !!(row.endpoint || row.com || row.com_name || row.tty
+    || row.com_key || row.shell_reachable || row.tcp_port)
+}
+/** 已绑定/可用：可打开浏览器 TCP shell */
+function portCanOpen(row) {
+  if (!portHasSerial(row)) return false
+  if (row.shell_reachable) return true
+  if (row.endpoint && row.slot != null) return true
+  const hs = row.health_state
+  return !!(row.endpoint && (hs === 'online' || hs === 'ready' || !hs || hs === 'unknown'))
+}
+function findComresForPort(port) {
+  const nodeId = wlDetailId.value || (wlDetail.value && wlDetail.value.node_id)
+  if (!nodeId || !port) return null
+  const rows = wlNodeSerialRows(nodeId)
+  return rows.find((r) =>
+    (port.slot != null && r.slot === port.slot)
+    || (port.endpoint && r.endpoint === port.endpoint)
+    || (port.com_name && r.com === port.com_name),
+  ) || null
+}
+function portAllocated(row) {
+  const meta = findComresForPort(row)
+  if (meta) return !!meta.allocated
+  return !!row.allocated
+}
+function portAllocatedBy(row) {
+  const meta = findComresForPort(row)
+  if (meta && meta.allocated) return meta.allocated_by || ''
+  return row.allocated_by || ''
+}
+function portOccupancyLabel(row) {
+  const meta = findComresForPort(row) || row
+  if (meta && meta.allocated) {
+    const by = meta.allocated_by || '—'
+    const exp = meta.allocated_expire ? formatLocal(meta.allocated_expire) : '—'
+    return '占用：' + by + ' · 到期 ' + exp
+  }
+  if (meta && meta.state === 'bound') return '已绑定未分配'
+  return '资源池'
+}
+function portSn(row) {
+  if (row.sn) return row.sn
+  if (row.bound_device && row.bound_device.sn) return row.bound_device.sn
+  return ''
+}
+function portMac(row) {
+  if (row.mac) return row.mac
+  if (row.shell_mac) return row.shell_mac
+  if (row.bound_device && row.bound_device.mac) return row.bound_device.mac
+  return ''
+}
+function comresOccupancyLabel(row) {
+  if (row && row.allocated) {
+    const by = row.allocated_by || '—'
+    const exp = row.allocated_expire ? formatLocal(row.allocated_expire) : '—'
+    return '占用：' + by + ' · 到期 ' + exp
+  }
+  if (row && row.state === 'bound') return '已绑定未分配'
+  return '资源池'
+}
+function comresRowClass({ row }) {
+  return portHasSerial(row) ? '' : 'comres-no-serial'
+}
+
+async function loadComresResources() {
+  comresLoading.value = true
+  comresError.value = ''
+  try {
+    const r = await api('/api/comres/resources')
+    comresAllocated.value = Array.isArray(r && r.allocated) ? r.allocated : []
+    comresBound.value = Array.isArray(r && r.bound) ? r.bound : []
+    comresPool.value = Array.isArray(r && r.pool) ? r.pool : []
+  } catch (e) {
+    comresAllocated.value = []
+    comresBound.value = []
+    comresPool.value = []
+    comresError.value = String(e.message || e)
+    ElMessage.error('COMRes 资源加载失败：' + comresError.value)
+  } finally {
+    comresLoading.value = false
+  }
+}
+
 async function loadWlNodes() {
-  try { wlNodes.value = await api('/api/wirelog/nodes') }
-  catch (e) { ElMessage.error(String(e.message || e)) }
+  wlNodesError.value = ''
+  try {
+    wlNodes.value = await api('/api/wirelog/nodes')
+  } catch (e) {
+    wlNodes.value = []
+    wlNodesError.value = String(e.message || e)
+    ElMessage.error('节点列表加载失败：' + wlNodesError.value)
+  }
+  loadComresResources()
   if (wlDetailId.value) openWlDetail(wlDetailId.value)
 }
 
 async function openWlDetail(nodeId) {
+  wlDetailError.value = ''
   try {
     wlDetail.value = await api('/api/wirelog/nodes/' + nodeId)
     wlDetailId.value = nodeId
     wlConfigForm.value = { ...wlConfigForm.value, ...(wlDetail.value.config || {}) }
-  } catch (e) { ElMessage.error(String(e.message || e)) }
+  } catch (e) {
+    wlDetailError.value = String(e.message || e)
+    ElMessage.error('节点详情加载失败：' + wlDetailError.value)
+  }
 }
 
-function closeWlDetail() { wlDetail.value = null; wlDetailId.value = null }
+function closeWlDetail() { wlDetail.value = null; wlDetailId.value = null; wlDetailError.value = '' }
 
-// ---------------- WireLog 串口终端（v0.29.3，独立全屏 xterm 页） ----------------
-// 点「shell可达」/「终端」→ 新窗口打开 /shell.html，用 xterm 全屏操作该路串口。
-// 形态对齐 serial-web-bridge 的 lsb TCP 接入：WebSocket + xterm，ANSI 颜色正常渲染。
+// ---------------- COMRes 串口终端（独立全屏 xterm 页 /shell.html，浏览器 TCP shell） ----------------
 function openWlShell(row) {
-  const nodeId = wlDetailId.value || (wlDetail.value && wlDetail.value.node_id)
-  if (!nodeId) { ElMessage.warning('请先打开日志机详情'); return }
+  if (!portCanOpen(row)) {
+    ElMessage.warning('无串口资源，无法打开')
+    return
+  }
+  const nodeId = (row && row.node_id)
+    || wlDetailId.value
+    || (wlDetail.value && wlDetail.value.node_id)
+  if (!nodeId) { ElMessage.warning('请先打开节点详情或选择带 node_id 的资源'); return }
   const q = new URLSearchParams({
     node_id: nodeId,
     slot: String(Number((row && row.slot) || 1)),
-    name: (wlDetail.value && wlDetail.value.display_name) || nodeId,
-    tty: (row && row.tty) || '',
+    name: (row && (row.com || row.com_name))
+      || (wlDetail.value && wlDetail.value.display_name)
+      || nodeId,
+    tty: (row && (row.tty || row.com || row.com_name)) || '',
     baud: String((row && row.baud) || ''),
   })
   window.open('/shell.html?' + q.toString(), '_blank')
@@ -1170,7 +1315,7 @@ function switchPage(key) {
   }
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
-  else if (key === 'wirelog') loadWlNodes()
+  else if (key === 'wirelog') { loadWlNodes(); loadComresResources() }
   else if (key === 'settings') {
     loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback(); loadBuildServers()
     if (me.value && me.value.role === 'admin') loadScreenshotStats()
@@ -2169,27 +2314,45 @@ const legendRole = [
         </el-tabs>
       </div>
 
-      <!-- WireLog 日志机 -->
+      <!-- COMRes：节点视图 + 资源池（原 WireLog tab，key 仍为 wirelog） -->
       <div v-else-if="active === 'wirelog'">
-        <h2>WireLog 日志机</h2>
+        <h2>COMRes</h2>
+        <el-alert v-if="wlNodesError" type="error" :closable="false" show-icon
+                  :title="'节点列表：' + wlNodesError" style="margin-bottom:10px" />
+        <el-alert v-if="comresError" type="error" :closable="false" show-icon
+                  :title="'资源池：' + comresError" style="margin-bottom:10px" />
+        <el-alert v-if="wlDetailError" type="error" :closable="false" show-icon
+                  :title="'节点详情：' + wlDetailError" style="margin-bottom:10px" />
 
-        <el-card v-if="!wlDetail">
+        <!-- 节点视图 -->
+        <el-card v-if="!wlDetail" style="margin-bottom:16px">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
-              <span>日志机列表（serialhub）</span>
+              <span>节点视图（/api/wirelog/nodes）</span>
               <el-button size="small" @click="loadWlNodes">刷新</el-button>
             </div>
           </template>
-          <el-table :data="wlNodes" stripe @row-click="r => openWlDetail(r.node_id)">
+          <el-table :data="wlNodes" stripe
+                    :row-class-name="wlNodeRowClass"
+                    @row-click="r => openWlDetail(r.node_id)">
             <el-table-column prop="node_id" label="node_id" min-width="180" />
             <el-table-column prop="display_name" label="名称" min-width="140" />
-            <el-table-column prop="model_class" label="机型" width="110" />
+            <el-table-column prop="ip" label="IP" min-width="130" />
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag size="small" :type="wlStatusType(row.status)">{{ row.status }}</el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="ip" label="IP" min-width="130" />
+            <el-table-column label="在线端口数" width="110">
+              <template #default="{ row }">{{ wlOnlinePortCount(row.node_id) }}</template>
+            </el-table-column>
+            <el-table-column label="串口资源" min-width="120">
+              <template #default="{ row }">
+                <span v-if="!wlNodeHasSerial(row.node_id)" class="comres-muted">无串口资源</span>
+                <span v-else>{{ wlNodeSerialRows(row.node_id).length }} 路</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="model_class" label="机型" width="110" />
             <el-table-column prop="sw_version" label="版本" width="90" />
             <el-table-column label="最近心跳" min-width="190"><template #default="{ row }">{{ formatLocal(row.last_heartbeat_at) }}</template></el-table-column>
             <el-table-column label="操作" width="150" fixed="right">
@@ -2205,7 +2368,7 @@ const legendRole = [
           </el-table>
 
           <el-divider />
-          <h3 style="margin-top:0">发放新日志机（ADB + fw_setenv）</h3>
+          <h3 style="margin-top:0">发放新节点（ADB + fw_setenv）</h3>
           <el-form label-width="120" inline>
             <el-form-item label="ADB 地址">
               <el-input v-model="wlEnrollForm.adb_address" placeholder="172.16.60.122:5555" />
@@ -2222,10 +2385,10 @@ const legendRole = [
           </el-form>
         </el-card>
 
-        <el-card v-else>
+        <el-card v-else style="margin-bottom:16px">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
-              <span>日志机详情：{{ wlDetail.node_id }}</span>
+              <span>节点详情：{{ wlDetail.node_id }}</span>
               <el-button size="small" @click="closeWlDetail">返回列表</el-button>
             </div>
           </template>
@@ -2239,43 +2402,74 @@ const legendRole = [
             <el-descriptions-item label="版本">{{ wlDetail.sw_version }}</el-descriptions-item>
             <el-descriptions-item label="token 尾号">{{ wlDetail.token_prefix }}</el-descriptions-item>
             <el-descriptions-item label="最近心跳">{{ wlDetail.last_heartbeat_at }}</el-descriptions-item>
+            <el-descriptions-item label="在线端口数">{{ wlOnlinePortCount(wlDetail.node_id) }}</el-descriptions-item>
           </el-descriptions>
 
-          <h3>各路串口（含 shell 就绪 / MAC 闭环 / 写授权）</h3>
-          <el-table :data="wlDetail.ports" border size="small">
-            <el-table-column prop="slot" label="路" width="55" />
-            <el-table-column prop="tty" label="tty" min-width="120" />
-            <el-table-column prop="baud" label="波特" width="80" />
-            <el-table-column label="串口就绪" width="105">
+          <h3>端口明细</h3>
+          <el-alert v-if="!(wlDetail.ports && wlDetail.ports.length)"
+                    type="info" :closable="false" show-icon
+                    title="无串口资源" class="comres-muted" style="margin-bottom:8px" />
+          <el-table :data="wlDetail.ports || []" border size="small"
+                    :row-class-name="({ row }) => portHasSerial(row) ? '' : 'comres-no-serial'">
+            <el-table-column label="com" min-width="100">
               <template #default="{ row }">
-                <el-tag size="small" :type="row.shell_reachable ? 'success' : 'info'"
-                        :style="row.shell_reachable ? 'cursor:pointer' : ''"
-                        @click="row.shell_reachable && openWlShell(row)">
-                  {{ row.shell_reachable ? 'shell可达' : 'down' }}
+                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.com_name || row.com || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="slot" label="slot" width="60" />
+            <el-table-column label="endpoint" min-width="160" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.endpoint || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="health_state" width="110">
+              <template #default="{ row }">{{ row.health_state || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="allocated" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="portAllocated(row) ? 'warning' : 'info'">
+                  {{ portAllocated(row) ? '是' : '否' }}
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column prop="shell_mac" label="实测 MAC" min-width="150" />
-            <el-table-column prop="shell_ip" label="实测 IP" min-width="120" />
-            <el-table-column label="绑定设备" min-width="170">
+            <el-table-column label="allocated_by" min-width="120" show-overflow-tooltip>
+              <template #default="{ row }">{{ portAllocatedBy(row) || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="占用/池" min-width="200" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="!portHasSerial(row)" class="comres-muted">无串口资源</span>
+                <span v-else>{{ portOccupancyLabel(row) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="bound device" min-width="160">
               <template #default="{ row }">
                 <el-button v-if="row.bound_device_id" link type="primary"
                            @click="jumpToDevice(row.bound_device_id)">
                   {{ row.bound_device ? (row.bound_device.name + ' (' + row.bound_device.status + ')') : row.bound_device_id }}
                 </el-button>
-                <span v-else style="color:#909399">未绑定</span>
+                <span v-else class="comres-muted">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="写授权" min-width="140">
+            <el-table-column label="sn" min-width="120" show-overflow-tooltip>
+              <template #default="{ row }">{{ portSn(row) || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="mac" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ portMac(row) || '—' }}</template>
+            </el-table-column>
+            <el-table-column prop="tty" label="tty" min-width="100" />
+            <el-table-column prop="baud" label="波特" width="80" />
+            <el-table-column label="写授权" min-width="110">
               <template #default="{ row }">
                 <span v-if="row.write_granted_to">{{ row.write_granted_to }}</span>
-                <span v-else style="color:#909399">只读</span>
+                <span v-else class="comres-muted">只读</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="150" fixed="right">
+            <el-table-column label="操作" width="180" fixed="right">
               <template #default="{ row }">
-                <el-button size="small" link type="primary"
-                  @click="openWlShell(row)" :disabled="!row.shell_reachable">终端</el-button>
+                <template v-if="portCanOpen(row)">
+                  <el-button size="small" type="primary" link @click="openWlShell(row)">打开串口</el-button>
+                </template>
+                <span v-else class="comres-muted">无串口资源</span>
                 <el-button size="small" link type="danger"
                   @click="wlRevoke(row.slot)" :disabled="!row.write_granted_to">撤销写</el-button>
               </template>
@@ -2341,6 +2535,82 @@ const legendRole = [
               </el-form>
             </el-col>
           </el-row>
+        </el-card>
+
+        <!-- 资源池视图：/api/comres/resources → allocated / bound / pool -->
+        <el-card>
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span>资源池视图（/api/comres/resources）
+                <el-tag size="small" type="warning" style="margin-left:8px">已分配 {{ comresAllocated.length }}</el-tag>
+                <el-tag size="small" type="success" style="margin-left:4px">已绑定 {{ comresBound.length }}</el-tag>
+                <el-tag size="small" type="info" style="margin-left:4px">池 {{ comresPool.length }}</el-tag>
+              </span>
+              <el-button size="small" :loading="comresLoading" @click="loadComresResources">刷新资源</el-button>
+            </div>
+          </template>
+          <el-table :data="comresAllRows" border size="small" stripe v-loading="comresLoading"
+                    :row-class-name="comresRowClass" max-height="480">
+            <el-table-column prop="node_id" label="node_id" min-width="150" show-overflow-tooltip />
+            <el-table-column prop="node_ip" label="IP" width="120" />
+            <el-table-column label="com" min-width="100">
+              <template #default="{ row }">
+                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.com || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="slot" label="slot" width="60" />
+            <el-table-column label="endpoint" min-width="160" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.endpoint || '—' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column prop="health_state" label="health_state" width="110" />
+            <el-table-column label="allocated" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.allocated ? 'warning' : 'info'">
+                  {{ row.allocated ? '是' : '否' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="allocated_by" min-width="120" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.allocated_by || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="占用/池" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span v-if="!portHasSerial(row)" class="comres-muted">无串口资源</span>
+                <span v-else>{{ comresOccupancyLabel(row) }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="allocated_expire" min-width="170">
+              <template #default="{ row }">
+                {{ row.allocated && row.allocated_expire ? formatLocal(row.allocated_expire) : '—' }}
+              </template>
+            </el-table-column>
+            <el-table-column label="bound device" min-width="140">
+              <template #default="{ row }">
+                <el-button v-if="row.bound_device_id || row.device_id" link type="primary"
+                           @click="jumpToDevice(row.bound_device_id || row.device_id)">
+                  {{ row.bound_device_id || row.device_id }}
+                </el-button>
+                <span v-else class="comres-muted">—</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="sn" min-width="100">
+              <template #default="{ row }">{{ row.sn || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="mac" min-width="120">
+              <template #default="{ row }">{{ row.mac || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="120" fixed="right">
+              <template #default="{ row }">
+                <el-button v-if="portCanOpen(row)" size="small" type="primary" link
+                           @click="openWlShell(row)">打开串口</el-button>
+                <span v-else class="comres-muted">无串口资源</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="!comresAllRows.length && !comresLoading && !comresError"
+                    description="暂无 COMRes 资源" />
         </el-card>
       </div>
 
@@ -3142,5 +3412,9 @@ const legendRole = [
 .intro-open { color: var(--el-color-primary); text-decoration: none; font-size: 13px; }
 .intro-open:hover { text-decoration: underline; }
 .form-hint { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; }
+/* COMRes：无串口资源灰显 */
+.comres-muted { color: #c0c4cc; }
+.comres-no-serial { color: #c0c4cc; }
+.comres-no-serial .cell { color: #c0c4cc; }
 
 </style>
