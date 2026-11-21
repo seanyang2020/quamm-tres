@@ -47,6 +47,8 @@ const detailStatusTab = ref('all')
 const detailPage = ref(1)
 const detailPageSize = ref(25)
 const deviceProbeSort = ref('') // '' | ascending | descending
+/** 顶部统计卡筛选：null=未筛；all/online/offline/pending/occupied/available */
+const statsFilter = ref(null)
 // v0.23 截图预览 / v0.24 截图生命周期（元数据、重新截图、历史、存储管理）
 const screenshotVisible = ref(false)
 const screenshotUrl = ref('')
@@ -129,7 +131,11 @@ const detailCounts = computed(() => {
 // 状态 + 搜索过滤后的完整列表（分页前）；支持按最近探测排序
 const detailFilteredDevices = computed(() => {
   let list = detailBaseDevices.value
-  if (detailStatusTab.value !== 'all') list = list.filter((d) => d.status === detailStatusTab.value)
+  if (detailStatusTab.value !== 'all') {
+    list = list.filter((d) => d.status === detailStatusTab.value)
+  } else if (statsFilter.value === 'online') {
+    list = list.filter((d) => d.status === 'available' || d.status === 'occupied')
+  }
   const kw = deviceSearch.value.trim().toLowerCase()
   if (kw) {
     list = list.filter((d) =>
@@ -180,11 +186,16 @@ watch([detailPageSize, () => detailFilteredDevices.value.length], () => {
   const maxPage = Math.max(1, Math.ceil(detailFilteredDevices.value.length / detailPageSize.value))
   if (detailPage.value > maxPage) detailPage.value = maxPage
 })
-const STATUS_LABEL = { occupied: '占用', available: '可用', offline: '离线', pending: '待检' }
+const STATUS_LABEL = {
+  occupied: '已分配', available: '空闲', offline: '离线', pending: '待检', online: '在线', all: '全部',
+}
 const emptyDetailText = computed(() => {
   const kw = deviceSearch.value.trim()
   const total = detailCounts.value.all
   if (kw) return `没有匹配「${kw}」的设备（${detailTitle.value} 共 ${total} 台）`
+  if (statsFilter.value === 'online') {
+    return `${detailTitle.value} · 在线 暂无设备（该机型共 ${total} 台）`
+  }
   if (detailStatusTab.value !== 'all') {
     return `${detailTitle.value} · ${STATUS_LABEL[detailStatusTab.value] || detailStatusTab.value} 暂无设备（该机型共 ${total} 台）`
   }
@@ -192,6 +203,7 @@ const emptyDetailText = computed(() => {
 })
 function showAllInDetail() {
   detailStatusTab.value = 'all'
+  statsFilter.value = selectedDeviceType.value === ALL_DEVICES ? 'all' : null
   deviceSearch.value = ''
   detailPage.value = 1
 }
@@ -200,10 +212,42 @@ function openDeviceDetail(type, status = 'all') {
   detailStatusTab.value = status
   deviceSearch.value = ''
   detailPage.value = 1
+  if (type === ALL_DEVICES) {
+    statsFilter.value = status === 'all' ? 'all' : status
+  } else {
+    statsFilter.value = null
+  }
 }
 function openDeviceType(type) { openDeviceDetail(type, 'all') }
-function openOverviewStat(status) { openDeviceDetail(ALL_DEVICES, status) }
-function backToOverview() { selectedDeviceType.value = null }
+/** 顶部统计卡：再点同一卡取消筛选，回到概况 */
+function toggleStatsFilter(key) {
+  if (statsFilter.value === key) {
+    statsFilter.value = null
+    selectedDeviceType.value = null
+    detailStatusTab.value = 'all'
+    deviceSearch.value = ''
+    detailPage.value = 1
+    return
+  }
+  statsFilter.value = key
+  selectedDeviceType.value = ALL_DEVICES
+  deviceSearch.value = ''
+  detailPage.value = 1
+  detailStatusTab.value = (key === 'all' || key === 'online') ? 'all' : key
+}
+function openOverviewStat(status) { toggleStatsFilter(status) }
+function onDetailStatusTabChange(name) {
+  if (selectedDeviceType.value !== ALL_DEVICES) {
+    statsFilter.value = null
+    return
+  }
+  statsFilter.value = name === 'all' ? 'all' : name
+}
+function backToOverview() {
+  selectedDeviceType.value = null
+  statsFilter.value = null
+  detailStatusTab.value = 'all'
+}
 
 const leases = ref([])
 const credentials = ref([])
@@ -914,6 +958,7 @@ function goDevices() {
   deviceSearch.value = ''
   detailStatusTab.value = 'all'
   detailPage.value = 1
+  statsFilter.value = null
 }
 function applyProductChip(typeCode) {
   if (!typeCode) return
@@ -1150,6 +1195,20 @@ const comresAllRows = computed(() => {
     ...(comresPool.value || []),
     ...inactive,
   ]
+})
+/** 设备中心顶部：串口资源 / 在池端口（来自 /api/comres/resources） */
+const comresPortStats = computed(() => {
+  const allocated = (comresAllocated.value || []).length
+  const bound = (comresBound.value || []).length
+  const pool = (comresPool.value || []).length
+  const inactive = (comresInactive.value || []).length
+  return {
+    total: allocated + bound + pool + inactive,
+    allocated,
+    bound,
+    pool,
+    inactive,
+  }
 })
 
 const comresByNode = computed(() => {
@@ -1642,6 +1701,7 @@ function switchPage(key) {
     goDevices()
     loadDevices()
     loadDashboard()
+    loadComresResources()
   }
   else if (key === 'scheduling') {
     loadLeases(); loadQueue(); loadAnomalies(); loadNotices(); loadPatrol()
@@ -1684,6 +1744,7 @@ async function boot() {
     loadProductTypes()
     loadBuildServers()
     loadDevices()
+    loadComresResources()
   }
 }
 onMounted(() => {
@@ -2229,13 +2290,55 @@ const legendRole = [
           <span>
             上次全量巡检 {{ dashboard && dashboard.last_patrol ? formatLocal(dashboard.last_patrol.ended_at) : '—' }}
             · 最近快轮询 {{ dashboard && dashboard.last_recover_patrol ? formatLocalHm(dashboard.last_recover_patrol.ended_at) : '—' }}
-            · 在线 {{ deviceTotals.online }}
-            · 离线 {{ deviceTotals.offline }}
-            · 待检 {{ deviceTotals.pending }}
           </span>
           <el-button v-if="me.role === 'admin'" size="small" link type="primary" :loading="patrolBusy" @click="triggerPatrolNow">立即巡检</el-button>
           <el-button v-else size="small" link type="primary" :loading="patrolBusy" @click="triggerPatrolNow">刷新状态</el-button>
         </div>
+        <el-row :gutter="12" class="device-stats-row">
+          <el-col :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'all' }" @click="toggleStatsFilter('all')">
+              <div class="ov-label">设备总量</div>
+              <div class="ov-num">{{ deviceTotals.total }}</div>
+            </el-card>
+          </el-col>
+          <el-col :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'online' }" @click="toggleStatsFilter('online')">
+              <div class="ov-label">在线</div>
+              <div class="ov-num ov-online">{{ deviceTotals.online }}</div>
+            </el-card>
+          </el-col>
+          <el-col :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'offline' }" @click="toggleStatsFilter('offline')">
+              <div class="ov-label">离线</div>
+              <div class="ov-num ov-offline">{{ deviceTotals.offline }}</div>
+            </el-card>
+          </el-col>
+          <el-col :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'pending' }" @click="toggleStatsFilter('pending')">
+              <div class="ov-label">待检</div>
+              <div class="ov-num ov-pending">{{ deviceTotals.pending }}</div>
+            </el-card>
+          </el-col>
+          <el-col :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'occupied' }" @click="toggleStatsFilter('occupied')">
+              <div class="ov-label">已分配</div>
+              <div class="ov-num ov-allocated">{{ deviceTotals.occupied }}</div>
+            </el-card>
+          </el-col>
+          <el-col :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'available' }" @click="toggleStatsFilter('available')">
+              <div class="ov-label">空闲</div>
+              <div class="ov-num ov-idle">{{ deviceTotals.available }}</div>
+            </el-card>
+          </el-col>
+          <el-col v-if="comresPortStats.total > 0" :xs="12" :sm="8" :md="4" :lg="4">
+            <el-card shadow="hover" class="ov-card" @click="switchPage('wirelog')">
+              <div class="ov-label">串口资源</div>
+              <div class="ov-num">{{ comresPortStats.total }}</div>
+              <div class="ov-sub">在池 {{ comresPortStats.pool }}</div>
+            </el-card>
+          </el-col>
+        </el-row>
         <div v-if="productChips.length" class="product-chips">
           <button
             v-for="c in productChips"
@@ -2292,7 +2395,7 @@ const legendRole = [
             <el-button v-else type="primary" plain disabled style="margin-left: auto; cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 10px 0">
-            <el-tabs v-model="detailStatusTab" style="flex: 1; min-width: 280px">
+            <el-tabs v-model="detailStatusTab" style="flex: 1; min-width: 280px" @tab-change="onDetailStatusTabChange">
               <el-tab-pane :label="'全部(' + detailCounts.all + ')'" name="all" />
               <el-tab-pane :label="'占用(' + detailCounts.occupied + ')'" name="occupied" />
               <el-tab-pane :label="'可用(' + detailCounts.available + ')'" name="available" />
@@ -3786,6 +3889,25 @@ const legendRole = [
   background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 6px;
   padding: 6px 12px; margin-bottom: 8px; color: #909399; font-size: 12px; line-height: 1.5;
 }
+.device-stats-row { margin: 0 0 10px; }
+.device-stats-row > .el-col { margin-bottom: 10px; }
+.ov-card {
+  --el-card-bg-color: #1f2937;
+  --el-card-border-color: #374151;
+  cursor: pointer; transition: box-shadow .2s, border-color .2s, transform .2s;
+  border-radius: 8px; background: #1f2937; border: 1px solid #374151; color: #e5e7eb;
+}
+.ov-card :deep(.el-card__body) { padding: 14px 16px; background: transparent; }
+.ov-card:hover { box-shadow: 0 6px 18px rgba(0, 0, 0, .28); border-color: #60a5fa; transform: translateY(-2px); }
+.ov-card.is-active { border-color: #409eff; box-shadow: 0 0 0 1px #409eff inset; }
+.ov-label { color: #9ca3af; font-size: 13px; }
+.ov-num { font-size: 28px; line-height: 1.2; margin-top: 6px; font-weight: 700; color: #f3f4f6; }
+.ov-sub { margin-top: 4px; font-size: 12px; color: #9ca3af; }
+.ov-online { color: #67c23a; }
+.ov-offline { color: #f89898; }
+.ov-pending { color: #e6a23c; }
+.ov-allocated { color: #409eff; }
+.ov-idle { color: #a3e635; }
 .product-chips {
   display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
   -webkit-overflow-scrolling: touch;

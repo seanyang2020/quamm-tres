@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：t955 —— COMRes 节点视图硬删 500 + 权限提示失真  
-> task_id: t955
+> 任务：t960 —— 恢复设备中心顶部分类统计卡片  
+> task_id: t960
 
 ## 状态：已完成（停住等审）
 
@@ -9,16 +9,16 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 一 delete_node 级联 | 清空 `wl_client_apply.issued_node_id/token_cipher`，保留行；cascade 含 `applies` | ✅ |
-| 二 IntegrityError→409 | `WL_DELETE_CONFLICT`，detail 列残留表名 | ✅ |
-| 三 前端 | 删除按钮仅 admin；toast 展示后端 detail/message | ✅ |
-| 四 再申请 | 节点硬删后同 client_id 重新签发 | ✅ |
-| 五 pytest | `tests/test_wirelog_delete_node.py` 4 例 + apply 回归 11 passed | ✅ |
-| 六 真库 | `wlf4fd4fc2fed8ceae` 已删，剩 2 节点；apply token 已清空 | ✅ |
+| 一 统计卡 | 设备中心状态条下恢复总量/在线/离线/待检/已分配/空闲；有串口数据时加「串口资源/在池」 | ✅ |
+| 二 点击筛选 | 点卡进全部设备明细并按状态过滤，再点取消回概况 | ✅ |
+| 三 巡检条 | 保留全量巡检/快轮询时间，去掉与卡片重复的在线/离线/待检文本 | ✅ |
+| 四 不恢复看板 | 菜单仍无「看板」；旧路由仍重定向设备中心 | ✅ |
+| 五 构建 | `cd web && npm run build` exit 0 | ✅ |
+| 六 单测 | `tests/test_device_stats.py` 总量/在线/离线/待检/已分配/空闲 | ✅ |
 
 ## 提交
 
-- `0f5f9e0` / `0f5f9e09c9b31ee317d1ba32286e257bf0d210ee`
+- `1369ee6` / `1369ee6a851966a789e3d4aeccf7275b5f6195d5`
 
 ## 说明
 
