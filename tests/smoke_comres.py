@@ -356,5 +356,160 @@ resp2 = client.post("/api/comres/register", json={})
 print("POST /api/comres/register (no auth) status", resp2.status_code)
 check("comres/register 无 token→401", resp2.status_code == 401)
 
+# ---------- 9) 全量心跳下线 + 再上报恢复 + auto 保活 / 手工 15min ----------
+print("=== ACCEPT-9 heartbeat offline + auto TTL ===")
+prov_hb = wirelog.provision_host(s, display_name="hb-offline", operator="t")
+tok_hb, nid_hb = prov_hb["node_token"], prov_hb["node_id"]
+comres.register(s, tok_hb, {
+    "node_id": nid_hb, "local_ip": "10.3.3.1",
+    "ports": [
+        {"slot": 1, "com": "COM-HB1", "sn": "SN-HB-KEEP",
+         "endpoint": "tcp://10.3.3.1:9200", "health_state": "online"},
+        {"slot": 2, "com": "COM-HB2", "mac": "22:33:44:55:66:77",
+         "endpoint": "tcp://10.3.3.1:9201", "health_state": "online"},
+    ],
+})
+b_hb1 = s.query(WireLogPortBinding).filter_by(node_id=nid_hb, com_name="COM-HB1").one()
+b_hb2 = s.query(WireLogPortBinding).filter_by(node_id=nid_hb, com_name="COM-HB2").one()
+dev_hb1 = b_hb1.bound_device_id
+dev_hb2 = b_hb2.bound_device_id
+check("心跳前两口 online", b_hb1.health_state == "online" and b_hb2.health_state == "online")
+check("心跳前两口已绑定设备", bool(dev_hb1) and bool(dev_hb2))
+
+# 心跳只报 COM-HB1 → COM-HB2 全量下线
+comres.heartbeat(s, tok_hb, {
+    "node_id": nid_hb, "local_ip": "10.3.3.1",
+    "ports": [{"slot": 1, "com": "COM-HB1", "sn": "SN-HB-KEEP",
+               "endpoint": "tcp://10.3.3.1:9200", "health_state": "online"}],
+})
+b_hb1 = s.query(WireLogPortBinding).filter_by(node_id=nid_hb, com_name="COM-HB1").one()
+b_hb2 = s.query(WireLogPortBinding).filter_by(node_id=nid_hb, com_name="COM-HB2").one()
+print(f"  after hb: HB1={b_hb1.health_state} HB2={b_hb2.health_state} "
+      f"dev2={b_hb2.bound_device_id}")
+check("未报端口变 offline", b_hb2.health_state == "offline")
+check("未报端口保留设备绑定", b_hb2.bound_device_id == dev_hb2)
+aud_off = (s.query(WireLogAudit)
+           .filter_by(node_id=nid_hb, action="comres_port_offline")
+           .order_by(WireLogAudit.id.desc()).first())
+detail_off = json.loads(aud_off.detail) if aud_off and aud_off.detail else {}
+check("下线记审计 comres_port_offline",
+      aud_off is not None and detail_off.get("com") == "COM-HB2"
+      and "was_health_state" in detail_off, detail_off)
+res_hb = comres.list_resources(s)
+online_hb = (res_hb["allocated"] + res_hb.get("bound", []) + res_hb["pool"])
+check("offline 不在在线视图",
+      not any(x.get("node_id") == nid_hb and x.get("com") == "COM-HB2" for x in online_hb))
+check("仍报端口留在在线视图",
+      any(x.get("node_id") == nid_hb and x.get("com") == "COM-HB1" for x in online_hb))
+
+# 再 register 两口 → HB2 恢复 online，设备不丢、不重复建档
+devs_before = s.query(Device).filter(Device.mac == "22:33:44:55:66:77").count()
+comres.register(s, tok_hb, {
+    "node_id": nid_hb, "local_ip": "10.3.3.1",
+    "ports": [
+        {"slot": 1, "com": "COM-HB1", "sn": "SN-HB-KEEP",
+         "endpoint": "tcp://10.3.3.1:9200", "health_state": "online"},
+        {"slot": 2, "com": "COM-HB2", "mac": "22:33:44:55:66:77",
+         "endpoint": "tcp://10.3.3.1:9201", "health_state": "online"},
+    ],
+})
+b_hb2 = s.query(WireLogPortBinding).filter_by(node_id=nid_hb, com_name="COM-HB2").one()
+devs_after = s.query(Device).filter(Device.mac == "22:33:44:55:66:77").count()
+print(f"  restore: health={b_hb2.health_state} device={b_hb2.bound_device_id} "
+      f"devs={devs_before}->{devs_after}")
+check("再上报恢复 online", b_hb2.health_state == "online")
+check("再上报设备绑定不丢", b_hb2.bound_device_id == dev_hb2)
+check("再上报不重复建档", devs_before == 1 and devs_after == 1)
+
+# auto 绑定：TTL ≥ 7200；3601s 后仍占用，7201s 后释放
+prov_auto = wirelog.provision_host(s, display_name="auto-ttl", operator="t")
+tok_a, nid_a = prov_auto["node_token"], prov_auto["node_id"]
+r_auto = comres.register(s, tok_a, {
+    "node_id": nid_a, "local_ip": "10.3.3.8",
+    "ports": [{"slot": 1, "com": "COM-AUTO", "sn": "SN-AUTO-TTL",
+               "endpoint": "tcp://10.3.3.8:9200", "health_state": "online"}],
+})
+b_auto = s.query(WireLogPortBinding).filter_by(node_id=nid_a, slot=1).one()
+ttl_s = (b_auto.allocated_expire - b_auto.allocated_at).total_seconds()
+print(f"  auto ttl_s={ttl_s} by={b_auto.allocated_by} allocated={r_auto['ports'][0]['allocated']}")
+check("auto 占用 TTL≥7200", b_auto.allocated_by and b_auto.allocated_by.startswith("auto:")
+      and ttl_s >= 7200, f"ttl={ttl_s}")
+# 模拟分配后 3601s：expire 仍在未来 → 仍占用
+b_auto.allocated_at = utcnow() - timedelta(seconds=3601)
+b_auto.allocated_expire = b_auto.allocated_at + timedelta(seconds=int(ttl_s))
+s.commit()
+comres.expire_allocations(s)
+b_auto = s.query(WireLogPortBinding).filter_by(node_id=nid_a, slot=1).one()
+check("auto 3601s 后仍已分配",
+      b_auto.allocated_by is not None and b_auto.allocated_by.startswith("auto:"),
+      f"by={b_auto.allocated_by}")
+# 模拟 7201s：expire 已过 → 释放为已绑定未分配
+b_auto.allocated_at = utcnow() - timedelta(seconds=7201)
+b_auto.allocated_expire = b_auto.allocated_at + timedelta(seconds=7200)
+s.commit()
+released_auto = comres.expire_allocations(s)
+b_auto = s.query(WireLogPortBinding).filter_by(node_id=nid_a, slot=1).one()
+print(f"  after 7201s: by={b_auto.allocated_by} device={b_auto.bound_device_id} "
+      f"released_n={len(released_auto)}")
+check("auto 7201s 后释放占用", b_auto.allocated_by is None and b_auto.allocated_expire is None)
+check("auto 7201s 后保留绑定", b_auto.bound_device_id is not None)
+
+# 资源池手工占用仍按 15 分钟释放（非 auto: 前缀；缺省 TTL=ALLOCATED_TTL_S）
+prov_m = wirelog.provision_host(s, display_name="manual-ttl", operator="t")
+tok_m, nid_m = prov_m["node_token"], prov_m["node_id"]
+comres.register(s, tok_m, {
+    "node_id": nid_m, "local_ip": "10.3.3.9",
+    "ports": [{"slot": 1, "com": "COM-MAN",
+               "endpoint": "tcp://10.3.3.9:9200", "health_state": "online"}],
+})
+b_m = s.query(WireLogPortBinding).filter_by(node_id=nid_m, slot=1).one()
+comres._mark_allocated(b_m, by="pool-user")  # 非 auto: → 15min
+s.commit()
+manual_ttl = (b_m.allocated_expire - b_m.allocated_at).total_seconds()
+print(f"  manual ttl_s={manual_ttl} by={b_m.allocated_by}")
+check("手工占用缺省 TTL=15min",
+      b_m.allocated_by == "pool-user" and abs(manual_ttl - 900) < 2, f"ttl={manual_ttl}")
+# 续约路径仍按传入/缺省 15min（与 ACCEPT-5 一致）
+hb_m = comres.allocated_heartbeat(s, {
+    "node_id": nid_m, "com": "COM-MAN", "endpoint": "tcp://10.3.3.9:9200",
+    "allocated_by": "pool-user",
+})
+b_m = s.query(WireLogPortBinding).filter_by(node_id=nid_m, slot=1).one()
+check("手工续约成功", hb_m.get("ok") and b_m.allocated_by == "pool-user")
+b_m.allocated_expire = utcnow() - timedelta(seconds=1)
+s.commit()
+comres.expire_allocations(s)
+b_m = s.query(WireLogPortBinding).filter_by(node_id=nid_m, slot=1).one()
+check("手工占用 15min 后释放", b_m.allocated_by is None and b_m.allocated_expire is None)
+
+# 节点 stale：超 2 倍心跳无上报 → auto 释放
+prov_st = wirelog.provision_host(s, display_name="stale-n", operator="t")
+tok_st, nid_st = prov_st["node_token"], prov_st["node_id"]
+comres.register(s, tok_st, {
+    "node_id": nid_st, "local_ip": "10.3.3.10",
+    "ports": [{"slot": 1, "com": "COM-ST", "sn": "SN-STALE-AUTO",
+               "endpoint": "tcp://10.3.3.10:9200", "health_state": "online"}],
+})
+from app.models import WireLogNode
+node_st = s.get(WireLogNode, nid_st)
+node_st.last_heartbeat_at = utcnow() - timedelta(seconds=7201)
+# 把 auto expire 推到未来，确保走 node_stale 路径而非 expire 路径
+b_st = s.query(WireLogPortBinding).filter_by(node_id=nid_st, slot=1).one()
+kept_st_dev = b_st.bound_device_id
+b_st.allocated_expire = utcnow() + timedelta(seconds=3600)
+s.commit()
+released_st = comres.expire_allocations(s)
+b_st = s.query(WireLogPortBinding).filter_by(node_id=nid_st, slot=1).one()
+aud_st = (s.query(WireLogAudit)
+          .filter_by(node_id=nid_st, action="comres_auto_release_stale")
+          .order_by(WireLogAudit.id.desc()).first())
+print(f"  stale: by={b_st.allocated_by} device={b_st.bound_device_id} "
+      f"audit={aud_st.action if aud_st else None}")
+check("节点 stale 释放 auto 占用", b_st.allocated_by is None)
+check("节点 stale 保留绑定", b_st.bound_device_id == kept_st_dev)
+check("节点 stale 记审计", aud_st is not None)
+check("stale 释放命中本端口",
+      any(r.get("com") == "COM-ST" for r in released_st), released_st)
+
 print("RESULT", "ALL_PASS" if not fails else f"FAIL={fails}")
 raise SystemExit(0 if not fails else 1)
