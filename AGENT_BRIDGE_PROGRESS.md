@@ -28,5 +28,5 @@
 
 ## 说明
 
-- 分支 `feat/comres`（任务文案写 master；COMRes 系列均在本分支）
+- 提交：`05e454f`（分支 `feat/comres`；任务文案写 master，COMRes 系列均在本分支）
 - 停住等审
