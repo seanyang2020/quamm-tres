@@ -376,7 +376,13 @@ dev_hb2 = b_hb2.bound_device_id
 check("心跳前两口 online", b_hb1.health_state == "online" and b_hb2.health_state == "online")
 check("心跳前两口已绑定设备", bool(dev_hb1) and bool(dev_hb2))
 
-# 心跳只报 COM-HB1 → COM-HB2 全量下线
+# T4 语义：未分配端口未上报 → offline。先解除 HB2 占用（保留绑定），与 T5 已分配跳过解耦。
+b_hb2.allocated_by = None
+b_hb2.allocated_at = None
+b_hb2.allocated_expire = None
+s.commit()
+
+# 心跳只报 COM-HB1 → 未分配的 COM-HB2 全量下线
 comres.heartbeat(s, tok_hb, {
     "node_id": nid_hb, "local_ip": "10.3.3.1",
     "ports": [{"slot": 1, "com": "COM-HB1", "sn": "SN-HB-KEEP",
@@ -510,6 +516,88 @@ check("节点 stale 保留绑定", b_st.bound_device_id == kept_st_dev)
 check("节点 stale 记审计", aud_st is not None)
 check("stale 释放命中本端口",
       any(r.get("com") == "COM-ST" for r in released_st), released_st)
+
+# ---------- 10) 已分配端口未上报 → 不置 offline；释放后再未报 → offline ----------
+print("=== ACCEPT-10 allocated skip offline ===")
+prov_t5 = wirelog.provision_host(s, display_name="alloc-skip", operator="t")
+tok_t5, nid_t5 = prov_t5["node_token"], prov_t5["node_id"]
+comres.register(s, tok_t5, {
+    "node_id": nid_t5, "local_ip": "10.4.4.1",
+    "ports": [
+        {"slot": 1, "com": "COM-KEEP", "sn": "SN-T5-KEEP",
+         "endpoint": "tcp://10.4.4.1:9200", "health_state": "online"},
+        {"slot": 2, "com": "COM-HOLD", "mac": "aa:bb:cc:dd:ee:10",
+         "endpoint": "tcp://10.4.4.1:9201", "health_state": "online",
+         "probe": {"ok": True, "rtt_ms": 1}},
+    ],
+})
+b_hold = s.query(WireLogPortBinding).filter_by(node_id=nid_t5, com_name="COM-HOLD").one()
+check("T5 占用前 online+allocated",
+      b_hold.health_state == "online" and comres._is_allocated(b_hold),
+      f"health={b_hold.health_state} by={b_hold.allocated_by}")
+# 心跳不带 COM-HOLD → 应跳过 offline，仍 online，仍在 allocated 视图
+comres.heartbeat(s, tok_t5, {
+    "node_id": nid_t5, "local_ip": "10.4.4.1",
+    "ports": [{"slot": 1, "com": "COM-KEEP", "sn": "SN-T5-KEEP",
+               "endpoint": "tcp://10.4.4.1:9200", "health_state": "online"}],
+})
+b_hold = s.query(WireLogPortBinding).filter_by(node_id=nid_t5, com_name="COM-HOLD").one()
+aud_skip = (s.query(WireLogAudit)
+            .filter_by(node_id=nid_t5, action="comres_port_skipped_allocated")
+            .order_by(WireLogAudit.id.desc()).first())
+detail_skip = json.loads(aud_skip.detail) if aud_skip and aud_skip.detail else {}
+print(f"  skip: health={b_hold.health_state} by={b_hold.allocated_by} "
+      f"audit_com={detail_skip.get('com')}")
+check("已分配未报仍 online", b_hold.health_state == "online")
+check("已分配未报仍占用", comres._is_allocated(b_hold))
+check("已分配跳过记审计",
+      aud_skip is not None and detail_skip.get("com") == "COM-HOLD", detail_skip)
+res_t5 = comres.list_resources(s)
+check("已分配未报仍在 allocated 视图",
+      any(x.get("node_id") == nid_t5 and x.get("com") == "COM-HOLD"
+          for x in res_t5["allocated"]))
+
+# 释放占用后再心跳不带该端口 → offline，退出在线视图
+b_hold.allocated_by = None
+b_hold.allocated_at = None
+b_hold.allocated_expire = None
+s.commit()
+comres.heartbeat(s, tok_t5, {
+    "node_id": nid_t5, "local_ip": "10.4.4.1",
+    "ports": [{"slot": 1, "com": "COM-KEEP", "sn": "SN-T5-KEEP",
+               "endpoint": "tcp://10.4.4.1:9200", "health_state": "online"}],
+})
+b_hold = s.query(WireLogPortBinding).filter_by(node_id=nid_t5, com_name="COM-HOLD").one()
+aud_off_t5 = (s.query(WireLogAudit)
+              .filter_by(node_id=nid_t5, action="comres_port_offline")
+              .order_by(WireLogAudit.id.desc()).first())
+detail_off_t5 = json.loads(aud_off_t5.detail) if aud_off_t5 and aud_off_t5.detail else {}
+print(f"  after release+hb: health={b_hold.health_state} "
+      f"offline_com={detail_off_t5.get('com')}")
+check("释放后未报变 offline", b_hold.health_state == "offline")
+check("释放后下线记审计",
+      aud_off_t5 is not None and detail_off_t5.get("com") == "COM-HOLD", detail_off_t5)
+res_t5b = comres.list_resources(s)
+online_t5 = res_t5b["allocated"] + res_t5b.get("bound", []) + res_t5b["pool"]
+check("释放后 offline 不在在线视图",
+      not any(x.get("node_id") == nid_t5 and x.get("com") == "COM-HOLD" for x in online_t5))
+
+# 再次上报恢复 online + probe
+comres.heartbeat(s, tok_t5, {
+    "node_id": nid_t5, "local_ip": "10.4.4.1",
+    "ports": [
+        {"slot": 1, "com": "COM-KEEP", "sn": "SN-T5-KEEP",
+         "endpoint": "tcp://10.4.4.1:9200", "health_state": "online"},
+        {"slot": 2, "com": "COM-HOLD", "mac": "aa:bb:cc:dd:ee:10",
+         "endpoint": "tcp://10.4.4.1:9201", "health_state": "online",
+         "probe": {"ok": True, "rtt_ms": 2}},
+    ],
+})
+b_hold = s.query(WireLogPortBinding).filter_by(node_id=nid_t5, com_name="COM-HOLD").one()
+probe = json.loads(b_hold.probe_json) if b_hold.probe_json else {}
+print(f"  restore: health={b_hold.health_state} probe={probe}")
+check("再上报恢复 online", b_hold.health_state == "online")
+check("再上报刷新 probe", probe.get("rtt_ms") == 2)
 
 print("RESULT", "ALL_PASS" if not fails else f"FAIL={fails}")
 raise SystemExit(0 if not fails else 1)

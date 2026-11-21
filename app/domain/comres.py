@@ -508,11 +508,14 @@ def _mark_absent_ports_offline(session: Session, node_id: str,
     """本次 ports[] 未出现的既有绑定 → offline；保留绑定与设备关系。
 
     契约：register / 带 ports 的 heartbeat 为全量视图；空 ports 心跳不触发下线。
+    有效占用（_is_allocated）的端口不置 offline——占用方续约期间宿主可停报存在性，
+    物理在线仍归占用语义；未分配端口仍按「未上报即 offline」。
     """
     session.flush()
     reported_ids = {b.id for b in reported if b.id is not None}
     existing = (session.query(WireLogPortBinding)
                 .filter_by(node_id=node_id).all())
+    now = utcnow()
     offlined = []
     for b in existing:
         if b.id in reported_ids:
@@ -520,13 +523,22 @@ def _mark_absent_ports_offline(session: Session, node_id: str,
         was = b.health_state
         if (was or "").lower() == "offline":
             continue
-        b.health_state = "offline"
         detail = {
             "com": b.com_name,
             "com_key": b.com_key,
             "endpoint": b.endpoint,
             "was_health_state": was,
         }
+        # 已分配：保持原 health_state，不置 offline
+        if _is_allocated(b, now):
+            detail["allocated_by"] = b.allocated_by
+            detail["allocated_expire"] = (
+                b.allocated_expire.isoformat() if b.allocated_expire else None
+            )
+            _audit(session, node_id, "comres_port_skipped_allocated",
+                   result="ok", detail=detail)
+            continue
+        b.health_state = "offline"
         _audit(session, node_id, "comres_port_offline", result="ok", detail=detail)
         offlined.append(detail)
     return offlined
@@ -558,7 +570,7 @@ def register(session: Session, token: str, payload: dict) -> dict:
         matches.append(m)
         touched.append(binding)
 
-    # 全量语义：本次未上报的既有端口置 offline（不清绑定）
+    # 全量语义：未上报且未分配 → offline；已分配保持 health_state（不清绑定）
     if ports_in:
         _mark_absent_ports_offline(session, node.node_id, touched)
 
@@ -574,8 +586,9 @@ def register(session: Session, token: str, payload: dict) -> dict:
 
 
 def heartbeat(session: Session, token: str, payload: dict) -> dict:
-    """周期心跳。带 ports[] 时按全量视图：未出现端口置 offline。
+    """周期心跳。带 ports[] 时按全量视图：未出现且未分配 → offline。
 
+    有效占用端口未上报时保持原 health_state（comres_port_skipped_allocated）。
     无 ports 时仅刷新节点心跳并回该节点全部资源 allocated（不停报）。
     """
     expire_allocations(session)
