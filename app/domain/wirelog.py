@@ -66,15 +66,18 @@ def _fw_setenv_cmds(plain, node_id, hmac_key):
 
 
 def enroll(session, adb_address=None, operator=None, display_name=None,
-           model_class="esl2_hk", reuse_existing=True):
-    """生成 node_id + 明文 token，建节点与发放记录，返回写 uboot-env 所需信息。
+           model_class="esl2_hk", reuse_existing=True, **_ignored):
+    """生成 node_id + 明文 token，建节点与发放记录。
 
-    明文 token 只在返回值出现一次，库内只存哈希。ADR-7：同 adb 地址已有
-    未退役节点时复用该节点重发 token，不再新建。
+    明文 token 只在返回值出现一次，库内只存哈希。
+    现行主路径是开放登记（可不传 adb_address）；adb_address / fw_setenv
+    仅作旧 wirelog 采集机兼容：同 adb 未退役节点可复用重发（ADR-7），
+    响应仍附带 fw_setenv 供老客户端，新 UI 不再展示。
+    未知关键字参数被忽略，便于前后端字段演进。
     """
     now = utcnow()
     existing = (_find_node_by_adb_address(session, adb_address)
-                if reuse_existing else None)
+                if reuse_existing and adb_address else None)
 
     if existing is not None and existing.status != "retired":
         node = existing
@@ -108,20 +111,29 @@ def enroll(session, adb_address=None, operator=None, display_name=None,
         session.flush()  # 先落父行，满足 wl_enrollment 外键
         reused = False
 
+    if reused:
+        detail = "复用节点重发 token"
+    elif adb_address:
+        detail = "等待 adb fw_setenv 写入（兼容旧路径）"
+    else:
+        detail = "开放登记：token 直接下发到宿主"
     session.add(WireLogEnrollment(
-        node_id=node_id, adb_address=adb_address, operator=operator,
-        uboot_var=UBOOT_TOKEN_VAR, result="pending",
-        detail=("复用节点重发 token" if reused else "等待 adb fw_setenv 写入"),
+        node_id=node_id, adb_address=adb_address or None, operator=operator,
+        uboot_var=(UBOOT_TOKEN_VAR if adb_address else None),
+        result=("pending" if adb_address else "ok"),
+        detail=detail,
         created_at=now,
     ))
-    _audit(session, node_id, "enroll", actor=operator, result="pending",
-           detail={"reused": reused})
+    _audit(session, node_id, "enroll", actor=operator,
+           result=("pending" if adb_address else "ok"),
+           detail={"reused": reused, "open_enroll": not bool(adb_address)})
     session.commit()
     return {
         "node_id": node_id,
         "node_token": plain,                 # 一次性明文
-        "hmac_key": hmac_key,               # 经 adb 写 uboot-env
+        "hmac_key": hmac_key,
         "reused": reused,
+        # 兼容字段：老客户端仍可读；开放登记 UI 不再展示
         "fw_setenv": _fw_setenv_cmds(plain, node_id, hmac_key),
     }
 
@@ -681,12 +693,11 @@ def refresh_status(session):
 # ---------------------------------------------------- v0.32 TCP COM 资源接入
 
 def provision_host(session, display_name=None, model_class=None,
-                   operator=None, note=None):
-    """给 PC 端串口宿主签发接入凭据（不需要 adb 写 uboot-env）。
+                   operator=None, note=None, **_ignored):
+    """开放登记：给串口宿主签发接入凭据（不需要 adb / fw_setenv）。
 
-    与 enroll 的区别：enroll 假定宿主是嵌入式日志机、要经 adb 把 token 写进
-    uboot-env；PC 端是普通 Windows 机器，token 直接落到本地配置文件即可。
-    明文 token 只在返回值出现一次，库内只存哈希。
+    明文 token 只在返回值出现一次，库内只存哈希；宿主用 token 走
+    register/heartbeat 自注册。未知关键字参数忽略。
     """
     now = utcnow()
     node_id = new_id("wl", 8)

@@ -135,10 +135,14 @@ def post_grant(node_id: str, payload: dict = Body(...),
 def post_enroll(payload: dict = Body(default={}),
                 session: Session = Depends(get_session),
                 identity=Depends(web_auth.require_admin)):
+    """开放登记发放节点。只读 name/model；adb_address 等旧字段可选，未知键忽略。"""
+    payload = payload or {}
     return wirelog.enroll(
-        session, adb_address=payload.get("adb_address"),
-        operator=identity.email, display_name=payload.get("display_name"),
-        model_class=payload.get("model_class", "esl2_hk"))
+        session,
+        adb_address=payload.get("adb_address") or None,
+        operator=identity.email,
+        display_name=payload.get("display_name"),
+        model_class=payload.get("model_class") or "esl2_hk")
 
 
 @router.post("/nodes/{node_id}/uart-register")

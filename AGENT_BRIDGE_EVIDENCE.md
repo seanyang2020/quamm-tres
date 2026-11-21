@@ -1,66 +1,52 @@
 ---
-task_id: t6-comres-shell-port
+task_id: t933
 ---
 
 ## a. 编译/构建
 
-命令：`PYTHONPATH=. .venv/bin/python -m compileall -q app/api/wirelog_router.py tests/test_wirelog_shell_target.py`  
+命令：`cd web && npm run build`  
 退出码：`0`  
-结果：无语法错误。
+结果：`✓ built in 5.40s`；产物 `web/dist/index.html`、`web/dist/assets/index-DIH7Ewzz.js` 存在（`dist/` 被 `.gitignore`，按习惯不入库）。
 
-命令：`PYTHONPATH=. .venv/bin/python -m pytest tests/test_wirelog_shell_target.py -q`  
+命令：`PYTHONPATH=. .venv/bin/python -m compileall -q app/domain/wirelog.py app/api/wirelog_router.py app/mcp/server.py`  
+退出码：`0`
+
+命令：`PYTHONPATH=. .venv/bin/python tests/smoke_wirelog.py`  
 退出码：`0`  
-结果：`5 passed in 0.14s`
+结果：`RESULT ALL_PASS`
+
+命令：`PYTHONPATH=. .venv/bin/python tests/http_wirelog.py`  
+退出码：`0`  
+结果：`RESULT ALL_PASS`
 
 ## b. 改动文件清单
 
+- `web/src/App.vue`
+- `app/domain/wirelog.py`
 - `app/api/wirelog_router.py`
-- `tests/test_wirelog_shell_target.py`
+- `app/mcp/server.py`
 - `AGENT_BRIDGE_EVIDENCE.md`
 - `AGENT_BRIDGE_PROGRESS.md`
-- `.agent-bridge/evidence/t6-comres-shell-port.md`
+- `.agent-bridge/evidence/t933.md`
 
-未改：其它 domain / router / 前端模块。
+未改：COMRes 资源池 / 设备绑定 / shell 解析逻辑；库表字段未删除。
 
 ## c. 版本/提交证据
 
+（提交后回填）
+
 ```text
 $ git log -1 --oneline
-61057ae fix(comres): shell 按 binding.endpoint 解析端口，避免 caps.raw_tcp_port 连错 PC 串口
-
 $ git status --short
-?? .agent-bridge/evidence/t4-comres-heartbeat.md
-?? .agent-bridge/evidence/t857.md
-?? .agent-bridge/evidence/t870.md
-?? .agent-bridge/evidence/t880.md
-?? .agent-bridge/evidence/t902.md
-?? .agent-bridge/evidence/t915.md
-
 $ git diff --stat HEAD~1
- .agent-bridge/evidence/t6-comres-shell-port.md | 26 ++++++++++
- AGENT_BRIDGE_EVIDENCE.md                       | 58 ++++++++++++----------
- AGENT_BRIDGE_PROGRESS.md                       | 22 ++++----
- app/api/wirelog_router.py                      | 50 +++++++++++++++++--
- tests/test_wirelog_shell_target.py             | 69 ++++++++++++++++++++++++++
- 5 files changed, 184 insertions(+), 41 deletions(-)
 ```
 
-Gerrit change：不适用
+Gerrit：不适用
 
 ## d. 验证/自测
 
-命令：
-```bash
-PYTHONPATH=. .venv/bin/python -c "
-from types import SimpleNamespace
-from app.api.wirelog_router import _resolve_shell_target
-node = SimpleNamespace(ip='172.16.10.25', caps_json=None, shell_ip=None)
-binding = SimpleNamespace(endpoint='tcp://172.16.10.25:9210', tcp_port=9210, shell_ip=None, com_name='COM16')
-host, port, ep = _resolve_shell_target(node, binding, 1)
-print(ep)
-assert ep == 'tcp://172.16.10.25:9210'
-"
-```
-结果：打印 `tcp://172.16.10.25:9210`，断言通过，退出码 `0`。
-
-pytest 覆盖：(a) endpoint 优先；(b) tcp_port+ip；(c) caps 老节点回退；另含 binding.shell_ip 与无 binding。
+1. 开放 enroll（无 adb）+ provision：
+   - `wirelog.enroll(..., display_name="open-enroll-t933")` → 返回 node_id/token，仍附带 fw_setenv 兼容字段
+   - `wirelog.provision_host(..., weird_extra="ignored")` → 成功，未知字段忽略
+2. 已有节点详情：`get_node("wle19b7266e729846c")` → `online`，ports=4，不报错
+3. 前端产物含「开放登记」「发放 token」「/nodes/provision」；无「ADB + fw_setenv」发放标题

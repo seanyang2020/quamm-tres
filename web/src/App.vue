@@ -1003,7 +1003,7 @@ const wlDetail = ref(null)
 const wlDetailId = ref(null)
 const wlNodesError = ref('')
 const wlDetailError = ref('')
-const wlEnrollForm = ref({ adb_address: '', display_name: '', model_class: 'esl2_hk' })
+const wlEnrollForm = ref({ display_name: '', model_class: 'esl2_hk' })
 const wlConfigForm = ref({
   heartbeat_interval_s: 60,
   log_level: 'info',
@@ -1191,18 +1191,23 @@ function openWlShell(row) {
 
 async function submitWlEnroll() {
   try {
-    const r = await api('/api/wirelog/enroll', {
+    const body = {
+      display_name: (wlEnrollForm.value.display_name || '').trim() || undefined,
+      model_class: (wlEnrollForm.value.model_class || '').trim() || undefined,
+    }
+    // 开放登记：签发 node_token，由 deskserialhub / wireserialhub 自注册；不再走 ADB/fw_setenv
+    const r = await api('/api/wirelog/nodes/provision', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(wlEnrollForm.value),
+      body: JSON.stringify(body),
     })
-    ElMessage.success(r.reused ? '已复用同地址节点并重发 token'
-                      : '已发放，明文 token 仅显示这一次，请立即写入设备')
-    ElMessageBox.alert(
-      (r.reused ? '【复用节点重发】\n' : '') +
-      'node_id: ' + r.node_id + '\nnode_token: ' + r.node_token +
-      '\n\n' + r.fw_setenv.join('\n'),
-      'WireLog 发放结果（请妥善保存）', { customClass: 'wl-enroll-box' })
-    wlEnrollForm.value = { adb_address: '', display_name: '', model_class: 'esl2_hk' }
+    ElMessage.success('已发放，明文 token 仅显示这一次，请立即复制到宿主配置')
+    const cred = 'node_id: ' + r.node_id + '\nnode_token: ' + r.node_token
+    await ElMessageBox.alert(
+      cred + '\n\n请将 token 写入 deskserialhub / wireserialhub 配置，宿主会自行 register/heartbeat。',
+      '节点发放结果（请妥善保存）',
+      { customClass: 'wl-enroll-box', confirmButtonText: '复制凭据' })
+    copyText(cred, '已拷贝 node_id / node_token')
+    wlEnrollForm.value = { display_name: '', model_class: 'esl2_hk' }
     loadWlNodes()
   } catch (e) { ElMessage.error(String(e.message || e)) }
 }
@@ -2368,19 +2373,19 @@ const legendRole = [
           </el-table>
 
           <el-divider />
-          <h3 style="margin-top:0">发放新节点（ADB + fw_setenv）</h3>
-          <el-form label-width="120" inline>
-            <el-form-item label="ADB 地址">
-              <el-input v-model="wlEnrollForm.adb_address" placeholder="172.16.60.122:5555" />
-            </el-form-item>
+          <h3 style="margin-top:0">发放新节点</h3>
+          <p style="color:#909399;font-size:13px;margin:0 0 10px">
+            开放登记：只填名称/机型即可签发 token；宿主用 token 自注册，无需 ADB / fw_setenv。
+          </p>
+          <el-form label-width="80" inline>
             <el-form-item label="名称">
-              <el-input v-model="wlEnrollForm.display_name" placeholder="可选" />
+              <el-input v-model="wlEnrollForm.display_name" placeholder="可选，如 desk-A" />
             </el-form-item>
             <el-form-item label="机型">
-              <el-input v-model="wlEnrollForm.model_class" />
+              <el-input v-model="wlEnrollForm.model_class" placeholder="可选" />
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" @click="submitWlEnroll">生成 token 与 fw_setenv</el-button>
+              <el-button type="primary" @click="submitWlEnroll">发放 token</el-button>
             </el-form-item>
           </el-form>
         </el-card>
@@ -2404,6 +2409,8 @@ const legendRole = [
             <el-descriptions-item label="最近心跳">{{ wlDetail.last_heartbeat_at }}</el-descriptions-item>
             <el-descriptions-item label="在线端口数">{{ wlOnlinePortCount(wlDetail.node_id) }}</el-descriptions-item>
           </el-descriptions>
+          <el-alert type="info" :closable="false" show-icon style="margin:12px 0 0"
+                    title="ADB / fw_setenv 发放方式已废弃，节点凭据由开放登记签发，宿主自行 register/heartbeat。" />
 
           <h3>端口明细</h3>
           <el-alert v-if="!(wlDetail.ports && wlDetail.ports.length)"

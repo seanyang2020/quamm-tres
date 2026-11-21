@@ -1298,7 +1298,7 @@ def _wl_enroll_impl(session, auth, adb_address=None, display_name=None,
 @mcp.tool()
 def wl_enroll(adb_address: str | None = None, display_name: str | None = None,
               model_class: str = "esl2_hk") -> dict:
-    """发放日志机：生成 node token 与 fw_setenv 命令（仅管理员，明文只回一次）。"""
+    """发放节点 token（开放登记；adb_address 可选且已废弃，明文只回一次）。"""
     return _guard(_wl_enroll_impl, adb_address, display_name, model_class)
 
 
