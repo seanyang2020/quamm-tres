@@ -26,15 +26,16 @@ task_id: t952
 ## c. 版本/提交证据
 
 ```
-git log -3 --oneline
-# （提交后回填本任务 hash）
-git status --short
-git diff --stat HEAD
+a43fb7f feat(web): 设备中心默认页与信息架构调整
+aa64e27 docs(evidence): 回填 t948 提交哈希与验收四要素
+d91cb8d feat(comres): 资源池去重 + auto 绑定口径 + 端点接管 + 移除发放入口
+
+git status --short  # 仅他任务遗留 untracked evidence / db.bak
 ```
 
 Gerrit change：不适用。
 
-关联：`d91cb8d`（t948 commit，内含本任务 App.vue IA 主体）。
+关联：`d91cb8d`（t948 commit 曾合并本任务 App.vue IA 主体）；本任务跟进 `a43fb7f`。
 
 ## d. 验证/自测
 

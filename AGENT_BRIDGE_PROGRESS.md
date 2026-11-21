@@ -1,21 +1,23 @@
 # Quamm TRES 实现进度
 
-> 任务：t948 —— 资源池去重 + auto 绑定口径 + 端点接管 + 移除发放入口（含原 t942 / F5 / F6）  
-> task_id: t948
+> 任务：t950 / t952 —— TRES 信息架构调整（去掉看板、设备中心默认、探测时间归位）  
+> task_id: t952
 
-## 状态：已完成（已提交，停住等审）
+## 状态：已完成（停住等审）
 
 ## 本轮改动
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 去重/清理（原 t942） | 唯一约束、migrations、prune/audit、去掉发放入口 | ✅ |
-| F6 auto 口径 | `auto:*` → bound 非 allocated；ports 补 `bound` | ✅ |
-| F5 端点接管 | 失效占位可 takeover；`comres_endpoint_takeover` 幂等 | ✅ |
-| 测试 | dedupe / prune / bound / apply → 22 passed | ✅ |
-| 提交 | 单 commit 覆盖上述全部 | ✅ |
+| 一 菜单/默认页 | 去看板；「设备」→「设备中心」；默认落地；`#/board` 等重定向 | ✅ |
+| 二 看板迁移 | 顶部状态条（巡检时间/在线离线待检/立即巡检）+ 机型 chips | ✅ |
+| 三 最近探测 | 列表列 + 相对时间悬停绝对时间 + 自定义排序；编辑弹层只读上次探测 | ✅ |
+| 四 设置去重 | 系统设置仅参数；无运行时巡检状态块（原本即无，已核对） | ✅ |
+| 五 构建/测 | `npm run build` 0；pytest 135p/21f（基线同批） | ✅ |
+| 六 截图证据 | devices / devices-list / settings | ✅ |
 
 ## 说明
 
-- `web/src/App.vue` 工作区同时含并行任务 t952「设备中心默认页」改动，提交时保留未回滚
+- 与 t948 同仓并行：IA 主体曾随 `d91cb8d` 一并入库；跟进提交 `a43fb7f`（hashchange + 证据）
+- `web/dist` 重建但不入库（`.gitignore`）
 - 停住等审
