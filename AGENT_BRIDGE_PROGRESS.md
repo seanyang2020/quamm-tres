@@ -18,7 +18,7 @@
 
 - `tests/smoke_comres.py` → ALL_PASS / exit 0
 - 证据：`AGENT_BRIDGE_EVIDENCE.md` + `.agent-bridge/evidence/t5-comres-offline-allocated.md`
-- 提交：见 EVIDENCE `git log -1`
+- 提交：`fa04ffb`
 
 ## 额外改动理由
 

@@ -28,7 +28,15 @@ task_id: t5-comres-offline-allocated
 
 ## c. 版本/提交
 
-提交后回填 `git log -1` / `diff --stat`。
+```text
+$ git log -1 --oneline
+fa04ffb fix(comres): 已分配端口未上报不置 offline，仅未分配走 T4 下线
+
+$ git diff --stat f71d137..fa04ffb
+ app/domain/comres.py     | 19 ++++-
+ tests/smoke_comres.py    | 90 +++++++++++++++++++++-
+ (+ evidence / PROGRESS)
+```
 
 ## d. 验证
 

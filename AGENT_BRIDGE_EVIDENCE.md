@@ -20,7 +20,26 @@ task_id: t5-comres-offline-allocated
 
 ## c. 版本/提交证据
 
-见本轮 commit 后 `git log -1 --oneline` / `git status --short` / `git diff --stat`（提交完成后回填）。
+```text
+$ git log -1 --oneline
+fa04ffb fix(comres): 已分配端口未上报不置 offline，仅未分配走 T4 下线
+
+$ git status --short
+?? .agent-bridge/evidence/t4-comres-heartbeat.md
+?? .agent-bridge/evidence/t857.md
+?? .agent-bridge/evidence/t870.md
+?? .agent-bridge/evidence/t880.md
+?? .agent-bridge/evidence/t902.md
+?? .agent-bridge/evidence/t915.md
+
+$ git diff --stat f71d137..fa04ffb
+ .../evidence/t5-comres-offline-allocated.md | 35 +++++++++
+ AGENT_BRIDGE_EVIDENCE.md                    | 49 ++++--------
+ AGENT_BRIDGE_PROGRESS.md                    | 32 +++-----
+ app/domain/comres.py                        | 19 ++++-
+ tests/smoke_comres.py                       | 90 +++++++++++++++++++++-
+ 5 files changed, 166 insertions(+), 59 deletions(-)
+```
 
 Gerrit：不适用。
 
