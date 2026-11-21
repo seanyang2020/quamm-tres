@@ -32,19 +32,23 @@ task_id: tres-comres-apply
 
 ## c. 版本/提交证据
 
-（提交后回填）
-
 ```text
 $ git log -1 --oneline
-（待提交）
+55e3ba5 feat(comres): 客户端自助申请、默认自动批准与离线幂等取 token
 
 $ git status --short
-（待提交）
+?? .agent-bridge/evidence/t4-comres-heartbeat.md
+?? .agent-bridge/evidence/t857.md
+?? .agent-bridge/evidence/t870.md
+?? .agent-bridge/evidence/t880.md
+?? .agent-bridge/evidence/t902.md
+?? .agent-bridge/evidence/t915.md
 
-$ git diff --stat
-（见提交）
+$ git diff --stat HEAD~1
+ 12 files changed, 1274 insertions(+), 65 deletions(-)
 ```
 
+分支：`feat/comres`（COMRes 系列同分支；任务文案写 master）  
 Gerrit change：不适用
 
 ## d. 验证/自测
