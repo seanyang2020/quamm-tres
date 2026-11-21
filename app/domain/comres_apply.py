@@ -217,18 +217,18 @@ def apply_client(session: Session, payload: dict, *, source_ip: str | None = Non
         _touch(row, source_ip=source_ip, display_name=display_name,
                model_class=model_class, client_version=client_version)
         plain = _plain_token(row)
-        if not plain:
-            # 密文丢失：在已批准前提下重新签发并写回同一节点哈希
-            plain = _approve_row(session, row, actor="system-reissue")
+        node = (session.get(WireLogNode, row.issued_node_id)
+                if row.issued_node_id else None)
+        # 节点仍在且非退役：幂等返回原 token；否则视为已删除/退役，重新签发
+        if plain and node is not None and node.status != "retired":
+            if display_name:
+                node.display_name = display_name
+            if model_class:
+                node.model_class = model_class
         else:
-            # 确保节点哈希仍匹配（不换 token）
-            if row.issued_node_id:
-                node = session.get(WireLogNode, row.issued_node_id)
-                if node is not None and node.status != "retired":
-                    if display_name:
-                        node.display_name = display_name
-                    if model_class:
-                        node.model_class = model_class
+            row.issued_node_id = None
+            row.token_cipher = None
+            plain = _approve_row(session, row, actor="system-reissue")
         session.commit()
         return _approved_payload(row, plain)
 

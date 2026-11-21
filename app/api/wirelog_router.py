@@ -37,8 +37,14 @@ def _domain_http(fn, *args, **kwargs):
     try:
         return fn(*args, **kwargs)
     except DomainError as e:
-        status = 401 if "UNAUTHORIZED" in e.code else (
-            404 if "NOT_FOUND" in e.code else 400)
+        if "UNAUTHORIZED" in e.code:
+            status = 401
+        elif "NOT_FOUND" in e.code:
+            status = 404
+        elif "CONFLICT" in e.code:
+            status = 409
+        else:
+            status = 400
         raise HTTPException(status_code=status, detail={
             "code": e.code, "message": e.message, "detail": e.detail})
 

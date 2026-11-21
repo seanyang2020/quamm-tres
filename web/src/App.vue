@@ -680,18 +680,31 @@ function apiUrl(path) {
   const rel = API_BASE ? API_BASE + path : path
   return new URL(rel, window.location.href).href
 }
+function apiErrorDetail(j, status) {
+  const d = j && j.detail
+  if (d == null) return String(status)
+  if (typeof d === 'string') return d
+  if (typeof d === 'object') {
+    if (d.message) return d.message
+    if (d.detail && typeof d.detail === 'string') return d.detail
+    try { return JSON.stringify(d) } catch (e) { return String(status) }
+  }
+  return String(d)
+}
+
 async function api(path, opts) {
   const r = await fetch(apiUrl(path), { credentials: 'include', ...opts })
   if (!r.ok) {
     let detail = String(r.status)
     try {
       const j = await r.json()
-      if (j.detail != null) {
-        detail = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
-      }
+      detail = apiErrorDetail(j, r.status)
     } catch (e) { /* ignore */ }
     if (r.status === 401 && me.value && !path.startsWith('/api/auth/')) me.value = null
-    throw new Error(path + ' -> ' + detail)
+    const err = new Error(detail)
+    err.status = r.status
+    err.path = path
+    throw err
   }
   return r.json()
 }
@@ -1575,9 +1588,13 @@ async function wlRetire(node) {
 }
 
 async function wlDelete(node) {
+  if (!me.value || me.value.role !== 'admin') {
+    ElMessage.error('仅管理员可用')
+    return
+  }
   try {
     await ElMessageBox.confirm(
-      `确定硬删除日志机「${node.display_name}」？仅无绑定/无审计的退役节点可删，不可恢复。`,
+      `确定硬删除日志机「${node.display_name}」？仅 retired 节点可删，将级联清理绑定/审计/申请引用，不可恢复。`,
       '删除确认', { type: 'error', confirmButtonText: '删除' })
     await api('/api/wirelog/nodes/' + node.node_id, { method: 'DELETE' })
     ElMessage.success('已删除')
@@ -2673,7 +2690,7 @@ const legendRole = [
                 <el-button v-if="row.status !== 'retired'" size="small"
                            type="warning" plain
                            @click.stop="wlRetire(row)">退役</el-button>
-                <el-button v-if="row.status === 'retired'" size="small"
+                <el-button v-if="row.status === 'retired' && me.role === 'admin'" size="small"
                            type="danger"
                            @click.stop="wlDelete(row)">删除</el-button>
               </template>

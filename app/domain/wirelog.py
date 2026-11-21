@@ -11,11 +11,13 @@ import json
 import secrets
 import time
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
     Device,
     WireLogAudit,
+    WireLogClientApply,
     WireLogEnrollment,
     WireLogNode,
     WireLogPortBinding,
@@ -154,13 +156,44 @@ def retire_node(session, node_id, actor=None):
     return {"node_id": node_id, "status": "retired"}
 
 
+def _node_fk_ref_tables(session, node_id: str) -> list[str]:
+    """列出仍引用该 node_id 的已知外键表（用于删除冲突诊断）。"""
+    tables: list[str] = []
+    if session.query(WireLogPortBinding).filter_by(node_id=node_id).count():
+        tables.append("wl_port_binding")
+    if session.query(WireLogAudit).filter_by(node_id=node_id).count():
+        tables.append("wl_audit")
+    if session.query(WireLogEnrollment).filter_by(node_id=node_id).count():
+        tables.append("wl_enrollment")
+    if (session.query(WireLogClientApply)
+            .filter_by(issued_node_id=node_id).count()):
+        tables.append("wl_client_apply")
+    return tables
+
+
 def delete_node(session, node_id, actor=None):
-    """硬删 retired 节点：级联清除其全部绑定/审计/发放引用后删除节点。"""
+    """硬删 retired 节点：级联清除其全部绑定/审计/发放/申请引用后删除节点。
+
+    wl_client_apply 行保留（便于追溯 client_id/token_prefix/first_seen_at），
+    仅清空 issued_node_id 与 token_cipher；后续同 client_id 再申请可重新签发。
+    """
     node = session.get(WireLogNode, node_id)
     if node is None:
         raise DomainError("WL_NODE_NOT_FOUND", "日志机不存在")
     if node.status != "retired":
         raise DomainError("WL_NOT_RETIRED", "仅 retired 节点可硬删，请先退役")
+    # 先清所有引用，再删节点
+    applies_n = (
+        session.query(WireLogClientApply)
+        .filter_by(issued_node_id=node_id)
+        .update(
+            {
+                WireLogClientApply.issued_node_id: None,
+                WireLogClientApply.token_cipher: None,
+            },
+            synchronize_session=False,
+        )
+    )
     counts = {
         "bindings": session.query(WireLogPortBinding)
                     .filter_by(node_id=node_id).delete(synchronize_session=False),
@@ -168,9 +201,19 @@ def delete_node(session, node_id, actor=None):
                   .filter_by(node_id=node_id).delete(synchronize_session=False),
         "enrollments": session.query(WireLogEnrollment)
                       .filter_by(node_id=node_id).delete(synchronize_session=False),
+        "applies": applies_n,
     }
-    session.delete(node)
-    session.commit()
+    try:
+        session.delete(node)
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        remaining = _node_fk_ref_tables(session, node_id)
+        raise DomainError(
+            "WL_DELETE_CONFLICT",
+            "删除冲突：仍有外键引用，无法硬删节点",
+            {"tables": remaining},
+        )
     return {"node_id": node_id, "deleted": True, "cascade": counts}
 
 
