@@ -134,6 +134,9 @@ def enroll(session, adb_address=None, operator=None, display_name=None,
     _audit(session, node_id, "enroll", actor=operator,
            result=("pending" if adb_address else "ok"),
            detail={"reused": reused, "open_enroll": not bool(adb_address)})
+    # t966：enroll 预置 token 同步写 approved apply 行（幂等）
+    from app.domain import comres_apply
+    comres_apply.ensure_enroll_apply(session, node, operator=operator)
     session.commit()
     return {
         "node_id": node_id,
@@ -617,9 +620,9 @@ def set_config(session, node_id, config, actor=None):
 
 def list_nodes(session):
     from app.domain import comres_apply
-    auth_map = comres_apply.auth_status_by_node(session)
+    apply_rows = comres_apply.auth_rows_by_node(session)
     nodes = session.query(WireLogNode).all()
-    return [_node_brief(session, n, auth_map=auth_map) for n in nodes]
+    return [_node_brief(session, n, apply_rows=apply_rows) for n in nodes]
 
 
 def _plain_node_token(node: WireLogNode) -> str | None:
@@ -637,7 +640,7 @@ def get_node(session, node_id):
     node = session.get(WireLogNode, node_id)
     if node is None:
         raise DomainError("WL_NODE_NOT_FOUND", "日志机不存在")
-    auth_map = comres_apply.auth_status_by_node(session)
+    apply_rows = comres_apply.auth_rows_by_node(session)
     bindings = (session.query(WireLogPortBinding)
                 .filter_by(node_id=node_id).all())
     plain = _plain_node_token(node)
@@ -659,7 +662,7 @@ def get_node(session, node_id):
             except ValueError:
                 plain = None
     return {
-        **_node_brief(session, node, auth_map=auth_map),
+        **_node_brief(session, node, apply_rows=apply_rows),
         "node_token": plain,  # 管理面复制；无密文时为 null
         "node_token_masked": (
             f"{node.token_prefix}…" if node.token_prefix else None
@@ -723,16 +726,22 @@ def public_caps(node) -> dict:
     return safe
 
 
-def _node_brief(session, node, auth_map=None):
-    auth_status = "none"
-    if auth_map is not None:
-        auth_status = auth_map.get(node.node_id) or "none"
+def _node_brief(session, node, auth_map=None, apply_rows=None):
+    """节点摘要；auth_status/auth_source 统一口径（apply / token / none）。"""
+    from app.domain import comres_apply
+    apply_row = apply_rows.get(node.node_id) if apply_rows is not None else None
+    auth_status, auth_source = comres_apply.resolve_node_auth(node, apply_row)
+    # 兼容旧调用：仅传 auth_map（status 字符串）时按 apply 覆盖
+    if apply_row is None and auth_map is not None and node.node_id in auth_map:
+        auth_status = auth_map[node.node_id] or "none"
+        auth_source = "apply" if auth_status != "none" else "none"
     return {
         "node_id": node.node_id, "display_name": node.display_name,
         "model_class": node.model_class, "status": node.status,
         "ip": node.ip, "sw_version": node.sw_version,
         "token_prefix": node.token_prefix,
         "auth_status": auth_status,
+        "auth_source": auth_source,
         "last_heartbeat_at": node.last_heartbeat_at.isoformat()
         if node.last_heartbeat_at else None,
     }

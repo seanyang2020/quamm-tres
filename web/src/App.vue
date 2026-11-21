@@ -1236,9 +1236,17 @@ function wlOnlinePortCount(nodeId) {
 function wlNodeAuthStatus(row) {
   return (row && row.auth_status) || 'none'
 }
+function wlNodeAuthSource(row) {
+  return (row && row.auth_source) || 'none'
+}
+function wlAuthSourceLabel(source) {
+  if (source === 'token') return '预置 token'
+  if (source === 'apply') return '自助申请'
+  return ''
+}
 function wlNodeAuthorized(row) {
   const st = wlNodeAuthStatus(row)
-  // 存量无申请记录视为可用；待审/拒绝/撤销未授权
+  // 已批准；存量无申请记录（none）仍视为可用（与池口径一致）
   return st === 'approved' || st === 'none'
 }
 function wlAuthBadge(status) {
@@ -2752,11 +2760,23 @@ const legendRole = [
             <el-table-column prop="node_id" label="node_id" min-width="180" />
             <el-table-column prop="display_name" label="名称" min-width="140" />
             <el-table-column prop="ip" label="IP" min-width="130" />
-            <el-table-column label="授权" width="110">
+            <el-table-column label="授权" width="140">
               <template #default="{ row }">
-                <el-tag size="small" :type="wlAuthBadge(wlNodeAuthStatus(row)).type">
-                  {{ wlAuthBadge(wlNodeAuthStatus(row)).label }}
-                </el-tag>
+                <el-tooltip
+                  :content="wlAuthSourceLabel(wlNodeAuthSource(row)) || '无来源'"
+                  :disabled="!wlAuthSourceLabel(wlNodeAuthSource(row))"
+                  placement="top"
+                >
+                  <div>
+                    <el-tag size="small" :type="wlAuthBadge(wlNodeAuthStatus(row)).type">
+                      {{ wlAuthBadge(wlNodeAuthStatus(row)).label }}
+                    </el-tag>
+                    <div v-if="wlAuthSourceLabel(wlNodeAuthSource(row))"
+                         class="comres-muted" style="font-size:11px;margin-top:2px">
+                      {{ wlAuthSourceLabel(wlNodeAuthSource(row)) }}
+                    </div>
+                  </div>
+                </el-tooltip>
               </template>
             </el-table-column>
             <el-table-column label="状态" width="100">
@@ -2877,20 +2897,18 @@ const legendRole = [
             </el-table-column>
             <el-table-column prop="tty" label="tty" min-width="100" />
             <el-table-column prop="baud" label="波特" width="80" />
-            <el-table-column label="写授权" min-width="110">
+            <el-table-column label="写授权(兼容)" min-width="110">
               <template #default="{ row }">
                 <span v-if="row.write_granted_to">{{ row.write_granted_to }}</span>
-                <span v-else class="comres-muted">只读</span>
+                <span v-else class="comres-muted">—</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="180" fixed="right">
+            <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <template v-if="portCanOpen(row)">
                   <el-button size="small" type="primary" link @click="openWlShell(row)">打开串口</el-button>
                 </template>
                 <span v-else class="comres-muted">无串口资源</span>
-                <el-button size="small" link type="danger"
-                  @click="wlRevoke(row.slot)" :disabled="!row.write_granted_to">撤销写</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -3080,13 +3098,18 @@ const legendRole = [
                     client {{ shortClientId(row.client_id) }}
                     · IP {{ row.source_ip || '—' }}
                     · {{ row.model_class || '机型未知' }}
+                    <template v-if="row.source === 'enroll' || (row.client_id || '').startsWith('enroll:')">
+                      · 预置 token
+                    </template>
                   </div>
                   <div class="comres-muted" style="font-size:12px;margin-top:2px">
                     首次 {{ formatLocal(row.first_seen_at) }} · 申请 {{ row.request_count }} 次
                   </div>
                 </div>
                 <el-tag size="small" :type="wlAuthBadge(row.status).type">
-                  {{ wlAuthBadge(row.status).label }}
+                  {{ (row.source === 'enroll' || (row.client_id || '').startsWith('enroll:')) && row.status === 'approved'
+                    ? '已批准'
+                    : wlAuthBadge(row.status).label }}
                 </el-tag>
               </div>
               <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
@@ -3818,8 +3841,8 @@ const legendRole = [
           </el-table-column>
           <el-table-column prop="shell_mac" label="实测 MAC" width="150" />
           <el-table-column prop="shell_ip" label="实测 IP" width="130" />
-          <el-table-column prop="write_granted_to" label="写授权" min-width="120" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.write_granted_to || '只读' }}</template>
+          <el-table-column prop="write_granted_to" label="写授权(兼容)" min-width="120" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.write_granted_to || '—' }}</template>
           </el-table-column>
         </el-table>
         <el-empty v-if="!wlBindDlg.rows.length && !wlBindDlg.loading" description="该设备当前未绑定任何 WireLog 串口" />

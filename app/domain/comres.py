@@ -977,6 +977,7 @@ def list_resources(session: Session) -> dict:
     expire_allocations(session)
     nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
     auth_map = comres_apply.auth_status_by_node(session)
+    apply_rows = comres_apply.auth_rows_by_node(session)
     rows = (session.query(WireLogPortBinding)
             .order_by(WireLogPortBinding.node_id, WireLogPortBinding.slot)
             .all())
@@ -984,12 +985,18 @@ def list_resources(session: Session) -> dict:
     allocated, bound, pool, inactive = [], [], [], []
     for b in rows:
         node = nodes.get(b.node_id)
-        auth_status = auth_map.get(b.node_id) or "none"
+        if node is not None:
+            auth_status, auth_source = comres_apply.resolve_node_auth(
+                node, apply_rows.get(b.node_id))
+        else:
+            auth_status = auth_map.get(b.node_id) or "none"
+            auth_source = "none" if auth_status == "none" else "apply"
         if not _is_online_binding(b):
             item = _resource_item(
                 b, node, allocated=False, bound=_is_bound(b, now),
                 include_device=True, inactive=True, now=now)
             item["auth_status"] = auth_status
+            item["auth_source"] = auth_source
             inactive.append(item)
             continue
         is_alloc = _is_allocated(b, now)
@@ -999,12 +1006,14 @@ def list_resources(session: Session) -> dict:
                 b, node, allocated=True, bound=True,
                 include_device=True, now=now)
             item["auth_status"] = auth_status
+            item["auth_source"] = auth_source
             allocated.append(item)
         elif is_bound:
             item = _resource_item(
                 b, node, allocated=False, bound=True,
                 include_device=True, now=now)
             item["auth_status"] = auth_status
+            item["auth_source"] = auth_source
             bound.append(item)
         else:
             # 未授权节点端口不出现在可分配池（避免误领）
@@ -1014,6 +1023,7 @@ def list_resources(session: Session) -> dict:
                 b, node, allocated=False, bound=False,
                 include_device=False, now=now)
             item["auth_status"] = auth_status
+            item["auth_source"] = auth_source
             pool.append(item)
     return {
         "allocated": allocated, "bound": bound, "pool": pool,

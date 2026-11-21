@@ -1,30 +1,39 @@
 ---
-task_id: t960
+task_id: t966
 ---
 
-# t960：设备中心统计卡布局（断点 / 末行居中 / 等高高亮）
+# t966：统一节点授权口径 + 串口写权限默认开放
 
 ## a. 编译/构建
 
 - 命令：`cd web && npm run build`
 - 退出码：`0`
-- 关键结果：`built in 4.18s`；产物 `web/dist/index.html`、`web/dist/assets/index-B4Di2LWU.js`、`web/dist/assets/index-C-rRhTjo.css`（dist 被 gitignore）
+- 关键结果：`built in 3.93s`；产物 `web/dist/index.html`、`web/dist/assets/index-PE0-xzTC.js`、`web/dist/assets/index-C-rRhTjo.css`
 
-- 命令：`.venv/bin/python -m pytest tests/test_device_stats.py -q --tb=short`
+- 命令：`.venv/bin/python -m pytest tests/test_auth_source_and_write.py tests/test_comres_apply.py -q --tb=line`
 - 退出码：`0`
-- 关键结果：`1 passed`
+- 关键结果：`14 passed`
 
 ## b. 改动文件清单
 
+- `app/models.py`
+- `app/migrations.py`
+- `app/domain/comres_apply.py`
+- `app/domain/wirelog.py`
+- `app/domain/comres.py`
+- `app/api/wirelog_router.py`
+- `scripts/backfill_enroll_applies.py`
+- `tests/test_auth_source_and_write.py`
 - `web/src/App.vue`
+- `web/public/shell.html`
 - `AGENT_BRIDGE_EVIDENCE.md`
 - `AGENT_BRIDGE_PROGRESS.md`
-- `.agent-bridge/evidence/t960.md`
-- `.agent-bridge/evidence/t960_PROGRESS.md`
+- `.agent-bridge/evidence/t966.md`
+- `.agent-bridge/evidence/t966_PROGRESS.md`
 
 ## c. 版本/提交证据
 
-153ef20 / 153ef20b51cf5ebfc6f0e1c179a7b399f6dddccd  ← HEAD
+（commit 后回填 `git log -1` / `git status --short` / `git diff --stat`）
 
 Gerrit change：不适用。
 
@@ -32,8 +41,9 @@ Gerrit change：不适用。
 
 | 项 | 命令/操作 | 结果 |
 |---|---|---|
-| 前端构建 | `cd web && npm run build` | exit 0；CSS 含 `device-stats-grid` / `min-width: 900px` / `min-width: 1200px` |
-| 断点 | ≥1200→4列 / ≥900→3列 / &lt;700→2列；`justify-content: center` | 7 卡末行居中（4+3 / 3+3+1）不孤左 |
-| 串口卡 | 固定第 7 张普通卡位，副标题「在池 N」 | 始终占位 |
-| 筛选高亮 | `.ov-card.is-active` 描边 | 2px 蓝边 + 外发光 |
-| 单测 | `pytest tests/test_device_stats.py -q` | 1 passed |
+| 回填 dry-run | `scripts/backfill_enroll_applies.py --dry-run` | candidates=1（esl2-122） |
+| 回填执行 | `scripts/backfill_enroll_applies.py` | created enroll apply；二次 dry-run candidates=0 |
+| 库备份 | `cp quamm_res.db ~/tmp/quamm_res_pre_t966_*.db` | 已备份 |
+| 真库 API | `GET /api/wirelog/nodes`（9100，重启后） | esl2-122: `auth_status=approved, auth_source=token`；DT28: `approved/apply` |
+| 单测 | pytest 上述文件 | 14 passed |
+| 前端构建 | `npm run build` | exit 0 |

@@ -646,6 +646,8 @@ class WireLogClientApply(Base):
     token_cipher: Mapped[str | None] = mapped_column(Text, nullable=True)
     token_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # apply=客户端自助；enroll=管理端预置 token；空视为 apply
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (
         Index("uq_wl_client_apply_client_id", "client_id", unique=True),

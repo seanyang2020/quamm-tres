@@ -124,6 +124,11 @@ _WL_NODE_COLUMNS = {
     "token_cipher": "TEXT",
 }
 
+# wl_client_apply：区分自助申请 / enroll 预置 token（t966）
+_WL_CLIENT_APPLY_COLUMNS = {
+    "source": "VARCHAR(16)",
+}
+
 # patrol_run 表新增列：区分全量巡检 / 待检+离线快轮询；旧行 DEFAULT full，不做回填推断
 _PATROL_RUN_COLUMNS = {
     "mode": "VARCHAR(16) NOT NULL DEFAULT 'full'",
@@ -167,6 +172,7 @@ def migrate(session: Session) -> None:
     _backfill_wl_node_token_cipher(session)
     _ensure_columns(session, "patrol_run", _PATROL_RUN_COLUMNS)
     _ensure_wl_client_apply_table(session)
+    _ensure_columns(session, "wl_client_apply", _WL_CLIENT_APPLY_COLUMNS)
 
 
 def _ensure_device_position_index(session: Session) -> None:

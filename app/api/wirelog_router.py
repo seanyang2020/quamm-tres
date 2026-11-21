@@ -15,7 +15,7 @@ from fastapi import (APIRouter, Body, Depends, Header, HTTPException, Response,
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_session
-from app.domain import wirelog
+from app.domain import comres_apply, wirelog
 from app.domain.catalog import DomainError
 from app.domain.comres import _parse_ip_port
 from app.domain.prober_uart import RAW_TCP_AUTH
@@ -23,6 +23,15 @@ from app.models import Credential, Principal, WireLogNode, WireLogPortBinding
 from app.serial_tcp import SerialConfigError, parse_endpoint
 from app.utils import utcnow
 from app import web_auth
+
+
+def _shell_write_access(session, node: WireLogNode) -> tuple[bool, str, str]:
+    """节点已授权(approved)即可写；返回 (can_write, write_mode, reason)。"""
+    apply_row = comres_apply.auth_rows_by_node(session).get(node.node_id)
+    auth_status, _auth_source = comres_apply.resolve_node_auth(node, apply_row)
+    if auth_status == "approved":
+        return True, "rw", "节点已授权，默认读写"
+    return False, "ro", "节点未授权，只读"
 
 router = APIRouter(prefix="/wirelog")
 
@@ -287,8 +296,8 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         tty = binding.tty_name if binding is not None else None
         baud = binding.baud if binding is not None else None
         com_name = binding.com_name if binding is not None else None
-        granted = (binding.write_granted_to or "").strip() if binding is not None else ""
-        can_write = ident["role"] == "admin" or granted == ident["email"]
+        # t966：节点 approved 即默认可写；write_granted_to 保留兼容，不再作门槛
+        can_write, write_mode, write_reason = _shell_write_access(session, node)
         node_name = node.display_name or node.node_id
     finally:
         session.close()
@@ -310,7 +319,8 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
 
     await send({"type": "status", "state": "tcp", "endpoint": endpoint,
                 "node": node_name, "slot": int(slot), "tty": tty, "baud": baud,
-                "can_write": bool(can_write)})
+                "can_write": bool(can_write), "write_mode": write_mode,
+                "message": write_reason if not can_write else ""})
 
     async def read_until(needle: str, timeout: float) -> str:
         buf = b""
@@ -331,15 +341,15 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
     try:
         if not RAW_TCP_AUTH:
             # 裸 TCP：连上即是串口字节流。送一个回车唤醒 shell 并吃掉可能残留的半行，
-            # 然后直接进入交互（写权限由 TRES 账号角色决定，不由串口服务器判定）。
+            # 然后直接进入交互（写权限由节点授权态决定）。
             await loop.sock_sendall(sock, b"\r")
             await asyncio.sleep(0.2)
             tail = await read_until("", 0.3)
             if tail:
                 await send({"type": "out", "data": tail})
             await send({"type": "status", "state": "ready",
-                        "can_write": bool(can_write),
-                        "message": "" if can_write else "当前账号无写授权，只读查看输出"})
+                        "can_write": bool(can_write), "write_mode": write_mode,
+                        "message": "" if can_write else write_reason})
         else:
             banner = await read_until("login:", 3.0)
             if banner:
@@ -361,10 +371,12 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
                 await send({"type": "status",
                             "state": "ready" if writable else "readonly",
                             "can_write": writable,
-                            "message": "" if writable else "写锁未拿到（可能被其它会话占用），当前只读"})
+                            "write_mode": "rw" if writable else "ro",
+                            "message": ("" if writable
+                                        else "写锁未拿到（可能被其它会话占用），当前只读")})
             else:
                 await send({"type": "status", "state": "ready", "can_write": False,
-                            "message": "当前账号无写授权，只读查看输出"})
+                            "write_mode": "ro", "message": write_reason})
     except Exception as exc:                     # noqa: BLE001
         sock.close()
         await send({"type": "error", "message": f"串口接入阶段失败：{exc}"})
@@ -389,6 +401,11 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
                 msg = {"type": "data", "data": raw}
             kind = msg.get("type")
             if kind == "data":
+                if not can_write:
+                    await send({"type": "status", "state": "ready",
+                                "can_write": False, "write_mode": "ro",
+                                "message": write_reason})
+                    continue
                 payload = str(msg.get("data") or "")
                 if payload:
                     await loop.sock_sendall(sock, payload.encode())

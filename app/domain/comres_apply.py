@@ -322,6 +322,9 @@ def get_apply_status(session: Session, client_id: str) -> dict:
 
 
 def _row_public(row: WireLogClientApply) -> dict:
+    src = (row.source or "").strip() or (
+        "enroll" if (row.client_id or "").startswith("enroll:") else "apply"
+    )
     return {
         "request_id": row.id,
         "client_id": row.client_id,
@@ -330,6 +333,7 @@ def _row_public(row: WireLogClientApply) -> dict:
         "client_version": row.client_version,
         "source_ip": row.source_ip,
         "status": row.status,
+        "source": src,
         "request_count": row.request_count,
         "first_seen_at": row.first_seen_at.isoformat() if row.first_seen_at else None,
         "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
@@ -475,7 +479,11 @@ def revoke_application(session: Session, request_id: int,
 
 
 def auth_status_by_node(session: Session) -> dict[str, str]:
-    """node_id → apply status（仅有 issued_node_id 的申请）。"""
+    """node_id → apply status（仅有 issued_node_id 的申请）。
+
+    仅反映 wl_client_apply 行；token 直连节点若不在表中则不出现。
+    池授权仍用本 map + is_node_pool_authorized（无记录视为存量开放）。
+    """
     rows = (
         session.query(WireLogClientApply)
         .filter(WireLogClientApply.issued_node_id.isnot(None))
@@ -484,10 +492,49 @@ def auth_status_by_node(session: Session) -> dict[str, str]:
     return {r.issued_node_id: r.status for r in rows if r.issued_node_id}
 
 
+def auth_rows_by_node(session: Session) -> dict[str, WireLogClientApply]:
+    """node_id → 最新一条带 issued_node_id 的申请行。"""
+    rows = (
+        session.query(WireLogClientApply)
+        .filter(WireLogClientApply.issued_node_id.isnot(None))
+        .order_by(WireLogClientApply.id.asc())
+        .all()
+    )
+    out: dict[str, WireLogClientApply] = {}
+    for r in rows:
+        if r.issued_node_id:
+            out[r.issued_node_id] = r  # 同节点多行时后者覆盖
+    return out
+
+
+def resolve_node_auth(node: WireLogNode,
+                      apply_row: WireLogClientApply | None = None,
+                      ) -> tuple[str, str]:
+    """统一授权口径 → (auth_status, auth_source)。
+
+    - 有 apply：状态取申请行；enroll 来源 → auth_source=token，否则 apply
+    - 无 apply 但 token_prefix 非空且未退役 → approved / token
+    - 否则 none / none
+    """
+    if apply_row is not None:
+        status = apply_row.status or "none"
+        src = (apply_row.source or "").strip().lower()
+        cid = (apply_row.client_id or "")
+        if src == "enroll" or cid.startswith("enroll:"):
+            return status, "token"
+        return status, "apply"
+    prefix = (getattr(node, "token_prefix", None) or "").strip()
+    status = getattr(node, "status", None) or ""
+    if prefix and status != "retired":
+        return "approved", "token"
+    return "none", "none"
+
+
 def is_node_pool_authorized(node_id: str | None, auth_map: dict[str, str]) -> bool:
     """可分配池口径：已批准，或无申请记录的存量节点（开放登记兼容）。
 
     pending / rejected / revoked 不进入可分配池，避免未授权资源被领用。
+    token 直连且尚未回填 apply 的节点：auth_map 无键 → True（语义不变）。
     """
     if not node_id:
         return False
@@ -495,3 +542,45 @@ def is_node_pool_authorized(node_id: str | None, auth_map: dict[str, str]) -> bo
     if st is None:
         return True  # 存量无申请
     return st == "approved"
+
+
+def ensure_enroll_apply(session: Session, node: WireLogNode,
+                        operator: str | None = None) -> WireLogClientApply:
+    """enroll 签发后幂等写入/更新 wl_client_apply（source=enroll）。"""
+    client_id = f"enroll:{node.node_id}"
+    now = utcnow()
+    row = (session.query(WireLogClientApply)
+           .filter_by(client_id=client_id).one_or_none())
+    if row is None:
+        row = WireLogClientApply(
+            client_id=client_id,
+            display_name=node.display_name or node.node_id,
+            model_class=node.model_class,
+            status="approved",
+            request_count=1,
+            first_seen_at=now,
+            last_seen_at=now,
+            approved_at=now,
+            approved_by=operator or "enroll",
+            issued_node_id=node.node_id,
+            token_cipher=node.token_cipher,
+            token_prefix=node.token_prefix,
+            note="enroll 预置 token",
+            source="enroll",
+        )
+        session.add(row)
+        session.flush()
+        return row
+    # 幂等：不新建；同步最新 token / 批准态
+    row.last_seen_at = now
+    row.status = "approved"
+    row.approved_at = row.approved_at or now
+    row.approved_by = operator or row.approved_by or "enroll"
+    row.issued_node_id = node.node_id
+    row.token_cipher = node.token_cipher
+    row.token_prefix = node.token_prefix
+    row.display_name = node.display_name or row.display_name
+    row.model_class = node.model_class or row.model_class
+    row.note = row.note or "enroll 预置 token"
+    row.source = "enroll"
+    return row

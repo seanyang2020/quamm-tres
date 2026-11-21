@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：t960 —— 恢复设备中心顶部分类统计卡片（含布局微调）  
-> task_id: t960
+> 任务：t966 —— 统一节点授权口径 + 串口写权限默认开放  
+> task_id: t966
 
 ## 状态：已完成（停住等审）
 
@@ -9,15 +9,17 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 一 统计卡 | 总量/在线/离线/待检/已分配/空闲/串口资源 共 7 张 | ✅ |
-| 二 断点 | ≥1200→4列 / ≥900→3列 / &lt;700→2列；末行居中避免孤卡 | ✅ |
-| 三 视觉 | 等高、数字 tabular-nums、筛选描边高亮 | ✅ |
-| 四 构建 | `cd web && npm run build` exit 0 | ✅ |
-| 五 单测 | `tests/test_device_stats.py` 1 passed | ✅ |
+| 一 auth 口径 | `auth_status` + `auth_source`(apply/token/none)；enroll→token | ✅ |
+| 二 enroll 补写 | `ensure_enroll_apply` 幂等写 approved 行（source=enroll） | ✅ |
+| 三 回填 | `scripts/backfill_enroll_applies.py`；真库 esl2-122 → approved/token | ✅ |
+| 四 写权限 | shell WS：approved→can_write；write-grant 兼容保留 | ✅ |
+| 五 前端 | 授权列显示来源；shell 去掉「申请写权限」文案 | ✅ |
+| 六 单测 | `tests/test_auth_source_and_write.py` 7 passed | ✅ |
+| 七 构建 | `cd web && npm run build` exit 0 | ✅ |
 
 ## 提交
 
-- `153ef20` / `153ef20b51cf5ebfc6f0e1c179a7b399f6dddccd`
+- （待 commit 后回填）
 
 ## 说明
 
