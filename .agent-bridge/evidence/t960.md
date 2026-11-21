@@ -2,13 +2,13 @@
 task_id: t960
 ---
 
-# t960：恢复设备中心顶部分类统计卡片
+# t960：设备中心统计卡布局（断点 / 末行居中 / 等高高亮）
 
 ## a. 编译/构建
 
 - 命令：`cd web && npm run build`
 - 退出码：`0`
-- 关键结果：`built in 4.72s`；产物 `web/dist/index.html`、`web/dist/assets/index-BexUe48V.js`、`web/dist/assets/index-Drb26jFR.css`（dist 被 gitignore，不入库）
+- 关键结果：`built in 4.18s`；产物 `web/dist/index.html`、`web/dist/assets/index-B4Di2LWU.js`、`web/dist/assets/index-C-rRhTjo.css`（dist 被 gitignore）
 
 - 命令：`.venv/bin/python -m pytest tests/test_device_stats.py -q --tb=short`
 - 退出码：`0`
@@ -17,7 +17,6 @@ task_id: t960
 ## b. 改动文件清单
 
 - `web/src/App.vue`
-- `tests/test_device_stats.py`
 - `AGENT_BRIDGE_EVIDENCE.md`
 - `AGENT_BRIDGE_PROGRESS.md`
 - `.agent-bridge/evidence/t960.md`
@@ -25,16 +24,7 @@ task_id: t960
 
 ## c. 版本/提交证据
 
-```
-80e65bf feat(web): 设备中心恢复分类统计卡片并可点击筛选
-  80e65bf5c486f312828941c926dfcc15d9dad687
-bfc4b3e docs(evidence): 修正 t960 验收证据正文
-  bfc4b3edb0334e0b5bd23477f13956160d983486  ← 证据链 HEAD（以本仓 git log -1 复核）
-
-git status --short  # clean
-git diff --stat 80e65bf^..80e65bf
-  web/src/App.vue / tests/test_device_stats.py / AGENT_BRIDGE_*.md / .agent-bridge/evidence/t960*
-```
+3a187dd / 3a187ddd06614952b8387e70dda950f94ea351c2  ← HEAD
 
 Gerrit change：不适用。
 
@@ -42,7 +32,8 @@ Gerrit change：不适用。
 
 | 项 | 命令/操作 | 结果 |
 |---|---|---|
-| 前端构建 | `cd web && npm run build` | exit 0；bundle 含设备总量/已分配/串口资源/device-stats-row |
-| 无看板菜单 | 源码无 `label: '看板'` | 无匹配 |
-| 统计聚合单测 | `pytest tests/test_device_stats.py -q` | 1 passed（总量8/在线3/离线2/待检3/已分配1/空闲2） |
-| 状态条 | 仅保留巡检时间；在线/离线/待检由统计卡展示 | 不重复 |
+| 前端构建 | `cd web && npm run build` | exit 0；CSS 含 `device-stats-grid` / `min-width: 900px` / `min-width: 1200px` |
+| 断点 | ≥1200→4列 / ≥900→3列 / &lt;700→2列；`justify-content: center` | 7 卡末行居中（4+3 / 3+3+1）不孤左 |
+| 串口卡 | 固定第 7 张普通卡位，副标题「在池 N」 | 始终占位 |
+| 筛选高亮 | `.ov-card.is-active` 描边 | 2px 蓝边 + 外发光 |
+| 单测 | `pytest tests/test_device_stats.py -q` | 1 passed |
