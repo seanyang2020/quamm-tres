@@ -1021,6 +1021,17 @@ const comresPool = ref([])
 const comresError = ref('')
 const comresLoading = ref(false)
 
+// COMRes 授权抽屉（客户端自助申请审批）
+const comresAuthDrawer = ref(false)
+const comresAuthLoading = ref(false)
+const comresAuthError = ref('')
+const comresAuthItems = ref([])
+const comresAuthPendingCount = ref(0)
+const comresAuthLastApprovedAt = ref(null)
+const comresAutoApprove = ref(true)
+const comresAuthFilter = ref('all') // all | pending | approved | rejected | revoked
+const comresAuthBusyId = ref(null)
+
 const comresAllRows = computed(() => [
   ...(comresAllocated.value || []),
   ...(comresBound.value || []),
@@ -1049,8 +1060,29 @@ function wlOnlinePortCount(nodeId) {
     (r) => r && (r.health_state === 'online' || r.health_state === 'ready'),
   ).length
 }
+function wlNodeAuthStatus(row) {
+  return (row && row.auth_status) || 'none'
+}
+function wlNodeAuthorized(row) {
+  const st = wlNodeAuthStatus(row)
+  // 存量无申请记录视为可用；待审/拒绝/撤销未授权
+  return st === 'approved' || st === 'none'
+}
+function wlAuthBadge(status) {
+  const map = {
+    approved: { label: '已授权', type: 'success' },
+    pending: { label: '待审批', type: 'warning' },
+    rejected: { label: '已拒绝', type: 'danger' },
+    revoked: { label: '已撤销', type: 'info' },
+    none: { label: '未申请', type: 'info' },
+  }
+  return map[status] || map.none
+}
 function wlNodeRowClass({ row }) {
-  return wlNodeHasSerial(row.node_id) ? '' : 'comres-no-serial'
+  const parts = []
+  if (!wlNodeHasSerial(row.node_id)) parts.push('comres-no-serial')
+  if (!wlNodeAuthorized(row)) parts.push('comres-unauthorized')
+  return parts.join(' ')
 }
 
 /** 端口/资源行是否具备可展示的串口信息（无则灰显，禁止打开） */
@@ -1118,7 +1150,12 @@ function comresOccupancyLabel(row) {
   return '资源池'
 }
 function comresRowClass({ row }) {
-  return portHasSerial(row) ? '' : 'comres-no-serial'
+  const parts = []
+  if (!portHasSerial(row)) parts.push('comres-no-serial')
+  if (row && row.auth_status && row.auth_status !== 'approved' && row.auth_status !== 'none') {
+    parts.push('comres-unauthorized')
+  }
+  return parts.join(' ')
 }
 
 async function loadComresResources() {
@@ -1140,6 +1177,121 @@ async function loadComresResources() {
   }
 }
 
+async function loadComresAuthSummary() {
+  try {
+    const r = await api('/api/comres/applications?page=1&page_size=1')
+    comresAuthPendingCount.value = Number(r && r.pending_count) || 0
+    comresAuthLastApprovedAt.value = (r && r.last_approved_at) || null
+    if (typeof r.auto_approve === 'boolean') comresAutoApprove.value = r.auto_approve
+  } catch (_) {
+    /* 概览失败不阻断主视图 */
+  }
+}
+
+async function loadComresApplications() {
+  comresAuthLoading.value = true
+  comresAuthError.value = ''
+  try {
+    const q = new URLSearchParams({ page: '1', page_size: '100' })
+    if (comresAuthFilter.value && comresAuthFilter.value !== 'all') {
+      q.set('status', comresAuthFilter.value)
+    }
+    const r = await api('/api/comres/applications?' + q.toString())
+    comresAuthItems.value = Array.isArray(r && r.items) ? r.items : []
+    comresAuthPendingCount.value = Number(r && r.pending_count) || 0
+    comresAuthLastApprovedAt.value = (r && r.last_approved_at) || null
+    if (typeof r.auto_approve === 'boolean') comresAutoApprove.value = r.auto_approve
+  } catch (e) {
+    comresAuthItems.value = []
+    comresAuthError.value = String(e.message || e)
+  } finally {
+    comresAuthLoading.value = false
+  }
+}
+
+function openComresAuthDrawer() {
+  comresAuthDrawer.value = true
+  loadComresApplications()
+}
+
+async function toggleComresAutoApprove(val) {
+  try {
+    const r = await api('/api/comres/apply-settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto_approve: !!val }),
+    })
+    comresAutoApprove.value = !!(r && r.auto_approve)
+    ElMessage.success(comresAutoApprove.value ? '已开启自动批准' : '已关闭自动批准（需人工审批）')
+  } catch (e) {
+    comresAutoApprove.value = !val
+    ElMessage.error(String(e.message || e))
+  }
+}
+
+async function comresApprove(row) {
+  comresAuthBusyId.value = row.request_id
+  try {
+    await api('/api/comres/applications/' + row.request_id + '/approve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    ElMessage.success('已批准')
+    await loadComresApplications()
+    loadWlNodes()
+  } catch (e) {
+    ElMessage.error(String(e.message || e))
+  } finally {
+    comresAuthBusyId.value = null
+  }
+}
+
+async function comresReject(row) {
+  try {
+    const { value } = await ElMessageBox.prompt('请填写拒绝原因', '拒绝申请', {
+      confirmButtonText: '拒绝',
+      cancelButtonText: '取消',
+      inputPattern: /\S+/,
+      inputErrorMessage: '原因不能为空',
+    })
+    comresAuthBusyId.value = row.request_id
+    await api('/api/comres/applications/' + row.request_id + '/reject', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: value }),
+    })
+    ElMessage.success('已拒绝')
+    await loadComresApplications()
+    loadWlNodes()
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    ElMessage.error(String(e.message || e))
+  } finally {
+    comresAuthBusyId.value = null
+  }
+}
+
+async function comresRevoke(row) {
+  try {
+    await ElMessageBox.confirm(
+      `撤销「${row.display_name || row.client_id}」的授权？节点将退役并从资源池下架。`,
+      '撤销授权', { type: 'warning' })
+    comresAuthBusyId.value = row.request_id
+    await api('/api/comres/applications/' + row.request_id + '/revoke', { method: 'POST' })
+    ElMessage.success('已撤销')
+    await loadComresApplications()
+    loadWlNodes()
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    ElMessage.error(String(e.message || e))
+  } finally {
+    comresAuthBusyId.value = null
+  }
+}
+
+function shortClientId(id) {
+  if (!id) return '—'
+  return String(id).slice(0, 8)
+}
+
 async function loadWlNodes() {
   wlNodesError.value = ''
   try {
@@ -1150,6 +1302,7 @@ async function loadWlNodes() {
     ElMessage.error('节点列表加载失败：' + wlNodesError.value)
   }
   loadComresResources()
+  loadComresAuthSummary()
   if (wlDetailId.value) openWlDetail(wlDetailId.value)
 }
 
@@ -2321,7 +2474,21 @@ const legendRole = [
 
       <!-- COMRes：节点视图 + 资源池（原 WireLog tab，key 仍为 wirelog） -->
       <div v-else-if="active === 'wirelog'">
-        <h2>COMRes</h2>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px;flex-wrap:wrap">
+          <h2 style="margin:0">COMRes</h2>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <el-tag
+              size="small"
+              :type="comresAuthPendingCount > 0 ? 'warning' : 'info'"
+              style="cursor:pointer"
+              @click="openComresAuthDrawer"
+            >待审批 {{ comresAuthPendingCount }} 条</el-tag>
+            <span v-if="comresAuthLastApprovedAt" class="comres-muted" style="font-size:12px">
+              上次批准 {{ formatLocal(comresAuthLastApprovedAt) }}
+            </span>
+            <el-button size="small" type="primary" plain @click="openComresAuthDrawer">授权</el-button>
+          </div>
+        </div>
         <el-alert v-if="wlNodesError" type="error" :closable="false" show-icon
                   :title="'节点列表：' + wlNodesError" style="margin-bottom:10px" />
         <el-alert v-if="comresError" type="error" :closable="false" show-icon
@@ -2343,6 +2510,13 @@ const legendRole = [
             <el-table-column prop="node_id" label="node_id" min-width="180" />
             <el-table-column prop="display_name" label="名称" min-width="140" />
             <el-table-column prop="ip" label="IP" min-width="130" />
+            <el-table-column label="授权" width="110">
+              <template #default="{ row }">
+                <el-tag size="small" :type="wlAuthBadge(wlNodeAuthStatus(row)).type">
+                  {{ wlAuthBadge(wlNodeAuthStatus(row)).label }}
+                </el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag size="small" :type="wlStatusType(row.status)">{{ row.status }}</el-tag>
@@ -2351,9 +2525,14 @@ const legendRole = [
             <el-table-column label="在线端口数" width="110">
               <template #default="{ row }">{{ wlOnlinePortCount(row.node_id) }}</template>
             </el-table-column>
-            <el-table-column label="串口资源" min-width="120">
+            <el-table-column label="串口资源" min-width="160">
               <template #default="{ row }">
-                <span v-if="!wlNodeHasSerial(row.node_id)" class="comres-muted">无串口资源</span>
+                <template v-if="!wlNodeAuthorized(row)">
+                  <span class="comres-muted">未授权，点右上角授权</span>
+                </template>
+                <template v-else-if="!wlNodeHasSerial(row.node_id)">
+                  <span class="comres-muted">无串口资源</span>
+                </template>
                 <span v-else>{{ wlNodeSerialRows(row.node_id).length }} 路</span>
               </template>
             </el-table-column>
@@ -2618,7 +2797,70 @@ const legendRole = [
           </el-table>
           <el-empty v-if="!comresAllRows.length && !comresLoading && !comresError"
                     description="暂无 COMRes 资源" />
+          <p class="comres-muted" style="font-size:12px;margin:8px 0 0">
+            可分配池仅含已授权节点端口；待审批 / 已拒绝 / 已撤销节点的端口不入池，避免误领。
+          </p>
         </el-card>
+
+        <el-drawer v-model="comresAuthDrawer" title="COMRes 授权" size="520px" direction="rtl">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+            <div>
+              <div style="font-weight:600;margin-bottom:4px">自动批准</div>
+              <div class="comres-muted" style="font-size:12px">关闭后客户端申请进入待审，需人工批准</div>
+            </div>
+            <el-switch :model-value="comresAutoApprove" @change="toggleComresAutoApprove" />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+            <el-radio-group v-model="comresAuthFilter" size="small" @change="loadComresApplications">
+              <el-radio-button value="all">全部</el-radio-button>
+              <el-radio-button value="pending">待审</el-radio-button>
+              <el-radio-button value="approved">已授权</el-radio-button>
+              <el-radio-button value="rejected">已拒绝</el-radio-button>
+              <el-radio-button value="revoked">已撤销</el-radio-button>
+            </el-radio-group>
+            <el-button size="small" :loading="comresAuthLoading" @click="loadComresApplications">刷新</el-button>
+          </div>
+          <el-alert v-if="comresAuthError" type="error" :closable="false" show-icon
+                    :title="comresAuthError" style="margin-bottom:10px" />
+          <div v-loading="comresAuthLoading">
+            <el-empty v-if="!comresAuthItems.length && !comresAuthLoading && !comresAuthError"
+                      description="暂无申请记录" />
+            <div v-for="row in comresAuthItems" :key="row.request_id" class="comres-auth-card">
+              <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
+                <div>
+                  <div style="font-weight:600">{{ row.display_name || '未命名' }}</div>
+                  <div class="comres-muted" style="font-size:12px;margin-top:2px">
+                    client {{ shortClientId(row.client_id) }}
+                    · IP {{ row.source_ip || '—' }}
+                    · {{ row.model_class || '机型未知' }}
+                  </div>
+                  <div class="comres-muted" style="font-size:12px;margin-top:2px">
+                    首次 {{ formatLocal(row.first_seen_at) }} · 申请 {{ row.request_count }} 次
+                  </div>
+                </div>
+                <el-tag size="small" :type="wlAuthBadge(row.status).type">
+                  {{ wlAuthBadge(row.status).label }}
+                </el-tag>
+              </div>
+              <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+                <template v-if="row.status === 'pending'">
+                  <el-button size="small" type="primary"
+                             :loading="comresAuthBusyId === row.request_id"
+                             @click="comresApprove(row)">批准</el-button>
+                  <el-button size="small" type="danger" plain
+                             :loading="comresAuthBusyId === row.request_id"
+                             @click="comresReject(row)">拒绝</el-button>
+                </template>
+                <el-button v-if="row.status === 'approved'" size="small" type="warning" plain
+                           :loading="comresAuthBusyId === row.request_id"
+                           @click="comresRevoke(row)">撤销</el-button>
+                <span v-if="row.status === 'rejected'" class="comres-muted" style="font-size:12px">
+                  原因：{{ row.reject_reason || '—' }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </el-drawer>
       </div>
 
       <!-- 设置：系统 + 设备类型 + 通讯录 + SMTP + 介绍 + 审计 -->
@@ -3423,5 +3665,14 @@ const legendRole = [
 .comres-muted { color: #c0c4cc; }
 .comres-no-serial { color: #c0c4cc; }
 .comres-no-serial .cell { color: #c0c4cc; }
+.comres-unauthorized { color: #c0c4cc; }
+.comres-unauthorized .cell { color: #c0c4cc; }
+.comres-auth-card {
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 10px;
+  background: var(--el-fill-color-blank, #fff);
+}
 
 </style>

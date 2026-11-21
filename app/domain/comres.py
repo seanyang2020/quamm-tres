@@ -746,9 +746,15 @@ def list_resources(session: Session) -> dict:
 
     在线视图契约：health_state=offline 的端口从 allocated/bound/pool 剔除
     （绑定与设备关系仍保留在库内；再次上报恢复 online 后重新出现）。
+
+    可分配池仅含已授权节点端口：pending/rejected/revoked 不入池
+    （存量无申请记录的节点视为已授权，兼容开放登记）。
     """
+    from app.domain import comres_apply
+
     expire_allocations(session)
     nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
+    auth_map = comres_apply.auth_status_by_node(session)
     rows = (session.query(WireLogPortBinding)
             .order_by(WireLogPortBinding.node_id, WireLogPortBinding.slot)
             .all())
@@ -758,10 +764,21 @@ def list_resources(session: Session) -> dict:
         if not _is_online_binding(b):
             continue
         node = nodes.get(b.node_id)
+        auth_status = auth_map.get(b.node_id) or "none"
+        item = None
         if _is_allocated(b, now):
-            allocated.append(_resource_item(b, node, allocated=True, include_device=True))
+            item = _resource_item(b, node, allocated=True, include_device=True)
+            item["auth_status"] = auth_status
+            allocated.append(item)
         elif b.bound_device_id:
-            bound.append(_resource_item(b, node, allocated=False, include_device=True))
+            item = _resource_item(b, node, allocated=False, include_device=True)
+            item["auth_status"] = auth_status
+            bound.append(item)
         else:
-            pool.append(_resource_item(b, node, allocated=False, include_device=False))
+            # 未授权节点端口不出现在可分配池（避免误领）
+            if not comres_apply.is_node_pool_authorized(b.node_id, auth_map):
+                continue
+            item = _resource_item(b, node, allocated=False, include_device=False)
+            item["auth_status"] = auth_status
+            pool.append(item)
     return {"allocated": allocated, "bound": bound, "pool": pool}

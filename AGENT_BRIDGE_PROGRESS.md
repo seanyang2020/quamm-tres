@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：T933 清理节点发放流程中过时的 ADB/fw_setenv（改为开放登记）  
-> task_id: t933
+> 任务：TRES 增加「客户端自助申请 + 默认自动批准 + 授权审批页 + 离线幂等取 token」  
+> task_id: tres-comres-apply
 
 ## 状态：已完成（停住等审）
 
@@ -9,24 +9,25 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| A 发放表单 | 移除 ADB 地址；标题改为「发放新节点」；按钮「发放 token」 | ✅ |
-| A 发放 API | 前端改调 `/api/wirelog/nodes/provision`；结果弹窗可复制 node_id/token | ✅ |
-| B 后端兼容 | `enroll`/`provision_host` 不要求 adb；未知 kwargs 忽略；库字段保留；`fw_setenv` 仍返回给老客户端 | ✅ |
-| C 节点详情 | 增加「ADB/fw_setenv 已废弃」轻量提示；已有节点详情不报错 | ✅ |
-| D 构建 | `web` 下 `npm run build` exit 0；dist 已生成（gitignore，不入库） | ✅ |
+| A 数据模型 | `wl_client_apply` + 迁移兜底建表；token Fernet 密文 | ✅ |
+| B API | `/api/comres/apply` 等 7 组接口；限流；管理面 cookie 鉴权 | ✅ |
+| C 资源池 | 未授权（pending/rejected/revoked）端口不入可分配池 | ✅ |
+| D 前端 | COMRes「授权」抽屉、自动批准开关、状态徽标、待审汇总 | ✅ |
+| E 测试 | `tests/test_comres_apply.py` 7 项；三条路径演示 | ✅ |
+| F 构建 | `npm run build` exit 0；dist 忽略不入库 | ✅ |
 
 ## 验收
 
-- smoke_wirelog / http_wirelog → ALL_PASS
-- 开放 enroll（无 adb）+ provision 自测 OK
-- `get_node(wle19b7266e729846c)` → online / 4 ports
-- 证据：`AGENT_BRIDGE_EVIDENCE.md` + `.agent-bridge/evidence/t933.md`
+- pytest `tests/test_comres_apply.py` → 7 passed
+- 演示：自动批准 / 待审→批准 / 离线重取同 token → OK
+- 证据：`AGENT_BRIDGE_EVIDENCE.md` + `.agent-bridge/evidence/tres-comres-apply.md`
 
 ## 额外改动理由
 
-无。
+- `requirements.txt` 补 `cryptography`（`secret_crypto` / Fernet 本就依赖，此前未声明）
+- 存量无申请记录的节点仍视为可入池（兼容开放登记存量）；徽标显示「未申请」
 
 ## 说明
 
-- 提交：`05e454f`（分支 `feat/comres`；任务文案写 master，COMRes 系列均在本分支）
+- 提交在分支 `feat/comres`（任务文案写 master，COMRes 系列均在本分支）
 - 停住等审

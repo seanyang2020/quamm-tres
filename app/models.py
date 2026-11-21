@@ -611,6 +611,46 @@ class WireLogEnrollment(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime())
 
 
+class WireLogClientApply(Base):
+    """COMRes 客户端自助申请（deskserialhub）：默认自动批准，可人工审批/撤销。
+
+    token_cipher 为 Fernet 密文，支持离线后幂等重取同一明文 token；库内不存明文。
+    """
+
+    __tablename__ = "wl_client_apply"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    client_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    model_class: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    client_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # pending | approved | rejected | revoked
+    status: Mapped[str] = mapped_column(
+        String(16), default="pending", server_default="pending", nullable=False
+    )
+    request_count: Mapped[int] = mapped_column(
+        Integer, default=1, server_default="1", nullable=False
+    )
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    approved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    reject_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    issued_node_id: Mapped[str | None] = mapped_column(
+        String(32), ForeignKey("wl_node.node_id"), nullable=True
+    )
+    token_cipher: Mapped[str | None] = mapped_column(Text, nullable=True)
+    token_prefix: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("uq_wl_client_apply_client_id", "client_id", unique=True),
+        Index("ix_wl_client_apply_status", "status"),
+    )
+
+
 class WireLogPortBinding(Base):
     """日志机某路串口与被测设备的绑定（含 shell 实测 MAC/IP 与就绪态）。"""
 

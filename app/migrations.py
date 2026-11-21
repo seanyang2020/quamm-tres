@@ -156,6 +156,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "wl_port_binding", _WL_COMRES_COLUMNS)
     _ensure_comres_unique_index(session)
     _ensure_columns(session, "patrol_run", _PATROL_RUN_COLUMNS)
+    _ensure_wl_client_apply_table(session)
 
 
 def _ensure_device_position_index(session: Session) -> None:
@@ -188,6 +189,17 @@ def _ensure_screenshot_table(session: Session) -> None:
     if "screenshot_record" in inspect(engine).get_table_names():
         return
     Base.metadata.tables["screenshot_record"].create(bind=engine, checkfirst=True)
+
+
+def _ensure_wl_client_apply_table(session: Session) -> None:
+    """COMRes 客户端自助申请表：全新表，create_all 建；inspect 缺表则补建。"""
+    from app import models  # noqa: F401
+    from app.db import Base
+
+    engine = session.get_bind()
+    if "wl_client_apply" in inspect(engine).get_table_names():
+        return
+    Base.metadata.tables["wl_client_apply"].create(bind=engine, checkfirst=True)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:

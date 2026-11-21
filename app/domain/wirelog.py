@@ -568,18 +568,22 @@ def set_config(session, node_id, config, actor=None):
 # ------------------------------------------------------------- 查询
 
 def list_nodes(session):
+    from app.domain import comres_apply
+    auth_map = comres_apply.auth_status_by_node(session)
     nodes = session.query(WireLogNode).all()
-    return [_node_brief(session, n) for n in nodes]
+    return [_node_brief(session, n, auth_map=auth_map) for n in nodes]
 
 
 def get_node(session, node_id):
+    from app.domain import comres_apply
     node = session.get(WireLogNode, node_id)
     if node is None:
         raise DomainError("WL_NODE_NOT_FOUND", "日志机不存在")
+    auth_map = comres_apply.auth_status_by_node(session)
     bindings = (session.query(WireLogPortBinding)
                 .filter_by(node_id=node_id).all())
     return {
-        **_node_brief(session, node),
+        **_node_brief(session, node, auth_map=auth_map),
         "caps": public_caps(node),
         "config": node.config_json,
         "ports": [
@@ -628,12 +632,16 @@ def public_caps(node) -> dict:
     return safe
 
 
-def _node_brief(session, node):
+def _node_brief(session, node, auth_map=None):
+    auth_status = "none"
+    if auth_map is not None:
+        auth_status = auth_map.get(node.node_id) or "none"
     return {
         "node_id": node.node_id, "display_name": node.display_name,
         "model_class": node.model_class, "status": node.status,
         "ip": node.ip, "sw_version": node.sw_version,
         "token_prefix": node.token_prefix,
+        "auth_status": auth_status,
         "last_heartbeat_at": node.last_heartbeat_at.isoformat()
         if node.last_heartbeat_at else None,
     }
