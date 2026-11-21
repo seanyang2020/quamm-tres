@@ -24,7 +24,7 @@ task_id: t960
 
 ## c. 版本/提交证据
 
-1d44235 / 1d442356983cf9a593959763404fb51d4a0678d8  ← HEAD
+a195740 / a19574077cb884845893fb4229f196e0db78f747  ← HEAD
 
 Gerrit change：不适用。
 
