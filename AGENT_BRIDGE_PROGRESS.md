@@ -27,5 +27,5 @@
 
 ## 说明
 
-- 当前分支 `feat/comres`（任务文案写 master；COMRes 系列提交均在本分支）
+- 提交：`61057ae`（分支 `feat/comres`；任务文案写 master，COMRes 系列均在本分支）
 - 未推远程；停住等审

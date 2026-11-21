@@ -17,7 +17,18 @@ task_id: t6-comres-shell-port
 
 ## c. 版本/提交证据
 
-（提交后由主证据文件回填；见仓库 `git log -1`）
+```text
+$ git log -1 --oneline
+61057ae fix(comres): shell 按 binding.endpoint 解析端口，避免 caps.raw_tcp_port 连错 PC 串口
+
+$ git status --short
+?? .agent-bridge/evidence/t4-comres-heartbeat.md
+（及其余历史 evidence 未跟踪文件）
+
+$ git diff --stat HEAD~1
+ app/api/wirelog_router.py + tests/test_wirelog_shell_target.py + 证据文件
+ 5 files changed, 184 insertions(+), 41 deletions(-)
+```
 
 Gerrit：不适用
 

@@ -26,13 +26,23 @@ task_id: t6-comres-shell-port
 
 ```text
 $ git log -1 --oneline
-（提交后回填）
+61057ae fix(comres): shell 按 binding.endpoint 解析端口，避免 caps.raw_tcp_port 连错 PC 串口
 
 $ git status --short
-（提交后回填）
+?? .agent-bridge/evidence/t4-comres-heartbeat.md
+?? .agent-bridge/evidence/t857.md
+?? .agent-bridge/evidence/t870.md
+?? .agent-bridge/evidence/t880.md
+?? .agent-bridge/evidence/t902.md
+?? .agent-bridge/evidence/t915.md
 
 $ git diff --stat HEAD~1
-（提交后回填）
+ .agent-bridge/evidence/t6-comres-shell-port.md | 26 ++++++++++
+ AGENT_BRIDGE_EVIDENCE.md                       | 58 ++++++++++++----------
+ AGENT_BRIDGE_PROGRESS.md                       | 22 ++++----
+ app/api/wirelog_router.py                      | 50 +++++++++++++++++--
+ tests/test_wirelog_shell_target.py             | 69 ++++++++++++++++++++++++++
+ 5 files changed, 184 insertions(+), 41 deletions(-)
 ```
 
 Gerrit change：不适用
