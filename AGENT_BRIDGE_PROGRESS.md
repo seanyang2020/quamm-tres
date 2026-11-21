@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：t966 —— 统一节点授权口径 + 串口写权限默认开放  
-> task_id: t966
+> 任务：t960 —— 设备中心统计卡（浅色 + 七列一排）  
+> task_id: t960
 
 ## 状态：已完成（停住等审）
 
@@ -9,17 +9,15 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 一 auth 口径 | `auth_status` + `auth_source`(apply/token/none)；enroll→token | ✅ |
-| 二 enroll 补写 | `ensure_enroll_apply` 幂等写 approved 行（source=enroll） | ✅ |
-| 三 回填 | `scripts/backfill_enroll_applies.py`；真库 esl2-122 → approved/token | ✅ |
-| 四 写权限 | shell WS：approved→can_write；write-grant 兼容保留 | ✅ |
-| 五 前端 | 授权列显示来源；shell 去掉「申请写权限」文案 | ✅ |
-| 六 单测 | `tests/test_auth_source_and_write.py` 7 passed（含 comres_apply 共 14） | ✅ |
-| 七 构建 | `cd web && npm run build` exit 0 | ✅ |
+| 一 断点 | ≥1400 七列一排 / 1100–1400 四列 / 800–1100 三列 / &lt;800 两列 | ✅ |
+| 二 浅色 | 白底 #fbfcfe、#e5e8ef 边、12px 圆角、轻阴影；取消深色块 | ✅ |
+| 三 状态色 | 在线/空闲绿、离线红、待检橙、已分配蓝、总量/串口深灰 | ✅ |
+| 四 筛选高亮 | 蓝边框 + 淡蓝底 #eff6ff | ✅ |
+| 五 构建/单测 | npm build 0 + pytest 1 passed | ✅ |
 
 ## 提交
 
-- `937f7f2` / `937f7f29b86e9c4509b0da9dd1d714f7434e44de`
+- 1d44235 / 1d442356983cf9a593959763404fb51d4a0678d8  ← HEAD
 
 ## 说明
 

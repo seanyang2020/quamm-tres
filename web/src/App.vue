@@ -2302,41 +2302,41 @@ const legendRole = [
           <el-button v-if="me.role === 'admin'" size="small" link type="primary" :loading="patrolBusy" @click="triggerPatrolNow">立即巡检</el-button>
           <el-button v-else size="small" link type="primary" :loading="patrolBusy" @click="triggerPatrolNow">刷新状态</el-button>
         </div>
-        <!-- 统计卡：≥1200→4列 / ≥900→3列 / &lt;700→2列；7 张末行居中避免孤卡 -->
+        <!-- 统计卡：≥1400 七列一排 / 1100–1400 四列 / 800–1100 三列 / &lt;800 两列；浅色卡 -->
         <div class="device-stats-grid">
-          <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'all' }" @click="toggleStatsFilter('all')">
+          <el-card shadow="never" class="ov-card" :class="{ 'is-active': statsFilter === 'all' }" @click="toggleStatsFilter('all')">
             <div class="ov-label">设备总量</div>
-            <div class="ov-num">{{ deviceTotals.total }}</div>
+            <div class="ov-num ov-total">{{ deviceTotals.total }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'online' }" @click="toggleStatsFilter('online')">
+          <el-card shadow="never" class="ov-card" :class="{ 'is-active': statsFilter === 'online' }" @click="toggleStatsFilter('online')">
             <div class="ov-label">在线</div>
             <div class="ov-num ov-online">{{ deviceTotals.online }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'offline' }" @click="toggleStatsFilter('offline')">
+          <el-card shadow="never" class="ov-card" :class="{ 'is-active': statsFilter === 'offline' }" @click="toggleStatsFilter('offline')">
             <div class="ov-label">离线</div>
             <div class="ov-num ov-offline">{{ deviceTotals.offline }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'pending' }" @click="toggleStatsFilter('pending')">
+          <el-card shadow="never" class="ov-card" :class="{ 'is-active': statsFilter === 'pending' }" @click="toggleStatsFilter('pending')">
             <div class="ov-label">待检</div>
             <div class="ov-num ov-pending">{{ deviceTotals.pending }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'occupied' }" @click="toggleStatsFilter('occupied')">
+          <el-card shadow="never" class="ov-card" :class="{ 'is-active': statsFilter === 'occupied' }" @click="toggleStatsFilter('occupied')">
             <div class="ov-label">已分配</div>
             <div class="ov-num ov-allocated">{{ deviceTotals.occupied }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="hover" class="ov-card" :class="{ 'is-active': statsFilter === 'available' }" @click="toggleStatsFilter('available')">
+          <el-card shadow="never" class="ov-card" :class="{ 'is-active': statsFilter === 'available' }" @click="toggleStatsFilter('available')">
             <div class="ov-label">空闲</div>
             <div class="ov-num ov-idle">{{ deviceTotals.available }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="hover" class="ov-card ov-card-comres" @click="switchPage('wirelog')">
+          <el-card shadow="never" class="ov-card ov-card-comres" @click="switchPage('wirelog')">
             <div class="ov-label">串口资源</div>
-            <div class="ov-num">{{ comresPortStats.total }}</div>
+            <div class="ov-num ov-comres">{{ comresPortStats.total }}</div>
             <div class="ov-sub">在池 {{ comresPortStats.pool }}</div>
           </el-card>
         </div>
@@ -3905,7 +3905,7 @@ const legendRole = [
   background: #f5f7fa; border: 1px solid #ebeef5; border-radius: 6px;
   padding: 6px 12px; margin-bottom: 8px; color: #909399; font-size: 12px; line-height: 1.5;
 }
-/* 统计卡栅格：<700→2列 / ≥900→3列 / ≥1200→4列；justify center 让末行 4+3 / 3+3+1 不孤左 */
+/* 统计卡：≥1400 七列一排 / ≥1100 四列 / ≥800 三列 / <800 两列；末行居中 */
 .device-stats-grid {
   --ov-gap: 12px;
   display: flex;
@@ -3916,51 +3916,73 @@ const legendRole = [
   margin: 0 0 10px;
 }
 .device-stats-grid > .ov-card {
-  /* 默认 <700：一行 2 张 */
   flex: 0 0 calc((100% - var(--ov-gap)) / 2);
   max-width: calc((100% - var(--ov-gap)) / 2);
+  min-width: 0;
   box-sizing: border-box;
 }
-@media (min-width: 900px) {
+@media (min-width: 800px) {
   .device-stats-grid > .ov-card {
     flex-basis: calc((100% - 2 * var(--ov-gap)) / 3);
     max-width: calc((100% - 2 * var(--ov-gap)) / 3);
   }
 }
-@media (min-width: 1200px) {
+@media (min-width: 1100px) {
   .device-stats-grid > .ov-card {
     flex-basis: calc((100% - 3 * var(--ov-gap)) / 4);
     max-width: calc((100% - 3 * var(--ov-gap)) / 4);
   }
 }
+@media (min-width: 1400px) {
+  .device-stats-grid > .ov-card {
+    flex: 1 1 0;
+    flex-basis: 0;
+    max-width: none;
+    min-width: 150px;
+  }
+}
 .ov-card {
-  --el-card-bg-color: #1f2937;
-  --el-card-border-color: #374151;
-  cursor: pointer; transition: box-shadow .2s, border-color .2s, transform .2s;
-  border-radius: 8px; background: #1f2937; border: 2px solid #374151; color: #e5e7eb;
-  height: 100%; min-height: 100px;
+  --el-card-bg-color: #fbfcfe;
+  --el-card-border-color: #e5e8ef;
+  cursor: pointer;
+  transition: box-shadow .2s, border-color .2s, background-color .2s, transform .15s;
+  border-radius: 12px;
+  background: #fbfcfe;
+  border: 1px solid #e5e8ef;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  height: 100%;
+  min-height: 96px;
 }
 .ov-card :deep(.el-card__body) {
-  padding: 14px 16px; background: transparent; height: 100%; box-sizing: border-box;
+  padding: 12px 14px; background: transparent; height: 100%; box-sizing: border-box;
   display: flex; flex-direction: column; justify-content: flex-start;
 }
-.ov-card:hover { box-shadow: 0 6px 18px rgba(0, 0, 0, .28); border-color: #60a5fa; transform: translateY(-2px); }
-.ov-card.is-active {
-  border-color: #409eff;
-  box-shadow: 0 0 0 1px #409eff, 0 4px 14px rgba(64, 158, 255, .35);
+.ov-card:hover {
+  border-color: #bfdbfe;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, .10);
+  transform: translateY(-1px);
 }
-.ov-label { color: #9ca3af; font-size: 13px; line-height: 1.3; }
+.ov-card.is-active {
+  border-color: #2563eb;
+  background: #eff6ff;
+  --el-card-bg-color: #eff6ff;
+  box-shadow: 0 0 0 1px #2563eb inset, 0 2px 8px rgba(37, 99, 235, .12);
+}
+.ov-label { color: #6b7280; font-size: 12px; line-height: 1.3; }
 .ov-num {
-  font-size: 28px; line-height: 1.15; margin-top: 8px; font-weight: 700; color: #f3f4f6;
+  font-size: 28px; line-height: 1.15; margin-top: 6px; font-weight: 700; color: #111827;
   font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
 }
-.ov-sub { margin-top: auto; padding-top: 4px; font-size: 12px; color: #9ca3af; line-height: 1.3; min-height: 1.3em; }
+.ov-sub { margin-top: auto; padding-top: 4px; font-size: 11px; color: #9ca3af; line-height: 1.3; min-height: 1.3em; }
 .ov-sub-spacer { visibility: hidden; }
-.ov-online { color: #67c23a; }
-.ov-offline { color: #f89898; }
-.ov-pending { color: #e6a23c; }
-.ov-allocated { color: #409eff; }
-.ov-idle { color: #a3e635; }
+.ov-total { color: #111827; }
+.ov-online { color: #16a34a; }
+.ov-offline { color: #dc2626; }
+.ov-pending { color: #d97706; }
+.ov-allocated { color: #2563eb; }
+.ov-idle { color: #16a34a; }
+.ov-comres { color: #111827; }
 .product-chips {
   display: flex; flex-wrap: nowrap; gap: 8px; overflow-x: auto; padding: 2px 0 8px;
   -webkit-overflow-scrolling: touch;
