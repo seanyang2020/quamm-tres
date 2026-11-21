@@ -33,7 +33,7 @@ task_id: t969
 ## c. 版本/提交证据
 
 575a461 / 575a461762de5c4c589d48267b647d0f5555527b  ← 可达性改动
-dc41cdf / dc41cdf33430fc6200916684b058f73edacde79d  ← HEAD（证据回填）
+a88232b / a88232b4d260333ca29b68f7f6230179034d70ab  ← HEAD（证据）
 
 Gerrit change：不适用。
 
