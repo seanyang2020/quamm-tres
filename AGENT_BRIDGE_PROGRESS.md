@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：T5 TRES COMRes：offline 判定只对未分配端口生效  
-> task_id: t5-comres-offline-allocated；承接 `f71d137`（T4）
+> 任务：T6 TRES COMRes 串口 shell 按 binding.endpoint 解析端口  
+> task_id: t6-comres-shell-port
 
 ## 状态：已完成（停住等审）
 
@@ -9,21 +9,23 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| A 已分配跳过 offline | `_mark_absent_ports_offline`：`_is_allocated` → 保持 health_state + 审计 `comres_port_skipped_allocated` | ✅ |
-| A 未分配仍 offline | 未占用端口未上报 → `health_state=offline` + `comres_port_offline`（T4 语义） | ✅ |
-| B 再上报恢复 | 已分配端口再次出现于 ports[] 时正常刷新 health_state / probe | ✅ |
-| C smoke | ACCEPT-9 先清占用再验 T4；新增 ACCEPT-10；`ALL_PASS` | ✅ |
+| A 解析优先级 | `_resolve_shell_target`：endpoint > tcp_port+(shell_ip\|ip) > caps.raw_tcp_port+slot-1 | ✅ |
+| A 复用解析 | 使用 `comres._parse_ip_port` / `serial_tcp.parse_endpoint`，无新正则 | ✅ |
+| B 错误信息 | 连接失败带上 endpoint / node / slot / com_name | ✅ |
+| C 协议不变 | can_write、status/out/data/error 字段未改 | ✅ |
+| D pytest | `tests/test_wirelog_shell_target.py` 5 passed | ✅ |
 
 ## 验收
 
-- `tests/smoke_comres.py` → ALL_PASS / exit 0
-- 证据：`AGENT_BRIDGE_EVIDENCE.md` + `.agent-bridge/evidence/t5-comres-offline-allocated.md`
-- 提交：`fa04ffb`
+- pytest → 5 passed / exit 0
+- `python -c` slot1 → `tcp://172.16.10.25:9210`
+- 证据：`AGENT_BRIDGE_EVIDENCE.md` + `.agent-bridge/evidence/t6-comres-shell-port.md`
 
 ## 额外改动理由
 
-无（未改 router / wirelog / deskserialhub）。
+无。
 
 ## 说明
 
+- 当前分支 `feat/comres`（任务文案写 master；COMRes 系列提交均在本分支）
 - 未推远程；停住等审

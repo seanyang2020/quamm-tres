@@ -17,8 +17,10 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal, get_session
 from app.domain import wirelog
 from app.domain.catalog import DomainError
+from app.domain.comres import _parse_ip_port
 from app.domain.prober_uart import RAW_TCP_AUTH
 from app.models import Credential, Principal, WireLogNode, WireLogPortBinding
+from app.serial_tcp import SerialConfigError, parse_endpoint
 from app.utils import utcnow
 from app import web_auth
 
@@ -178,6 +180,44 @@ def _caps_dict(node) -> dict:
     return {}
 
 
+def _resolve_shell_target(node, binding, slot: int) -> tuple[str, int, str]:
+    """解析串口 shell 的 (host, port, endpoint)。
+
+    优先级：
+    1. binding.endpoint（tcp://host:port，COMRes PC 串口）
+    2. binding.tcp_port + (binding.shell_ip / node.shell_ip / node.ip)
+    3. caps.raw_tcp_port + slot-1（板侧 wireserialhub 老节点）
+    """
+    if binding is not None:
+        ep = (binding.endpoint or "").strip()
+        if ep:
+            host, port = _parse_ip_port(ep, None)
+            if host and port is not None:
+                return str(host), int(port), f"tcp://{host}:{int(port)}"
+            # endpoint 非空但 _parse_ip_port 吞掉了异常时，再走 parse_endpoint 显式失败回退
+            try:
+                host, port = parse_endpoint(ep)
+                return str(host), int(port), f"tcp://{host}:{int(port)}"
+            except SerialConfigError:
+                pass
+        if binding.tcp_port is not None:
+            host = (
+                (getattr(binding, "shell_ip", None) or "").strip()
+                or (getattr(node, "shell_ip", None) or "").strip()
+                or (node.ip or "").strip()
+                or None
+            )
+            if host:
+                port = int(binding.tcp_port)
+                return host, port, f"tcp://{host}:{port}"
+
+    caps = _caps_dict(node)
+    base_port = int(caps.get("raw_tcp_port") or 9001)
+    port = base_port + (int(slot) - 1)
+    host = (node.ip or "").strip()
+    return host, port, f"tcp://{host}:{port}"
+
+
 def _ws_identity(session, ws):
     """WebSocket 里的登录态校验（cookie 与 HTTP 同源，逻辑对齐 optional_identity）。"""
     data = web_auth.read_session(ws.cookies.get(web_auth.SESSION_COOKIE))
@@ -228,12 +268,11 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         binding = (session.query(WireLogPortBinding)
                    .filter_by(node_id=node_id, slot=int(slot)).one_or_none())
         caps = _caps_dict(node)
-        base_port = int(caps.get("raw_tcp_port") or 9001)
-        port = base_port + (int(slot) - 1)          # 单路时即 base_port，多路按序推导
         token = str(caps.get("local_token") or "")
-        host = node.ip
+        host, port, endpoint = _resolve_shell_target(node, binding, int(slot))
         tty = binding.tty_name if binding is not None else None
         baud = binding.baud if binding is not None else None
+        com_name = binding.com_name if binding is not None else None
         granted = (binding.write_granted_to or "").strip() if binding is not None else ""
         can_write = ident["role"] == "admin" or granted == ident["email"]
         node_name = node.display_name or node.node_id
@@ -241,7 +280,6 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         session.close()
 
     loop = asyncio.get_running_loop()
-    endpoint = f"tcp://{host}:{port}"
     sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
     sock.setblocking(False)
     try:
@@ -250,7 +288,9 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
     except Exception as exc:                     # noqa: BLE001 - 统一报给前端
         sock.close()
         await send({"type": "error",
-                    "message": f"连不上串口服务器 {endpoint}：{exc}"})
+                    "message": (f"连不上串口服务器 {endpoint}"
+                                f"（node={node_name}, slot={int(slot)},"
+                                f" com={com_name or '-'}）：{exc}")})
         await ws.close(code=1011)
         return
 
