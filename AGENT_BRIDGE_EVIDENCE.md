@@ -32,7 +32,7 @@ task_id: t969
 
 ## c. 版本/提交证据
 
-（待 commit 后回填 `git log -1`）
+575a461 / 575a461762de5c4c589d48267b647d0f5555527b
 
 Gerrit change：不适用。
 
