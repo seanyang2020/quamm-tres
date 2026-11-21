@@ -24,18 +24,19 @@ task_id: t960
 ## c. 版本/提交证据
 
 ```
-1369ee6 feat(web): 设备中心恢复分类统计卡片并可点击筛选
-%H: 1369ee6a851966a789e3d4aeccf7275b5f6195d5
+80e65bf feat(web): 设备中心恢复分类统计卡片并可点击筛选
+  %H: 80e65bf5c486f312828941c926dfcc15d9dad687
+30cd37a docs(evidence): 回填 t960 统计卡片恢复验收证据
+  %H: 30cd37a01a919c27f718698881eec9df3184454d   ← HEAD
 
-git status --short  # clean
-git diff --stat HEAD~1
- .agent-bridge/evidence/t960.md          |  48 +++++++++++
- .agent-bridge/evidence/t960_PROGRESS.md |  25 ++++++
- AGENT_BRIDGE_EVIDENCE.md                |  48 ++++++-----
- AGENT_BRIDGE_PROGRESS.md                |  18 ++---
- tests/test_device_stats.py              | 103 ++++++++++++++++++++++++
- web/src/App.vue                         | 138 ++++++++++++++++++++++++++++++--
- 6 files changed, 343 insertions(+), 37 deletions(-)
+git status --short  # clean（证据微调未再提交亦可）
+git diff --stat 80e65bf^..80e65bf
+ .agent-bridge/evidence/t960.md          |  48 +
+ .agent-bridge/evidence/t960_PROGRESS.md |  25 +
+ AGENT_BRIDGE_EVIDENCE.md                |  48 +-
+ AGENT_BRIDGE_PROGRESS.md                |  18 +-
+ tests/test_device_stats.py              | 103 +
+ web/src/App.vue                         | 138 +-
 ```
 
 Gerrit change：不适用。
