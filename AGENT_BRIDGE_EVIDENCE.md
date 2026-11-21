@@ -1,56 +1,39 @@
 ---
-task_id: t952
+task_id: t955
 ---
 
-# t950 / t952：TRES 信息架构调整（设备中心默认页）
+# t955：COMRes 节点硬删 500 / 权限提示失真
 
 ## a. 编译/构建
 
-命令：`cd web && npm run build`  
-退出码：`0`  
-结果：`✓ built in 5.00s`；产物 `web/dist/index.html`、`web/dist/assets/index-fJvM_eBC.js` 存在（`dist/` 被 `.gitignore`，与既有做法一致不入库）。
+- 命令：`cd web && npm run build`
+- 退出码：`0`
+- 关键结果：`dist/index.html` / `dist/assets/index-*.js` / `dist/assets/index-*.css` 已生成；vite built in 4.29s
 
-命令：`PYTHONPATH=. .venv/bin/python -m pytest tests -q`  
-退出码：`1`  
-结果：`135 passed, 21 failed`。失败集与 t948 基线同批（apply_flow / flash / mcp_http / prober_l3 / queue / registration），**本任务仅前端 IA，未新增失败**。
+- 命令：`.venv/bin/python -m pytest tests/test_wirelog_delete_node.py tests/test_comres_apply.py -q --tb=short`
+- 退出码：`0`
+- 关键结果：`11 passed`
 
 ## b. 改动文件清单
 
-- `web/src/App.vue`（去看板；默认「设备中心」；状态条 + 机型 chips；最近探测列/排序；编辑弹层上次探测；旧 `#/board` 重定向；设置页无运行时状态块可删）
-- `web/dist/*`（重建，不入库）
-- `AGENT_BRIDGE_EVIDENCE.md` / `AGENT_BRIDGE_PROGRESS.md`
-- 截图：`.agent-bridge/evidence/t950-shots/{devices,devices-list,settings,home}.png`
-
-说明：主体 IA 改动曾与并行任务 t948 同文件工作区合并进 `d91cb8d`；本提交补 hashchange 重定向与证据落盘。
+- `app/domain/wirelog.py`
+- `app/api/wirelog_router.py`
+- `app/domain/comres_apply.py`
+- `web/src/App.vue`
+- `tests/test_wirelog_delete_node.py`
 
 ## c. 版本/提交证据
 
-```
-a43fb7f feat(web): 设备中心默认页与信息架构调整
-aa64e27 docs(evidence): 回填 t948 提交哈希与验收四要素
-d91cb8d feat(comres): 资源池去重 + auto 绑定口径 + 端点接管 + 移除发放入口
-
-git status --short  # 仅他任务遗留 untracked evidence / db.bak
-```
-
-Gerrit change：不适用。
-
-关联：`d91cb8d`（t948 commit 曾合并本任务 App.vue IA 主体）；本任务跟进 `a43fb7f`。
+- `git log -1 --oneline`：`0f5f9e0 fix(comres): 硬删节点级联清空 apply FK，避免 500 并修正权限提示`
+- `git log -1 --format=%H`：`0f5f9e09c9b31ee317d1ba32286e257bf0d210ee`
+- `git status --short`：（提交后工作区干净，无未提交代码改动）
+- `git diff --stat HEAD~1`：`5 files changed, 287 insertions(+), 22 deletions(-)`
+- Gerrit change：无/不适用
 
 ## d. 验证/自测
 
-| 项 | 命令/操作 | 结果 |
-|---|---|---|
-| 默认落地 | 登录后打开 `http://172.16.10.25:9100/` | 菜单首项「设备中心」激活；无「看板」 |
-| 状态条 | CDP 读 `.device-status-bar` | `上次全量巡检 … · 最近快轮询 … · 在线 8 · 离线 10 · 待检 7` +「立即巡检」 |
-| 机型 chips | `.product-chip` | `esl2_hk 0/0,framex 3/0,…`；点击进入该机型明细 |
-| 最近探测列 | DOM `innerText.includes("最近探测")` | `YES`（表宽需横向滚动可见） |
-| 旧路由 | 打开 `/#/board` | active=`设备中心`（hash 清除） |
-| 设置页 | 系统设置 tab | 仅参数表单；无「上次全量巡检」运行时块（`no-runtime`） |
-| 线上 bundle | `curl` 静态资源 | 含 `设备中心`/`立即巡检`/`最近探测`；`看板` 仅出现在 legacy key 集合 |
-
-截图：
-
-- 设备中心概况：`.agent-bridge/evidence/t950-shots/devices.png`
-- 设备列表明细：`.agent-bridge/evidence/t950-shots/devices-list.png`
-- 设置页：`.agent-bridge/evidence/t950-shots/settings.png`
+- pytest：见 a；覆盖 retired 级联删除、非 retired 拒删、非管理员 403、删后同 client_id 重新签发
+- 真库：对 `quamm_res.db` 调用 `wirelog.delete_node(..., 'wlf4fd4fc2fed8ceae')`
+  - 结果：`deleted=True`，`cascade.applies=1`，`audits=31`
+  - 删后节点仅剩 `wl8e9a154c0e5b35f3`、`wleab973ba572f6e5b`
+  - apply id=4：`issued_node_id=None`，`token_cipher=None`，`token_prefix` 保留

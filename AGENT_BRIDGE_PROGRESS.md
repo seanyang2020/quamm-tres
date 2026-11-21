@@ -1,7 +1,7 @@
 # Quamm TRES 实现进度
 
-> 任务：t950 / t952 —— TRES 信息架构调整（去掉看板、设备中心默认、探测时间归位）  
-> task_id: t952
+> 任务：t955 —— COMRes 节点视图硬删 500 + 权限提示失真  
+> task_id: t955
 
 ## 状态：已完成（停住等审）
 
@@ -9,15 +9,17 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 一 菜单/默认页 | 去看板；「设备」→「设备中心」；默认落地；`#/board` 等重定向 | ✅ |
-| 二 看板迁移 | 顶部状态条（巡检时间/在线离线待检/立即巡检）+ 机型 chips | ✅ |
-| 三 最近探测 | 列表列 + 相对时间悬停绝对时间 + 自定义排序；编辑弹层只读上次探测 | ✅ |
-| 四 设置去重 | 系统设置仅参数；无运行时巡检状态块（原本即无，已核对） | ✅ |
-| 五 构建/测 | `npm run build` 0；pytest 135p/21f（基线同批） | ✅ |
-| 六 截图证据 | devices / devices-list / settings | ✅ |
+| 一 delete_node 级联 | 清空 `wl_client_apply.issued_node_id/token_cipher`，保留行；cascade 含 `applies` | ✅ |
+| 二 IntegrityError→409 | `WL_DELETE_CONFLICT`，detail 列残留表名 | ✅ |
+| 三 前端 | 删除按钮仅 admin；toast 展示后端 detail/message | ✅ |
+| 四 再申请 | 节点硬删后同 client_id 重新签发 | ✅ |
+| 五 pytest | `tests/test_wirelog_delete_node.py` 4 例 + apply 回归 11 passed | ✅ |
+| 六 真库 | `wlf4fd4fc2fed8ceae` 已删，剩 2 节点；apply token 已清空 | ✅ |
+
+## 提交
+
+- `0f5f9e0` / `0f5f9e09c9b31ee317d1ba32286e257bf0d210ee`
 
 ## 说明
 
-- 与 t948 同仓并行：IA 主体曾随 `d91cb8d` 一并入库；跟进提交 `a43fb7f`（hashchange + 证据）
-- `web/dist` 重建但不入库（`.gitignore`）
 - 停住等审
