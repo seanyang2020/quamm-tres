@@ -1,41 +1,49 @@
 ---
-task_id: t979
+task_id: t981
 ---
 
-# t979：设备中心串口按钮灰显 + 去掉写授权面板
+# t981：TRES 设备指纹接收/存储/展示 + 匹配 MAC→SN→IP
 
 ## a. 编译/构建
 
 - 命令：`cd web && npm run build`
 - 退出码：`0`
-- 关键结果：`✓ built in 4.86s`；产物 `web/dist/index.html`、`web/dist/assets/index-B66oPbsL.js`、`web/dist/assets/index-D6OiA4EK.css`
+- 关键结果：`✓ built in 3.89s`；产物 `web/dist/index.html`、`web/dist/assets/index-BpaA9ib2.js`、`web/dist/assets/index-DweI5MbN.css`
 
-- 命令：`.venv/bin/python -m pytest tests/test_serial_openable.py -q --tb=short`
+- 命令：`.venv/bin/python -m pytest tests/test_comres_fingerprint.py -q --tb=short`
 - 退出码：`0`
-- 关键结果：`8 passed`
+- 关键结果：`9 passed`
+
+- 命令：`.venv/bin/python -m pytest tests/test_comres_fingerprint.py tests/test_comres_bound.py tests/test_comres_reach.py -q --tb=no`
+- 退出码：`0`
+- 关键结果：`22 passed`
 
 - 命令：`.venv/bin/python -m pytest tests/ -q --tb=no`
-- 退出码：`1`
-- 关键结果：`172 passed, 21 failed`；失败集与基线同批（apply_flow / flash / mcp_http / prober_l3 / queue / registration）；本任务新增 8 passed，失败数仍为 21
+- 退出码：`1`（基线失败集）
+- 关键结果：`181 passed, 21 failed`；失败集与基线同批（apply_flow / flash / mcp_http / prober_l3 / queue / registration）；本任务新增 9 passed
 
 ## b. 改动文件清单
 
-- `app/domain/catalog.py`
-- `app/api/wirelog_router.py`
+- `app/models.py`
+- `app/migrations.py`
+- `app/domain/comres.py`
+- `app/domain/wirelog.py`
+- `app/api/comres_router.py`
 - `web/src/App.vue`
-- `tests/test_serial_openable.py`
+- `tests/test_comres_fingerprint.py`
+- `.agent-bridge/evidence/t981-shots/fp-drawer.png`
 - `AGENT_BRIDGE_EVIDENCE.md`
 - `AGENT_BRIDGE_PROGRESS.md`
-- `.agent-bridge/evidence/t979.md`
-- `.agent-bridge/evidence/t979_PROGRESS.md`
-- `.agent-bridge/evidence/t979-shots/device-serial-btns.png`
+- `.agent-bridge/evidence/t981.md`
+- `.agent-bridge/evidence/t981_PROGRESS.md`
 
 ## c. 版本/提交证据
 
 ```
-7834e4f / 7834e4f10546abbaf76b295b2b3c7d0bf9bd732b
-git status --short → 干净（功能提交后）
-git diff --stat HEAD~1..HEAD → 9 files, +370/-86
+0151105 / 0151105b3214078a0d3bc46afa9d8203f5af245d
+feat(comres): 接收存储展示设备指纹，匹配顺序改为 MAC→SN→IP
+git status --short → 仅残留无关 t979 evidence（未纳入本提交）
+git diff --stat HEAD~1..HEAD → 8 files, +796/-23
 ```
 
 Gerrit change：不适用。
@@ -45,10 +53,12 @@ Gerrit change：不适用。
 | 项 | 命令/操作 | 结果 |
 |---|---|---|
 | 前端构建 | `cd web && npm run build` | exit 0 |
-| 新单测 | `pytest tests/test_serial_openable.py -q` | 8 passed；exit 0 |
-| 全量 pytest | `pytest tests/ -q` | 172 passed, 21 failed；exit 1 |
+| 新单测 | `pytest tests/test_comres_fingerprint.py -q` | 9 passed；exit 0 |
+| 相关回归 | fingerprint+bound+reach | 22 passed；exit 0 |
+| 全量 pytest | `pytest tests/ -q` | 181 passed, 21 failed；exit 1 |
 | 服务重启 | `bash scripts/restart.sh` | units active；`/api/health` ok |
-| API 分布 | `GET /api/devices?limit=500`（admin cookie） | 25 台；`serial_openable` True=4 / False=21；`serial_ports` hist {0:20, 1:5} |
-| 真机按钮 | puppeteer 未分类表「串口」 | total=9, enabled=4, disabled=5；`is-disabled` + cursor `not-allowed` |
-| 写授权 UI | COMRes 节点详情 | `HAS_WRITE_GRANT_UI=false`（无「授予写权限」/「写授权」标题） |
-| 截图 | `.agent-bridge/evidence/t979-shots/device-serial-btns.png` | 设备中心操作列 |
+| 真机 register | `POST /api/comres/register` 带 fingerprint | DB 落库 `fp.v1`/`ok`；`shell_mac`/`shell_ip` 回填 |
+| resources | `GET /api/comres/resources` | `fp_verdict=ok`，`fingerprint.schema=fp.v1`，identity.mac 正确 |
+| 单查 | `GET /api/comres/ports/{node}/{slot}/fingerprint` | `hostname=t981-dut`（冒烟）/`t981-ui`（截图） |
+| 截图 | `.agent-bridge/evidence/t981-shots/fp-drawer.png` | 指纹抽屉：网卡/标识/系统/构建 |
+| 清理 | 删除测试 node/port/device | 已清理 |
