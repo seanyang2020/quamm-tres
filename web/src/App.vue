@@ -8,13 +8,19 @@ const pages = [
   { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
   { key: 'wirelog', label: 'COMRes' },
-  { key: 'packages', label: '客户端下载' },
   { key: 'settings', label: '设置' },
 ]
 const active = ref('devices')
 const LEGACY_BOARD_KEYS = new Set(['dashboard', 'board', '看板'])
 const settingsTab = ref('system')
 const schedulingTab = ref('leases')
+/** COMRes 子页签：nodes | pool | settings；默认节点视图 */
+const comresTab = ref('nodes')
+const COMRES_TABS = [
+  { key: 'nodes', label: '节点视图' },
+  { key: 'pool', label: '资源池视图' },
+  { key: 'settings', label: '设置' },
+]
 
 // ---- 认证状态 ----
 const booting = ref(true)
@@ -1531,6 +1537,20 @@ function packageDownloadHref(row) {
   return apiUrl(row.download_url || ('/api/packages/' + row.id + '/download'))
 }
 
+function switchComresTab(key) {
+  if (comresTab.value === key) return
+  comresTab.value = key
+  if (key === 'nodes') {
+    loadWlNodes()
+    loadComresResources()
+  } else if (key === 'pool') {
+    loadComresResources()
+  } else if (key === 'settings') {
+    loadPackages()
+    loadComresAuthSummary()
+  }
+}
+
 async function copySha256(row) {
   try {
     await navigator.clipboard.writeText(row.sha256 || '')
@@ -1844,6 +1864,7 @@ function jumpToDevice(deviceId) {
 
 function jumpToWlNode(nodeId) {
   active.value = 'wirelog'
+  comresTab.value = 'nodes'
   loadWlNodes()
   openWlDetail(nodeId)
 }
@@ -1876,8 +1897,17 @@ function switchPage(key) {
   }
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
-  else if (key === 'wirelog') { loadWlNodes(); loadComresResources() }
-  else if (key === 'packages') { loadPackages() }
+  else if (key === 'wirelog') {
+    if (comresTab.value === 'settings') {
+      loadPackages()
+      loadComresAuthSummary()
+    } else if (comresTab.value === 'pool') {
+      loadComresResources()
+    } else {
+      loadWlNodes()
+      loadComresResources()
+    }
+  }
   else if (key === 'settings') {
     loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback(); loadBuildServers()
     if (me.value && me.value.role === 'admin') loadScreenshotStats()
@@ -2883,7 +2913,7 @@ const legendRole = [
         </el-tabs>
       </div>
 
-      <!-- COMRes：节点视图 + 资源池（原 WireLog tab，key 仍为 wirelog） -->
+      <!-- COMRes：节点视图 / 资源池 / 设置（原 WireLog tab，key 仍为 wirelog） -->
       <div v-else-if="active === 'wirelog'">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px;flex-wrap:wrap">
           <h2 style="margin:0">COMRes</h2>
@@ -2900,15 +2930,30 @@ const legendRole = [
             <el-button size="small" type="primary" plain @click="openComresAuthDrawer">授权</el-button>
           </div>
         </div>
-        <el-alert v-if="wlNodesError" type="error" :closable="false" show-icon
+
+        <div class="comres-subtabs" role="tablist">
+          <button
+            v-for="t in COMRES_TABS"
+            :key="t.key"
+            type="button"
+            role="tab"
+            class="comres-subtab"
+            :class="{ 'is-active': comresTab === t.key }"
+            :aria-selected="comresTab === t.key"
+            @click="switchComresTab(t.key)"
+          >{{ t.label }}</button>
+        </div>
+
+        <el-alert v-if="comresTab === 'nodes' && wlNodesError" type="error" :closable="false" show-icon
                   :title="'节点列表：' + wlNodesError" style="margin-bottom:10px" />
-        <el-alert v-if="comresError" type="error" :closable="false" show-icon
+        <el-alert v-if="comresTab === 'pool' && comresError" type="error" :closable="false" show-icon
                   :title="'资源池：' + comresError" style="margin-bottom:10px" />
-        <el-alert v-if="wlDetailError" type="error" :closable="false" show-icon
+        <el-alert v-if="comresTab === 'nodes' && wlDetailError" type="error" :closable="false" show-icon
                   :title="'节点详情：' + wlDetailError" style="margin-bottom:10px" />
 
         <!-- 节点视图 -->
-        <el-card v-if="!wlDetail" style="margin-bottom:16px">
+        <template v-if="comresTab === 'nodes'">
+        <el-card v-if="!wlDetail" style="margin-bottom:16px" shadow="never" class="comres-panel">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>节点视图（/api/wirelog/nodes）</span>
@@ -2978,7 +3023,7 @@ const legendRole = [
           </p>
         </el-card>
 
-        <el-card v-else style="margin-bottom:16px">
+        <el-card v-else style="margin-bottom:16px" shadow="never" class="comres-panel">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center">
               <span>节点详情：{{ wlDetail.node_id }}</span>
@@ -3149,9 +3194,10 @@ const legendRole = [
             </el-col>
           </el-row>
         </el-card>
+        </template>
 
         <!-- 资源池视图：/api/comres/resources → allocated / bound / pool / inactive -->
-        <el-card>
+        <el-card v-else-if="comresTab === 'pool'" shadow="never" class="comres-panel">
           <template #header>
             <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
               <span>资源池视图（/api/comres/resources）
@@ -3265,6 +3311,121 @@ const legendRole = [
           </p>
         </el-card>
 
+        <!-- COMRes 设置：自动批准 / 清理 / 客户端下载 -->
+        <div v-else-if="comresTab === 'settings'">
+          <el-card shadow="never" class="comres-panel" style="margin-bottom:16px">
+            <template #header><span>COMRes 设置</span></template>
+            <div class="comres-settings-row">
+              <div>
+                <div style="font-weight:600;margin-bottom:4px">自动批准</div>
+                <div class="comres-muted" style="font-size:12px">关闭后客户端申请进入待审，需人工批准（授权抽屉同步）</div>
+              </div>
+              <el-switch :model-value="comresAutoApprove" @change="toggleComresAutoApprove" />
+            </div>
+            <div class="comres-settings-row" style="margin-top:16px;border-top:1px solid #ebeef5;padding-top:16px">
+              <div>
+                <div style="font-weight:600;margin-bottom:4px">清理无效资源</div>
+                <div class="comres-muted" style="font-size:12px">审计重复/失效资源后可执行清理（与资源池视图按钮相同）</div>
+              </div>
+              <el-button size="small" type="warning" plain :loading="comresPruneBusy"
+                         @click="runComresPrune">清理无效资源</el-button>
+            </div>
+          </el-card>
+
+          <el-card shadow="never" class="comres-panel" style="margin-bottom:16px">
+            <template #header>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+                <span>客户端下载</span>
+                <el-button size="small" :loading="packagesLoading" @click="loadPackages">刷新</el-button>
+              </div>
+            </template>
+            <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
+                      title="下载 standalone（ELSB）安装包；解压后双击 start_gui.pyw 或 start.cmd 启动，配置 TRES 地址与 token 即可自助注册" />
+            <el-alert v-if="packagesError" type="error" :closable="false" show-icon
+                      :title="'列表：' + packagesError" style="margin-bottom:10px" />
+
+            <div v-if="me.role === 'admin'" class="pkg-upload-box" style="margin-bottom:16px">
+              <div style="font-weight:600;margin-bottom:10px">上传安装包（仅管理员）</div>
+              <div class="pkg-upload-grid">
+                <div>
+                  <div class="comres-muted" style="font-size:12px;margin-bottom:4px">文件（zip / exe / msi）</div>
+                  <el-upload :auto-upload="false" :show-file-list="true" :limit="1"
+                             accept=".zip,.exe,.msi"
+                             :on-change="onPackageFileChange"
+                             :on-remove="() => { packageForm.file = null }">
+                    <el-button size="small">选择文件</el-button>
+                  </el-upload>
+                </div>
+                <div>
+                  <div class="comres-muted" style="font-size:12px;margin-bottom:4px">名称</div>
+                  <el-input v-model="packageForm.name" size="small" />
+                </div>
+                <div>
+                  <div class="comres-muted" style="font-size:12px;margin-bottom:4px">版本</div>
+                  <el-input v-model="packageForm.version" size="small" placeholder="0.33.0" />
+                </div>
+                <div>
+                  <div class="comres-muted" style="font-size:12px;margin-bottom:4px">平台</div>
+                  <el-select v-model="packageForm.platform" size="small" style="width:100%">
+                    <el-option label="Windows" value="Windows" />
+                    <el-option label="Linux" value="Linux" />
+                  </el-select>
+                </div>
+                <div>
+                  <div class="comres-muted" style="font-size:12px;margin-bottom:4px">渠道</div>
+                  <el-select v-model="packageForm.channel" size="small" style="width:100%">
+                    <el-option label="prod" value="prod" />
+                    <el-option label="beta" value="beta" />
+                  </el-select>
+                </div>
+                <div>
+                  <div class="comres-muted" style="font-size:12px;margin-bottom:4px">说明</div>
+                  <el-input v-model="packageForm.notes" size="small" placeholder="可选" />
+                </div>
+                <div class="pkg-upload-action">
+                  <el-button size="small" type="primary" plain :loading="packageUploadBusy" @click="uploadPackage">上传</el-button>
+                </div>
+              </div>
+            </div>
+
+            <el-table :data="packages" border size="small" stripe v-loading="packagesLoading">
+              <el-table-column prop="name" label="名称" min-width="100" />
+              <el-table-column prop="version" label="版本" width="100" />
+              <el-table-column prop="platform" label="平台" width="100" />
+              <el-table-column label="渠道" width="90">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.channel === 'prod' ? 'success' : 'warning'">{{ row.channel }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="100">
+                <template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template>
+              </el-table-column>
+              <el-table-column label="sha256" min-width="140">
+                <template #default="{ row }">
+                  <el-tooltip :content="row.sha256" placement="top">
+                    <el-button link type="primary" size="small" @click="copySha256(row)">{{ sha12(row.sha256) }}…</el-button>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
+              <el-table-column prop="uploaded_by" label="上传人" min-width="140" show-overflow-tooltip />
+              <el-table-column label="时间" min-width="170">
+                <template #default="{ row }">{{ formatLocal(row.uploaded_at) }}</template>
+              </el-table-column>
+              <el-table-column prop="download_count" label="下载次数" width="90" />
+              <el-table-column label="操作" width="160" fixed="right">
+                <template #default="{ row }">
+                  <el-button size="small" type="primary" plain tag="a"
+                             :href="packageDownloadHref(row)">下载</el-button>
+                  <el-button v-if="me.role === 'admin'" size="small" type="danger" plain
+                             @click="deletePackage(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!packages.length && !packagesLoading && !packagesError"
+                      description="还没有安装包，管理员可在上方上传" />
+          </el-card>
+        </div>
+
         <el-drawer v-model="comresAuthDrawer" title="COMRes 授权" size="520px" direction="rtl">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
             <div>
@@ -3329,99 +3490,6 @@ const legendRole = [
             </div>
           </div>
         </el-drawer>
-      </div>
-
-      <!-- 客户端下载（standalone / ELSB 安装包） -->
-      <div v-else-if="active === 'packages'">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px;flex-wrap:wrap">
-          <h2 style="margin:0">客户端下载</h2>
-          <el-button size="small" :loading="packagesLoading" @click="loadPackages">刷新</el-button>
-        </div>
-        <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
-                  title="下载 standalone（ELSB）安装包；解压后双击 start_gui.pyw 或 start.cmd 启动，配置 TRES 地址与 token 即可自助注册" />
-        <el-alert v-if="packagesError" type="error" :closable="false" show-icon
-                  :title="'列表：' + packagesError" style="margin-bottom:10px" />
-
-        <el-card v-if="me.role === 'admin'" style="margin-bottom:16px" shadow="never">
-          <template #header><span>上传安装包（仅管理员）</span></template>
-          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
-            <div>
-              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">文件（zip / exe / msi）</div>
-              <el-upload :auto-upload="false" :show-file-list="true" :limit="1"
-                         accept=".zip,.exe,.msi"
-                         :on-change="onPackageFileChange"
-                         :on-remove="() => { packageForm.file = null }">
-                <el-button size="small">选择文件</el-button>
-              </el-upload>
-            </div>
-            <div>
-              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">名称</div>
-              <el-input v-model="packageForm.name" size="small" style="width:120px" />
-            </div>
-            <div>
-              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">版本</div>
-              <el-input v-model="packageForm.version" size="small" placeholder="0.33.0" style="width:110px" />
-            </div>
-            <div>
-              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">平台</div>
-              <el-select v-model="packageForm.platform" size="small" style="width:110px">
-                <el-option label="Windows" value="Windows" />
-                <el-option label="Linux" value="Linux" />
-              </el-select>
-            </div>
-            <div>
-              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">渠道</div>
-              <el-select v-model="packageForm.channel" size="small" style="width:100px">
-                <el-option label="prod" value="prod" />
-                <el-option label="beta" value="beta" />
-              </el-select>
-            </div>
-            <div>
-              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">说明</div>
-              <el-input v-model="packageForm.notes" size="small" style="width:180px" placeholder="可选" />
-            </div>
-            <el-button size="small" type="primary" plain :loading="packageUploadBusy" @click="uploadPackage">上传</el-button>
-          </div>
-        </el-card>
-
-        <el-card shadow="never">
-          <template #header><span>安装包列表</span></template>
-          <el-table :data="packages" border size="small" stripe v-loading="packagesLoading">
-            <el-table-column prop="name" label="名称" min-width="100" />
-            <el-table-column prop="version" label="版本" width="100" />
-            <el-table-column prop="platform" label="平台" width="100" />
-            <el-table-column label="渠道" width="90">
-              <template #default="{ row }">
-                <el-tag size="small" :type="row.channel === 'prod' ? 'success' : 'warning'">{{ row.channel }}</el-tag>
-              </template>
-            </el-table-column>
-            <el-table-column label="大小" width="100">
-              <template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template>
-            </el-table-column>
-            <el-table-column label="sha256" min-width="140">
-              <template #default="{ row }">
-                <el-tooltip :content="row.sha256" placement="top">
-                  <el-button link type="primary" size="small" @click="copySha256(row)">{{ sha12(row.sha256) }}…</el-button>
-                </el-tooltip>
-              </template>
-            </el-table-column>
-            <el-table-column prop="uploaded_by" label="上传人" min-width="140" show-overflow-tooltip />
-            <el-table-column label="时间" min-width="170">
-              <template #default="{ row }">{{ formatLocal(row.uploaded_at) }}</template>
-            </el-table-column>
-            <el-table-column prop="download_count" label="下载次数" width="90" />
-            <el-table-column label="操作" width="160" fixed="right">
-              <template #default="{ row }">
-                <el-button size="small" type="primary" plain tag="a"
-                           :href="packageDownloadHref(row)">下载</el-button>
-                <el-button v-if="me.role === 'admin'" size="small" type="danger" plain
-                           @click="deletePackage(row)">删除</el-button>
-              </template>
-            </el-table-column>
-          </el-table>
-          <el-empty v-if="!packages.length && !packagesLoading && !packagesError"
-                    description="还没有安装包，管理员可在上方上传" />
-        </el-card>
       </div>
 
       <!-- 设置：系统 + 设备类型 + 通讯录 + SMTP + 介绍 + 审计 -->
@@ -4313,6 +4381,49 @@ const legendRole = [
 .intro-open { color: var(--el-color-primary); text-decoration: none; font-size: 13px; }
 .intro-open:hover { text-decoration: underline; }
 .form-hint { font-size: 12px; color: #909399; line-height: 1.5; margin-top: 4px; }
+/* COMRes 子页签：与统计卡同风格（浅色、12px 圆角） */
+.comres-subtabs {
+  display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 14px;
+}
+.comres-subtab {
+  flex: 0 0 auto; min-width: 96px; padding: 10px 16px;
+  border: 1px solid #e5e8ef; border-radius: 12px;
+  background: #fbfcfe; color: #111827; font-size: 13px; font-weight: 600;
+  cursor: pointer; line-height: 1.3;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 1px 3px rgba(16, 24, 40, .06);
+  transition: box-shadow .2s, border-color .2s, background-color .2s, transform .15s;
+}
+.comres-subtab:hover {
+  border-color: #bfdbfe; box-shadow: 0 2px 8px rgba(37, 99, 235, .10); transform: translateY(-1px);
+}
+.comres-subtab.is-active {
+  border-color: #2563eb; background: #eff6ff;
+  box-shadow: 0 0 0 1px #2563eb inset, 0 2px 8px rgba(37, 99, 235, .12);
+}
+.comres-panel {
+  --el-card-bg-color: #fbfcfe;
+  --el-card-border-color: #e5e8ef;
+  border-radius: 12px;
+  background: #fbfcfe;
+  border: 1px solid #e5e8ef;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+}
+.comres-settings-row {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.pkg-upload-box {
+  border: 1px solid #ebeef5; border-radius: 12px; padding: 12px 14px; background: #fff;
+}
+.pkg-upload-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+.pkg-upload-action { display: flex; align-items: end; }
+@media (max-width: 899px) {
+  .pkg-upload-grid { grid-template-columns: 1fr; }
+}
 /* COMRes：无串口资源 / 失效资源灰显 */
 .comres-muted { color: #c0c4cc; }
 .comres-no-serial { color: #c0c4cc; }
