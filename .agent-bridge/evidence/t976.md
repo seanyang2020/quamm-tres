@@ -31,18 +31,13 @@ task_id: t976
 
 ## c. 版本/提交证据
 
-f78b539 / f78b539a664bfd771f77d51bcb93f6a82cc235cb  ← 功能提交  
-0773062 / 0773062f1e883fdf9861e3fcf0d5df28ba23cf69  ← HEAD（证据）
+f78b539 / f78b539a664bfd771f77d51bcb93f6a82cc235cb  ← 功能提交
+09186f5 / 09186f5248d2a490beca7196c306a18b227f3bfd  ← HEAD（证据）
 
 ```
-git log -1 --oneline
-0773062 docs(evidence): t976 验收证据定稿
-
-git status --short
-（干净）
-
-git diff --stat f78b539^..f78b539
-8 files changed, 863 insertions(+)
+87ca8fc docs(evidence): t976 验收证据定稿
+git status --short → 干净（提交后）
+git diff --stat f78b539^..f78b539 → 8 files, +863
 ```
 
 Gerrit change：不适用。
