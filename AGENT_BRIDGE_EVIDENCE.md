@@ -1,47 +1,55 @@
 ---
-task_id: t969
+task_id: t976
 ---
 
-# t969：TRES 侧可达性探测（reach）与自检分口径
+# t976：TRES 客户端实例下载（wl_package）
 
 ## a. 编译/构建
 
 - 命令：`cd web && npm run build`
 - 退出码：`0`
-- 关键结果：`built in 4.41s`；产物 `web/dist/index.html`、`web/dist/assets/index-BFzzaYKL.js`、`web/dist/assets/index-14VofpKn.css`
+- 关键结果：`built in 3.76s`；产物 `web/dist/index.html`、`web/dist/assets/index-hY5jihDP.js`、`web/dist/assets/index-14VofpKn.css`
 
-- 命令：`.venv/bin/python -m pytest tests/test_comres_reach.py -q --tb=short`
+- 命令：`.venv/bin/python -m pytest tests/test_packages.py -q --tb=short`
 - 退出码：`0`
-- 关键结果：`10 passed`
+- 关键结果：`7 passed`
 
 ## b. 改动文件清单
 
 - `app/models.py`
-- `app/migrations.py`
 - `app/config.py`
-- `app/domain/comres.py`
-- `app/api/comres_router.py`
-- `app/api/wirelog_router.py`
-- `app/workers/main.py`
+- `app/migrations.py`
+- `app/domain/packages.py`
+- `app/api/packages_router.py`
+- `app/main.py`
 - `web/src/App.vue`
-- `tests/test_comres_reach.py`
+- `tests/test_packages.py`
 - `AGENT_BRIDGE_EVIDENCE.md`
 - `AGENT_BRIDGE_PROGRESS.md`
-- `.agent-bridge/evidence/t969.md`
-- `.agent-bridge/evidence/t969_PROGRESS.md`
+- `.agent-bridge/evidence/t976.md`
+- `.agent-bridge/evidence/t976_PROGRESS.md`
 
 ## c. 版本/提交证据
 
-575a461 / 575a461762de5c4c589d48267b647d0f5555527b  ← 可达性改动
-a88232b / a88232b4d260333ca29b68f7f6230179034d70ab  ← HEAD（证据）
+```
+f78b539 feat(packages): 新增客户端安装包上传/下载分发
+f78b539a664bfd771f77d51bcb93f6a82cc235cb
+```
 
-Gerrit change：不适用。
+- `git log -1 --oneline`：`a23cc0e docs(evidence): 回填 t976 客户端下载验收证据`
+- `git status --short`：干净
+- 功能提交：`f78b539` / `f78b539a664bfd771f77d51bcb93f6a82cc235cb`
+- 证据提交：`a23cc0e` / `a23cc0e18ba4cd13ba38f44259a3e87f3a4d9ac5`
+- Gerrit change：不适用
 
 ## d. 验证/自测
 
 | 项 | 命令/操作 | 结果 |
 |---|---|---|
-| 单测 | `pytest tests/test_comres_reach.py -q` | 10 passed；exit 0 |
+| 单测 | `pytest tests/test_packages.py -q` | 7 passed；exit 0（上传/列表/下载计数/删除权限/413/扩展名/路径穿越/迁移幂等/channel） |
 | 前端构建 | `cd web && npm run build` | exit 0 |
-| 真机可达 | `POST /api/comres/reachability` | `checked=6 ok=5`；`wl8e9a154c0e5b35f3/ttyUSB0` → `reach_ok=false, reach_error=no_route`；COM16/21/4/27/24 → ok |
-| 打开串口 | WS `/api/wirelog/nodes/wl8e9a154c0e5b35f3/ports/1/shell` | 立刻 `{"type":"error","code":"UNREACHABLE","message":"…（no_route）：tcp://172.16.60.122:9001…"}` |
+| 真机上传 | admin cookie `POST /api/packages`（`git archive` → `elsb-0.33.0.zip`，version=0.33.0，platform=Windows） | 200；`id=1`，`size_bytes=6072528`，`sha256=bba3c3d2…` |
+| 真机列表 | user cookie `GET /api/packages` | `items` 含上述包；`download_count=0` |
+| 真机下载 | user cookie `GET /api/packages/1/download` | 200；`Content-Disposition: attachment`；`download_count` → 1 |
+| 真机权限 | user `POST` / `DELETE` | 均为 403「仅管理员可用」 |
+| 清理 | admin `DELETE /api/packages/1` | 200；再 `GET /api/packages` → `{"items":[]}`；无残留文件 |
