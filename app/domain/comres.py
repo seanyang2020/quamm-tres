@@ -855,6 +855,19 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
     if device is None:
         if drifted and prev_device_id:
             return _keep_prev("identity_drift_no_match")
+        if port.get("usb_serial") and not sn and not mac:
+            # 上报方明确区分了「适配器SN」，但这次没拿到设备身份：不造设备、不保留旧占位
+            if prev_device_id:
+                _retire_superseded_placeholder(session, prev_device_id)
+                binding.bound_device_id = None
+                binding.allocated_by = None
+                binding.allocated_expire = None
+                session.flush()
+            _audit(session, binding.node_id, "comres_match", result="unknown_device",
+                   detail={"com": binding.com_name, "com_key": binding.com_key,
+                           "usb_serial": port.get("usb_serial")})
+            return {"basis": "unknown_device", "device_id": None,
+                    "allocated": False, "bound": False}
         if not sn and not mac:
             _audit(session, binding.node_id, "comres_match",
                    result="miss", detail={

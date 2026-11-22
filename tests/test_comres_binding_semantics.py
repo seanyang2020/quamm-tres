@@ -78,3 +78,31 @@ def test_rebind_when_identity_improves(session):
     assert b.bound_device_id == dut.device_id
     retired = session.get(Device, placeholder)
     assert retired.status == "retired"
+
+
+
+@pytest.fixture
+def session(db):
+    s = db.session()
+    migrate(s)
+    yield s
+    s.close()
+
+
+def test_unknown_device_with_only_usb_serial(session):
+    p = wirelog.provision_host(session, display_name="pc", operator="t")
+    r = comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "172.16.10.25",
+        "ports": [{
+            "com": "COM16", "endpoint": "tcp://172.16.10.25:9210",
+            "health_state": "online", "sn": "0403:6001:AI8ID21CA",
+            "usb_serial": "0403:6001:AI8ID21CA",
+        }],
+    })
+    port = r["ports"][0]
+    assert port["bound"] is False
+    assert port["bound_device_id"] is None
+    assert session.query(Device).filter(Device.sn == "0403:6001:AI8ID21CA").count() == 0
+    b = session.query(WireLogPortBinding).filter_by(
+        node_id=p["node_id"], com_name="COM16").one()
+    assert b.bound_device_id is None
