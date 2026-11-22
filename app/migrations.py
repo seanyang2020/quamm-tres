@@ -126,6 +126,11 @@ _WL_REACH_COLUMNS = {
     "reach_checked_at": "DATETIME",
 }
 
+# t981：standalone 设备指纹（fp.v1 JSON，可空）
+_WL_FP_COLUMNS = {
+    "fingerprint_json": "TEXT",
+}
+
 # wl_node：管理面可复制 node_token（Fernet 密文，t942）
 _WL_NODE_COLUMNS = {
     "token_cipher": "TEXT",
@@ -172,6 +177,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "wl_port_binding", _WL_PORT_COLUMNS)
     _ensure_columns(session, "wl_port_binding", _WL_COMRES_COLUMNS)
     _ensure_columns(session, "wl_port_binding", _WL_REACH_COLUMNS)
+    _ensure_columns(session, "wl_port_binding", _WL_FP_COLUMNS)
     _ensure_columns(session, "wl_node", _WL_NODE_COLUMNS)
     _ensure_comres_unique_index(session)
     # t942：先清理历史重复，再补 (node_id, com_name) 唯一索引

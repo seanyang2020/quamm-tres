@@ -669,7 +669,7 @@ def get_node(session, node_id):
         ),
         "caps": public_caps(node),
         "config": node.config_json,
-        "ports": [_port_occupancy_fields(b) | {
+        "ports": [_port_occupancy_fields(b) | _port_fingerprint_fields(b) | {
             "slot": b.slot, "tty": b.tty_name, "baud": b.baud,
             "endpoint": b.endpoint, "com_name": b.com_name,
             "probe": _json_or_none(b.probe_json),
@@ -691,6 +691,17 @@ def _port_occupancy_fields(binding) -> dict:
         "bound": view["bound"],
         "allocated_by": view["allocated_by"],
         "allocated_expire": view["allocated_expire"],
+    }
+
+
+def _port_fingerprint_fields(binding) -> dict:
+    """节点详情端口项补 fingerprint / fp_verdict（t981）。"""
+    fp = _json_or_none(binding.fingerprint_json)
+    if not isinstance(fp, dict):
+        fp = None
+    return {
+        "fingerprint": fp,
+        "fp_verdict": fp.get("verdict") if isinstance(fp, dict) else None,
     }
 
 

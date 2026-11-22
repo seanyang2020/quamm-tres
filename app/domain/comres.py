@@ -238,31 +238,70 @@ def _renew_auto_lease_if_needed(binding: WireLogPortBinding) -> None:
         _mark_allocated(binding, by=binding.allocated_by)
 
 
+def _fp_identity(port: dict) -> dict:
+    """从 port.fingerprint.identity 取字典；缺失返回空 dict。"""
+    fp = port.get("fingerprint")
+    if not isinstance(fp, dict):
+        return {}
+    ident = fp.get("identity")
+    return ident if isinstance(ident, dict) else {}
+
+
 def _match_device(session: Session, port: dict, local_ip: str | None):
-    """按 SN > MAC > IP 优先级匹配 device。返回 (device|None, basis)。"""
-    sn = (port.get("sn") or "").strip()
-    if sn:
-        device = session.query(Device).filter(Device.sn == sn).one_or_none()
+    """按 MAC → SN → IP 优先级匹配 device。返回 (device|None, basis)。
+
+    候选顺序：fingerprint.identity.mac → port.mac/shell_mac → identity.sn →
+    port.sn → identity.ip / port.ip / shell_ip / local_ip / endpoint host。
+    来自 fingerprint.identity 的命中 basis 为 fp_mac / fp_sn / fp_ip。
+    """
+    ident = _fp_identity(port)
+
+    fp_mac = (ident.get("mac") or "").strip().lower()
+    if fp_mac:
+        device = session.query(Device).filter(Device.mac.ilike(fp_mac)).one_or_none()
         if device is not None:
-            return device, "sn"
+            return device, "fp_mac"
 
     mac = (port.get("mac") or port.get("shell_mac") or "").strip().lower()
-    if mac:
+    if mac and mac != fp_mac:
         device = session.query(Device).filter(Device.mac.ilike(mac)).one_or_none()
         if device is not None:
             return device, "mac"
 
-    ip = (port.get("ip") or port.get("shell_ip") or local_ip or "").strip()
-    # endpoint host 也可作 IP 匹配候选
-    if not ip and port.get("endpoint"):
-        try:
-            ip, _ = parse_endpoint(str(port["endpoint"]))
-        except SerialConfigError:
-            ip = ""
-    if ip:
-        device = session.query(Device).filter(Device.ip == ip).one_or_none()
+    fp_sn = (ident.get("sn") or "").strip()
+    if fp_sn:
+        device = session.query(Device).filter(Device.sn == fp_sn).one_or_none()
         if device is not None:
-            return device, "ip"
+            return device, "fp_sn"
+
+    sn = (port.get("sn") or "").strip()
+    if sn and sn != fp_sn:
+        device = session.query(Device).filter(Device.sn == sn).one_or_none()
+        if device is not None:
+            return device, "sn"
+
+    fp_ip = (ident.get("ip") or "").strip()
+    port_ip = (port.get("ip") or port.get("shell_ip") or "").strip()
+    fallback_ip = (local_ip or "").strip()
+    endpoint_ip = ""
+    if port.get("endpoint"):
+        try:
+            endpoint_ip, _ = parse_endpoint(str(port["endpoint"]))
+            endpoint_ip = (endpoint_ip or "").strip()
+        except SerialConfigError:
+            endpoint_ip = ""
+
+    # IP 候选：identity.ip 优先（fp_ip），否则 port/local/endpoint（ip）
+    if fp_ip:
+        device = session.query(Device).filter(Device.ip == fp_ip).one_or_none()
+        if device is not None:
+            return device, "fp_ip"
+
+    for cand in (port_ip, fallback_ip, endpoint_ip):
+        if cand and cand != fp_ip:
+            device = session.query(Device).filter(Device.ip == cand).one_or_none()
+            if device is not None:
+                return device, "ip"
 
     return None, "miss"
 
@@ -476,22 +515,130 @@ def _upsert_comres_binding(session, node: WireLogNode, port: dict,
         binding.health_state = "online"
     if port.get("probe") is not None:
         binding.probe_json = json.dumps(port["probe"], ensure_ascii=False)[:8000]
+    # 顶层 mac/ip 仍按既有口径写入；fingerprint.identity 仅在 shell_* 为空时回填
     if port.get("shell_mac") or port.get("mac"):
         binding.shell_mac = str(port.get("shell_mac") or port.get("mac")).strip().lower()
     if port.get("shell_ip") or port.get("ip"):
         binding.shell_ip = str(port.get("shell_ip") or port.get("ip")).strip()
     if "shell_reachable" in port:
         binding.shell_reachable = bool(port["shell_reachable"])
+    _persist_fingerprint(session, binding, port)
+    _enrich_port_from_fingerprint(port)
     binding.last_checked_at = utcnow()
     return binding
 
 
 def _port_identity(port: dict) -> tuple[str | None, str | None, str | None]:
-    """从 port 提取 (sn, mac, ip)；缺失为 None，不臆造。"""
-    sn = (port.get("sn") or "").strip() or None
-    mac = (port.get("mac") or port.get("shell_mac") or "").strip().lower() or None
-    ip = (port.get("ip") or port.get("shell_ip") or "").strip() or None
+    """从 port 提取 (sn, mac, ip)；优先 fingerprint.identity，缺失为 None。"""
+    ident = _fp_identity(port)
+    sn = (ident.get("sn") or port.get("sn") or "").strip() or None
+    mac = (ident.get("mac") or port.get("mac") or port.get("shell_mac") or "").strip().lower() or None
+    ip = (ident.get("ip") or port.get("ip") or port.get("shell_ip") or "").strip() or None
     return sn, mac, ip
+
+
+def _enrich_port_from_fingerprint(port: dict) -> None:
+    """兼容旧字段：identity 有值时回填 port.sn/mac/ip（仅原值为空时）。"""
+    ident = _fp_identity(port)
+    if not ident:
+        return
+    for key in ("sn", "mac", "ip"):
+        cur = (port.get(key) or "").strip()
+        if cur:
+            continue
+        val = (ident.get(key) or "").strip()
+        if not val:
+            continue
+        port[key] = val.lower() if key == "mac" else val
+
+
+def _fp_leaf_values(obj, prefix: str = "") -> dict[str, str]:
+    """扁平化 fingerprint 叶子字符串；用于审计 cleared_fields。"""
+    out: dict[str, str] = {}
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            path = f"{prefix}.{k}" if prefix else str(k)
+            if isinstance(v, (dict, list)):
+                out.update(_fp_leaf_values(v, path))
+            elif v is None:
+                continue
+            else:
+                s = str(v).strip()
+                if s:
+                    out[path] = s
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            path = f"{prefix}[{i}]"
+            if isinstance(v, (dict, list)):
+                out.update(_fp_leaf_values(v, path))
+            elif v is None:
+                continue
+            else:
+                s = str(v).strip()
+                if s:
+                    out[path] = s
+    return out
+
+
+def _fp_cleared_fields(old_fp: dict | None, new_fp: dict | None) -> list[str]:
+    """返回从有值变为空的字段路径（避免审计写全文）。"""
+    old_leaves = _fp_leaf_values(old_fp or {})
+    new_leaves = _fp_leaf_values(new_fp or {})
+    return sorted(k for k in old_leaves if k not in new_leaves)
+
+
+def _parse_fingerprint_json(raw: str | None):
+    if not raw:
+        return None
+    try:
+        val = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    return val if isinstance(val, dict) else None
+
+
+def _persist_fingerprint(session: Session, binding: WireLogPortBinding,
+                         port: dict) -> None:
+    """带 fingerprint 则落库；无则保留旧值。identity 回填 shell_*（仅空时）。"""
+    fp = port.get("fingerprint")
+    if fp is None:
+        return
+    if not isinstance(fp, dict):
+        return
+
+    new_json = json.dumps(fp, ensure_ascii=False)
+    if len(new_json) > 64000:
+        new_json = new_json[:64000]
+    old_raw = binding.fingerprint_json
+    if old_raw == new_json:
+        # 仍尝试回填 shell_*（可能此前未落）
+        _backfill_shell_from_identity(binding, fp)
+        return
+
+    old_fp = _parse_fingerprint_json(old_raw)
+    cleared = _fp_cleared_fields(old_fp, fp)
+    binding.fingerprint_json = new_json
+    _backfill_shell_from_identity(binding, fp)
+    _audit(session, binding.node_id, "comres_fingerprint_update",
+           result="ok", detail={
+               "com": binding.com_name,
+               "com_key": binding.com_key,
+               "slot": binding.slot,
+               "first": old_raw is None,
+               "cleared_fields": cleared,
+               "verdict": fp.get("verdict"),
+               "schema": fp.get("schema"),
+           })
+
+
+def _backfill_shell_from_identity(binding: WireLogPortBinding, fp: dict) -> None:
+    ident = fp.get("identity") if isinstance(fp.get("identity"), dict) else {}
+    mac = (ident.get("mac") or "").strip().lower()
+    ip = (ident.get("ip") or "").strip()
+    if mac and not binding.shell_mac:
+        binding.shell_mac = mac
+    if ip and not binding.shell_ip:
+        binding.shell_ip = ip
 
 
 def _fill_device_missing(device: Device, port: dict) -> list[str]:
@@ -571,6 +718,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             "bound": True,
         }
 
+    _enrich_port_from_fingerprint(port)
     sn, mac, _ip = _port_identity(port)
     device, basis = _match_device(session, port, local_ip)
 
@@ -629,7 +777,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
     binding.bound_device_id = device.device_id
     _mark_allocated(binding, by=f"auto:{basis}")
     # sn/mac 路径记 comres_device_register；纯 IP 命中仍走 comres_match
-    if basis in ("sn", "mac") or filled:
+    if basis in ("sn", "mac", "fp_sn", "fp_mac") or filled:
         _audit(session, binding.node_id, "comres_device_register",
                result="ok", detail={
                    "com": binding.com_name, "com_key": binding.com_key,
@@ -969,10 +1117,46 @@ def _resource_item(b: WireLogPortBinding, node: WireLogNode | None, *,
         "reach_checked_at": (
             b.reach_checked_at.isoformat() if b.reach_checked_at else None
         ),
+        "fingerprint": _parse_fingerprint_json(b.fingerprint_json),
+        "fp_verdict": None,
     }
+    fp = item["fingerprint"]
+    if isinstance(fp, dict):
+        item["fp_verdict"] = fp.get("verdict")
+        # 便于资源池 sn/mac 列：优先 identity，其次 shell_*
+        ident = fp.get("identity") if isinstance(fp.get("identity"), dict) else {}
+        if not item.get("sn"):
+            item["sn"] = (ident.get("sn") or None)
+        if not item.get("mac"):
+            item["mac"] = (ident.get("mac") or b.shell_mac or None)
+        if not item.get("ip"):
+            item["ip"] = (ident.get("ip") or b.shell_ip or None)
+    else:
+        if b.shell_mac:
+            item["mac"] = b.shell_mac
+        if b.shell_ip:
+            item["ip"] = b.shell_ip
     if inactive:
         item["inactive_reason"] = _inactive_reason(b, node)
     return item
+
+
+def get_port_fingerprint(session: Session, node_id: str, slot: int) -> dict:
+    """单端口指纹查询；无指纹时 fingerprint/fp_verdict 为 null。"""
+    binding = (session.query(WireLogPortBinding)
+               .filter_by(node_id=node_id, slot=int(slot)).one_or_none())
+    if binding is None:
+        raise DomainError("COMRES_PORT_NOT_FOUND",
+                          f"端口不存在: {node_id}/{slot}")
+    fp = _parse_fingerprint_json(binding.fingerprint_json)
+    return {
+        "ok": True,
+        "node_id": node_id,
+        "slot": int(slot),
+        "com": binding.com_name,
+        "fingerprint": fp,
+        "fp_verdict": fp.get("verdict") if isinstance(fp, dict) else None,
+    }
 
 
 def _classify_reach_error(exc: BaseException) -> str:

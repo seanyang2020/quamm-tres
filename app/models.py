@@ -700,6 +700,9 @@ class WireLogPortBinding(Base):
     reach_error: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reach_checked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
+    # t981：standalone 设备指纹（fp.v1 JSON；无上报时保留旧值）
+    fingerprint_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     __table_args__ = (
         Index("uq_wl_port", "node_id", "slot", unique=True),
         # COMRes Q5：同 node 下 ip:tcp_port 唯一；不同 node 可共存。SQLite 允许多 NULL。

@@ -1180,6 +1180,12 @@ const comresReachBusy = ref(false)
 const comresShowInactiveOnly = ref(false)
 const comresPruneBusy = ref(false)
 
+// t981：设备指纹抽屉
+const fpDrawer = ref(false)
+const fpDrawerTitle = ref('设备指纹')
+const fpDrawerData = ref(null) // { fingerprint, fp_verdict, node_id, slot, com }
+const fpDrawerLoading = ref(false)
+
 // COMRes 授权抽屉（客户端自助申请审批）
 const comresAuthDrawer = ref(false)
 const comresAuthLoading = ref(false)
@@ -1398,6 +1404,70 @@ function comresReachLabel(row) {
   const text = map[err] || ('✗ ' + err)
   const tip = (row.endpoint || '') + ' · ' + err
   return { text, ok: false, tip }
+}
+
+function portHasFingerprint(row) {
+  return !!(row && row.fingerprint && typeof row.fingerprint === 'object')
+}
+
+function fpVerdictMeta(verdict) {
+  const v = (verdict || '').toLowerCase()
+  if (v === 'ok') return { text: 'ok', type: 'success' }
+  if (v === 'partial') return { text: 'partial', type: 'warning' }
+  if (v === 'failed') return { text: 'failed', type: 'danger' }
+  return { text: verdict || '—', type: 'info' }
+}
+
+function fpPrimaryIface(fp) {
+  if (!fp || typeof fp !== 'object') return null
+  const ident = fp.identity || {}
+  return ident.mac_iface || ident.ip_iface || null
+}
+
+function fpNetRows(fp) {
+  if (!fp || !Array.isArray(fp.net)) return []
+  const primary = fpPrimaryIface(fp)
+  return fp.net.map((n) => ({
+    ...n,
+    primary: !!(primary && n && n.iface === primary),
+  }))
+}
+
+async function openFingerprintDrawer(row) {
+  if (!row) return
+  const nodeId = row.node_id
+  const slot = row.slot
+  const titleBits = [row.com || row.com_name || '', nodeId, slot != null ? '#' + slot : '']
+    .filter(Boolean)
+  fpDrawerTitle.value = '设备指纹 · ' + titleBits.join(' ')
+  fpDrawerData.value = {
+    node_id: nodeId,
+    slot,
+    com: row.com || row.com_name,
+    fingerprint: row.fingerprint || null,
+    fp_verdict: row.fp_verdict || (row.fingerprint && row.fingerprint.verdict) || null,
+  }
+  fpDrawer.value = true
+  // 有 node/slot 时再拉一次单查，保证原样 JSON
+  if (nodeId != null && slot != null && !portHasFingerprint(row)) {
+    return
+  }
+  if (nodeId == null || slot == null) return
+  fpDrawerLoading.value = true
+  try {
+    const r = await api(`/api/comres/ports/${encodeURIComponent(nodeId)}/${encodeURIComponent(slot)}/fingerprint`)
+    if (r && r.fingerprint) {
+      fpDrawerData.value = {
+        ...fpDrawerData.value,
+        fingerprint: r.fingerprint,
+        fp_verdict: r.fp_verdict || (r.fingerprint && r.fingerprint.verdict) || null,
+      }
+    }
+  } catch (e) {
+    // 抽屉已用行内数据，单查失败不阻断
+  } finally {
+    fpDrawerLoading.value = false
+  }
 }
 
 async function loadComresResources() {
@@ -3069,6 +3139,14 @@ const legendRole = [
                 </el-tooltip>
               </template>
             </el-table-column>
+            <el-table-column label="指纹" width="88">
+              <template #default="{ row }">
+                <el-tag v-if="row.fp_verdict" size="small" :type="fpVerdictMeta(row.fp_verdict).type">
+                  {{ fpVerdictMeta(row.fp_verdict).text }}
+                </el-tag>
+                <span v-else class="comres-muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="allocated" width="90">
               <template #default="{ row }">
                 <el-tag size="small" :type="portAllocated(row) ? 'warning' : 'info'">
@@ -3102,8 +3180,15 @@ const legendRole = [
             </el-table-column>
             <el-table-column prop="tty" label="tty" min-width="100" />
             <el-table-column prop="baud" label="波特" width="80" />
-            <el-table-column label="操作" width="140" fixed="right">
+            <el-table-column label="操作" width="200" fixed="right">
               <template #default="{ row }">
+                <el-tooltip :content="portHasFingerprint(row) ? '查看设备指纹' : '该端口未上报指纹'" placement="top">
+                  <span style="display:inline-block">
+                    <el-button size="small" type="primary" link
+                               :disabled="!portHasFingerprint(row)"
+                               @click="openFingerprintDrawer(row)">设备信息</el-button>
+                  </span>
+                </el-tooltip>
                 <template v-if="portCanOpen(row)">
                   <el-button size="small" type="primary" link @click="openWlShell(row)">打开串口</el-button>
                 </template>
@@ -3216,6 +3301,14 @@ const legendRole = [
                 </el-tooltip>
               </template>
             </el-table-column>
+            <el-table-column label="指纹" width="88">
+              <template #default="{ row }">
+                <el-tag v-if="row.fp_verdict" size="small" :type="fpVerdictMeta(row.fp_verdict).type">
+                  {{ fpVerdictMeta(row.fp_verdict).text }}
+                </el-tag>
+                <span v-else class="comres-muted">—</span>
+              </template>
+            </el-table-column>
             <el-table-column label="原因" min-width="110">
               <template #default="{ row }">
                 <span v-if="row.inactive" class="comres-muted">{{ comresInactiveLabel(row) }}</span>
@@ -3259,8 +3352,15 @@ const legendRole = [
             <el-table-column label="mac" min-width="120">
               <template #default="{ row }">{{ row.mac || '—' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="120" fixed="right">
+            <el-table-column label="操作" width="200" fixed="right">
               <template #default="{ row }">
+                <el-tooltip :content="portHasFingerprint(row) ? '查看设备指纹' : '该端口未上报指纹'" placement="top">
+                  <span style="display:inline-block">
+                    <el-button size="small" type="primary" link
+                               :disabled="!portHasFingerprint(row)"
+                               @click="openFingerprintDrawer(row)">设备信息</el-button>
+                  </span>
+                </el-tooltip>
                 <el-button v-if="portCanOpen(row)" size="small" type="primary" link
                            @click="openWlShell(row)">打开串口</el-button>
                 <span v-else class="comres-muted">无串口资源</span>
@@ -3270,7 +3370,7 @@ const legendRole = [
           <el-empty v-if="!comresAllRows.length && !comresLoading && !comresError"
                     description="暂无 COMRes 资源" />
           <p class="comres-muted" style="font-size:12px;margin:8px 0 0">
-            自检=节点本地探测；可达=TRES 到 endpoint 的连通性；不可达时打开会失败。可分配池仅含已授权节点端口。
+            自检=节点本地探测；可达=TRES 到 endpoint 的连通性；指纹=standalone 上报的设备指纹（fp.v1）。可分配池仅含已授权节点端口。
           </p>
         </el-card>
 
@@ -3388,6 +3488,107 @@ const legendRole = [
                       description="还没有安装包，管理员可在上方上传" />
           </el-card>
         </div>
+
+        <el-drawer v-model="fpDrawer" :title="fpDrawerTitle" size="560px" direction="rtl">
+          <div v-loading="fpDrawerLoading">
+            <template v-if="fpDrawerData && fpDrawerData.fingerprint">
+              <div class="fp-meta" style="margin-bottom:12px">
+                <el-tag size="small" :type="fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).type">
+                  {{ fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).text }}
+                </el-tag>
+                <span class="comres-muted" style="font-size:12px;margin-left:8px">
+                  {{ fpDrawerData.fingerprint.schema || 'fp.v1' }}
+                  · {{ fpDrawerData.fingerprint.pattern_id || '—' }}
+                  · {{ fpDrawerData.fingerprint.collected_at || '—' }}
+                </span>
+              </div>
+
+              <el-card shadow="never" class="fp-section-card">
+                <template #header><span>网卡</span></template>
+                <el-table :data="fpNetRows(fpDrawerData.fingerprint)" size="small" border>
+                  <el-table-column label="接口" min-width="100">
+                    <template #default="{ row }">
+                      {{ row.iface || '—' }}
+                      <el-tag v-if="row.primary" size="small" type="success" style="margin-left:4px">主</el-tag>
+                    </template>
+                  </el-table-column>
+                  <el-table-column prop="mac" label="MAC" min-width="140" show-overflow-tooltip />
+                  <el-table-column prop="ip" label="IP" min-width="120" show-overflow-tooltip />
+                  <el-table-column label="up" width="60">
+                    <template #default="{ row }">{{ row.up === true ? '是' : (row.up === false ? '否' : '—') }}</template>
+                  </el-table-column>
+                </el-table>
+                <el-empty v-if="!fpNetRows(fpDrawerData.fingerprint).length" description="无网卡信息" :image-size="48" />
+              </el-card>
+
+              <el-card shadow="never" class="fp-section-card">
+                <template #header><span>标识</span></template>
+                <el-form label-width="100px" size="small" class="fp-form">
+                  <el-form-item label="SN">
+                    <span>{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.sn) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="指纹判定">
+                    <el-tag size="small" :type="fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).type">
+                      {{ fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).text }}
+                    </el-tag>
+                  </el-form-item>
+                  <el-form-item label="主 MAC">
+                    <span>{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.mac) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="主 IP">
+                    <span>{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.ip) || '—' }}</span>
+                  </el-form-item>
+                </el-form>
+              </el-card>
+
+              <el-card shadow="never" class="fp-section-card">
+                <template #header><span>系统</span></template>
+                <el-form label-width="100px" size="small" class="fp-form">
+                  <el-form-item label="OS">
+                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.os) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="内核">
+                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.kernel) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="主机名">
+                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.hostname) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="项目">
+                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.project) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="型号">
+                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.model) || '—' }}</span>
+                  </el-form-item>
+                </el-form>
+              </el-card>
+
+              <el-card shadow="never" class="fp-section-card">
+                <template #header><span>构建</span></template>
+                <el-form label-width="100px" size="small" class="fp-form">
+                  <el-form-item label="build_info">
+                    <span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.build_info) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="proc_version">
+                    <span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.proc_version) || '—' }}</span>
+                  </el-form-item>
+                  <el-form-item label="uname">
+                    <span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.uname) || '—' }}</span>
+                  </el-form-item>
+                </el-form>
+              </el-card>
+
+              <el-collapse>
+                <el-collapse-item title="原始输出（raw + errors）" name="raw">
+                  <pre class="fp-raw mono">{{ JSON.stringify({
+                    raw: fpDrawerData.fingerprint.raw || null,
+                    errors: fpDrawerData.fingerprint.errors || [],
+                  }, null, 2) }}</pre>
+                </el-collapse-item>
+              </el-collapse>
+            </template>
+            <el-empty v-else description="该端口未上报指纹" />
+          </div>
+        </el-drawer>
 
         <el-drawer v-model="comresAuthDrawer" title="COMRes 授权" size="520px" direction="rtl">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
@@ -4398,6 +4599,33 @@ const legendRole = [
   padding: 12px;
   margin-bottom: 10px;
   background: var(--el-fill-color-blank, #fff);
+}
+/* t981：设备指纹抽屉 */
+.fp-section-card {
+  --el-card-bg-color: #fbfcfe;
+  --el-card-border-color: #e5e8ef;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  background: #fbfcfe;
+  border: 1px solid #e5e8ef;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
+}
+.fp-form .el-form-item { margin-bottom: 8px; }
+.fp-form .el-form-item__label { color: #6b7280; }
+.fp-raw {
+  margin: 0; padding: 10px 12px; max-height: 280px; overflow: auto;
+  background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 8px;
+  white-space: pre-wrap; word-break: break-all; font-size: 12px;
+}
+@media (max-width: 640px) {
+  .fp-form { --el-form-label-width: 80px; }
+  .fp-form .el-form-item {
+    display: block;
+  }
+  .fp-form .el-form-item__label {
+    display: block; text-align: left; padding: 0 0 4px; line-height: 1.4;
+  }
+  .fp-form .el-form-item__content { margin-left: 0 !important; }
 }
 
 </style>

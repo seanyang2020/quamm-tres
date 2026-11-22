@@ -86,6 +86,14 @@ def resources(session: Session = Depends(get_session),
     return comres.list_resources(session)
 
 
+@router.get("/ports/{node_id}/{slot}/fingerprint")
+def get_port_fingerprint(node_id: str, slot: int,
+                         session: Session = Depends(get_session),
+                         _id=Depends(web_auth.require_login)):
+    """单端口设备指纹（fp.v1）；无则 fingerprint/fp_verdict 为 null。"""
+    return _domain_http(comres.get_port_fingerprint, session, node_id, slot)
+
+
 @router.post("/reachability")
 def post_reachability(payload: dict = Body(default={}),
                       session: Session = Depends(get_session),
