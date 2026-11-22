@@ -1,4 +1,4 @@
-"""WireLog 域：日志机（serialhub）注册、心跳、配置、写授权与 MAC 闭环。
+"""WireLog 域：日志机（serialhub）注册、心跳、配置、授权状态与 MAC 闭环。
 
 对应 WIRELOG-DESIGN.md。与 domain/serial.py（经 tres-logs 操作被测设备串口）
 是相邻但不同的域：本模块管理「日志机本身」。
