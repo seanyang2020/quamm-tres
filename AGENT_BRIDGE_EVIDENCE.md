@@ -29,7 +29,12 @@ task_id: t976
 
 ## c. 版本/提交证据
 
-（提交后以 `git log -1` 为准；见下方收尾命令输出）
+```
+2a1eb7e fix(web): 客户端下载收进 COMRes 设置子页
+2a1eb7ebb4ac1b8e35fb7f9f9bd9dbf08154a7d2
+git status --short → 干净（提交后）
+git diff --stat HEAD~1..HEAD → 6 files, +254/-169
+```
 
 Gerrit change：不适用。
 
