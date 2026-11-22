@@ -821,6 +821,28 @@ def _is_comres_placeholder(session, device_id: str | None) -> bool:
     return channel.startswith("comres") or name.startswith("comres-")
 
 
+def _retire_orphan_placeholders(session, usb_serial: str | None) -> None:
+    """清掉历史上以适配器 SN 造出来的孤儿占位（无任何端口绑定）。"""
+    serial = str(usb_serial or "").rsplit(":", 1)[-1].strip()
+    if not serial:
+        return
+    rows = (session.query(Device)
+            .filter(Device.register_channel == RegisterChannel.COMRES_TCP)
+            .filter(Device.sn == serial).all())
+    for dev in rows:
+        if str(dev.status) == str(DeviceStatus.RETIRED):
+            continue
+        bound = (session.query(WireLogPortBinding)
+                 .filter(WireLogPortBinding.bound_device_id == dev.device_id).count())
+        if bound:
+            continue
+        dev.status = DeviceStatus.RETIRED
+        dev.retired_at = utcnow()
+        _audit(session, "", "comres_placeholder_retired", result="ok",
+               detail={"device_id": dev.device_id, "display_name": dev.display_name,
+                       "reason": "orphan_serial", "serial": serial})
+
+
 def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                       local_ip: str | None) -> dict:
     """匹配 / 自动建档 / 冲突进池；命中或建档则绑定并标记 auto:* 占位。
@@ -950,6 +972,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
         session.flush()
         _retire_superseded_placeholder(session, prev_device_id)
     _mark_allocated(binding, by=f"auto:{basis}")
+    _retire_orphan_placeholders(session, port.get("usb_serial"))
     # sn/mac 路径记 comres_device_register；纯 IP 命中仍走 comres_match
     if basis in ("sn", "mac", "fp_sn", "fp_mac") or filled:
         _audit(session, binding.node_id, "comres_device_register",
