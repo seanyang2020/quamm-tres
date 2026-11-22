@@ -247,6 +247,41 @@ def _fp_identity(port: dict) -> dict:
     return ident if isinstance(ident, dict) else {}
 
 
+def _sn_variants(sn: str) -> list[str]:
+    """SN 候选：原值 + 去掉 ``vid:pid:`` 前缀后的裸芯片序列号。
+
+    standalone 的端口唯一键是 ``vid:pid:serial``（stable_key），而 device.sn 传统上存裸
+    序列号；两边都试，避免同一个物理设备被建成两条 device 记录。
+    """
+    raw = (sn or "").strip()
+    if not raw:
+        return []
+    out = [raw]
+    if ":" in raw:
+        tail = raw.rsplit(":", 1)[-1].strip()
+        if tail and tail not in out:
+            out.append(tail)
+    return out
+
+
+def _device_by_sn(session: Session, sn: str) -> "Device | None":
+    for cand in _sn_variants(sn):
+        device = session.query(Device).filter(Device.sn == cand).one_or_none()
+        if device is not None:
+            return device
+    return None
+
+
+def _sn_taken_by_other(session: Session, sn: str, device: "Device") -> bool:
+    for cand in _sn_variants(sn):
+        other = (session.query(Device)
+                 .filter(Device.sn == cand, Device.device_id != device.device_id)
+                 .first())
+        if other is not None:
+            return True
+    return False
+
+
 def _match_device(session: Session, port: dict, local_ip: str | None):
     """按 MAC → SN → IP 优先级匹配 device。返回 (device|None, basis)。
 
@@ -270,13 +305,13 @@ def _match_device(session: Session, port: dict, local_ip: str | None):
 
     fp_sn = (ident.get("sn") or "").strip()
     if fp_sn:
-        device = session.query(Device).filter(Device.sn == fp_sn).one_or_none()
+        device = _device_by_sn(session, fp_sn)
         if device is not None:
             return device, "fp_sn"
 
     sn = (port.get("sn") or "").strip()
     if sn and sn != fp_sn:
-        device = session.query(Device).filter(Device.sn == sn).one_or_none()
+        device = _device_by_sn(session, sn)
         if device is not None:
             return device, "sn"
 
@@ -659,12 +694,12 @@ def _backfill_shell_from_identity(binding: WireLogPortBinding, fp: dict) -> None
         binding.shell_ip = ip
 
 
-def _fill_device_missing(device: Device, port: dict) -> list[str]:
+def _fill_device_missing(session: Session, device: Device, port: dict) -> list[str]:
     """仅回填设备缺失字段；返回实际写入的字段名。"""
     sn, mac, ip = _port_identity(port)
     filled = []
-    if sn and not device.sn:
-        device.sn = sn
+    if sn and not device.sn and not _sn_taken_by_other(session, sn, device):
+        device.sn = _sn_variants(sn)[-1]
         filled.append("sn")
     if mac and not device.mac:
         device.mac = mac
@@ -681,6 +716,10 @@ def _create_device_from_port(session: Session, port: dict,
     sn, mac, ip = _port_identity(port)
     if not sn and not mac:
         raise DomainError("COMRES_NO_IDENTITY", "自动建档需要 sn 或 mac")
+    if sn:
+        existed = _device_by_sn(session, sn)
+        if existed is not None:
+            return existed
     now = utcnow()
     device = Device(
         device_id=new_device_id(),
@@ -769,7 +808,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                 "allocated": False, "bound": True}
 
     # 已存在：回填缺失字段
-    filled = _fill_device_missing(device, port)
+    filled = _fill_device_missing(session, device, port)
 
     # 冲突：该 device 已被其它端口绑定 → 本端口进池，不覆盖
     other = _other_binding_for_device(session, device.device_id, binding.id)
