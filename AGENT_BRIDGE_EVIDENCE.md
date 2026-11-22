@@ -32,7 +32,11 @@ task_id: t979
 
 ## c. 版本/提交证据
 
-（提交后以 `git log -1` 为准）
+```
+7834e4f / 7834e4f10546abbaf76b295b2b3c7d0bf9bd732b
+git status --short → 干净（功能提交后）
+git diff --stat HEAD~1..HEAD → 9 files, +370/-86
+```
 
 Gerrit change：不适用。
 

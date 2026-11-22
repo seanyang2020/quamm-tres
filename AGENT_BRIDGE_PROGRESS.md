@@ -18,7 +18,7 @@
 
 ## 提交
 
-- 见 `git log -1 --format=%H`
+- `7834e4f` / `7834e4f10546abbaf76b295b2b3c7d0bf9bd732b`
 
 ## 说明
 
