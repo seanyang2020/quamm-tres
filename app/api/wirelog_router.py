@@ -139,6 +139,10 @@ def post_bind(node_id: str, payload: dict = Body(default={}),
 def post_grant(node_id: str, payload: dict = Body(...),
                session: Session = Depends(get_session),
                identity=Depends(web_auth.require_admin)):
+    """[deprecated] 写权限默认读写（节点 approved 即 can_write），此接口仅为兼容保留。
+
+    Web 控制台已移除「写授权」入口；历史脚本 / MCP 仍可调用，不再作为能否写入的门槛。
+    """
     if payload.get("revoke"):
         return _domain_http(wirelog.revoke_write, session, node_id,
                             payload["slot"], identity.email)

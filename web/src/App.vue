@@ -1168,8 +1168,6 @@ const wlConfigForm = ref({
   consistency_interval_s: 600,
   rotate_local_token: false,
 })
-const wlGrantForm = ref({ slot: 1, principal: '' })
-
 // /api/comres/resources → { allocated, bound, pool, inactive }
 const comresAllocated = ref([])
 const comresBound = ref([])
@@ -1787,29 +1785,6 @@ async function saveWlConfig() {
       body: JSON.stringify(config),
     })
     ElMessage.success('配置已下发（下次心跳生效）')
-    openWlDetail(wlDetailId.value)
-  } catch (e) { ElMessage.error(String(e.message || e)) }
-}
-
-async function wlGrant() {
-  try {
-    await api('/api/wirelog/nodes/' + wlDetailId.value + '/write-grant', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slot: wlGrantForm.value.slot,
-                             principal: wlGrantForm.value.principal }),
-    })
-    ElMessage.success('写授权已下发')
-    openWlDetail(wlDetailId.value)
-  } catch (e) { ElMessage.error(String(e.message || e)) }
-}
-
-async function wlRevoke(slot) {
-  try {
-    await api('/api/wirelog/nodes/' + wlDetailId.value + '/write-grant', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slot, revoke: true }),
-    })
-    ElMessage.success('已撤销写权限')
     openWlDetail(wlDetailId.value)
   } catch (e) { ElMessage.error(String(e.message || e)) }
 }
@@ -2612,7 +2587,16 @@ const legendRole = [
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
                 <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
                 <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
-                <el-button link type="primary" size="small" @click="openDeviceWlBindings(row)">串口</el-button>
+                <el-tooltip
+                  :disabled="!!row.serial_openable"
+                  content="该设备当前无可用串口（未绑定或不可达）"
+                  placement="top">
+                  <span style="display:inline-block">
+                    <el-button link type="primary" size="small"
+                      :disabled="!row.serial_openable"
+                      @click="openDeviceWlBindings(row)">串口</el-button>
+                  </span>
+                </el-tooltip>
                 <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
               </template>
             </el-table-column>
@@ -3118,12 +3102,6 @@ const legendRole = [
             </el-table-column>
             <el-table-column prop="tty" label="tty" min-width="100" />
             <el-table-column prop="baud" label="波特" width="80" />
-            <el-table-column label="写授权(兼容)" min-width="110">
-              <template #default="{ row }">
-                <span v-if="row.write_granted_to">{{ row.write_granted_to }}</span>
-                <span v-else class="comres-muted">—</span>
-              </template>
-            </el-table-column>
             <el-table-column label="操作" width="140" fixed="right">
               <template #default="{ row }">
                 <template v-if="portCanOpen(row)">
@@ -3135,7 +3113,7 @@ const legendRole = [
           </el-table>
 
           <el-row :gutter="16" style="margin-top:16px">
-            <el-col :span="12">
+            <el-col :span="24">
               <h3>下发配置（下次心跳生效）</h3>
               <el-form label-width="140" size="small">
                 <el-form-item label="心跳周期（秒）">
@@ -3176,21 +3154,6 @@ const legendRole = [
               </el-form>
               <el-button size="small" type="primary"
                          @click="saveWlConfig">保存并下发</el-button>
-            </el-col>
-            <el-col :span="12">
-              <h3>写授权</h3>
-              <el-form label-width="70">
-                <el-form-item label="路 slot">
-                  <el-input-number v-model="wlGrantForm.slot" :min="1" />
-                </el-form-item>
-                <el-form-item label="授权对象">
-                  <el-input v-model="wlGrantForm.principal"
-                            placeholder="principal / lease 标识" />
-                </el-form-item>
-                <el-form-item>
-                  <el-button type="primary" @click="wlGrant">授予写权限</el-button>
-                </el-form-item>
-              </el-form>
             </el-col>
           </el-row>
         </el-card>
@@ -4200,9 +4163,6 @@ const legendRole = [
           </el-table-column>
           <el-table-column prop="shell_mac" label="实测 MAC" width="150" />
           <el-table-column prop="shell_ip" label="实测 IP" width="130" />
-          <el-table-column prop="write_granted_to" label="写授权(兼容)" min-width="120" show-overflow-tooltip>
-            <template #default="{ row }">{{ row.write_granted_to || '—' }}</template>
-          </el-table-column>
         </el-table>
         <el-empty v-if="!wlBindDlg.rows.length && !wlBindDlg.loading" description="该设备当前未绑定任何 WireLog 串口" />
         <template #footer><el-button @click="wlBindDlg.visible = false">关闭</el-button></template>

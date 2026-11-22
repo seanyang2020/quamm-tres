@@ -16,9 +16,53 @@ import json
 from app.domain import audit, device_acl
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
-from app.models import Device, Lease, ProductType, QueueEntry
+from app.models import Device, Lease, ProductType, QueueEntry, WireLogPortBinding
 from app.runtime_config import get_runtime_value
 from app.utils import new_device_id, new_flash_id, new_form_id, utcnow
+
+# 端口健康态：这些视为不可开串口（与 COMRes 灰显口径对齐）
+_SERIAL_BAD_HEALTH = frozenset({"offline", "no_listen"})
+
+
+def _binding_serial_openable(b: WireLogPortBinding) -> bool:
+    """单路 binding 是否视为可用串口（只读派生，供列表灰显）。
+
+    条件：endpoint 非空，且 health 非 offline/no_listen，且 reach_ok 不是 False
+    （reach_ok 为 None=未测 → 仍视为可用）。
+    """
+    if not (b.endpoint or "").strip():
+        return False
+    if (b.health_state or "") in _SERIAL_BAD_HEALTH:
+        return False
+    if b.reach_ok is False:
+        return False
+    return True
+
+
+def _batch_serial_stats(
+    session: Session, device_ids: list[str],
+) -> dict[str, tuple[bool, int]]:
+    """批量计算设备串口派生：device_id → (serial_openable, serial_ports)。"""
+    if not device_ids:
+        return {}
+    rows = (
+        session.query(WireLogPortBinding)
+        .filter(WireLogPortBinding.bound_device_id.in_(device_ids))
+        .all()
+    )
+    ports: dict[str, int] = {}
+    openable: dict[str, bool] = {}
+    for b in rows:
+        did = b.bound_device_id
+        if not did:
+            continue
+        ports[did] = ports.get(did, 0) + 1
+        if _binding_serial_openable(b):
+            openable[did] = True
+    return {
+        did: (bool(openable.get(did)), int(ports.get(did, 0)))
+        for did in device_ids
+    }
 
 FORM_TTL_MINUTES = 30
 
@@ -249,11 +293,23 @@ def _eng_config_dict(d: Device) -> dict | None:
         return None
 
 
-def _public_device(d: Device, session: Session, for_agent: bool = True,
-                   holder_email: str | None = None) -> dict:
-    """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。"""
+def _public_device(
+    d: Device,
+    session: Session,
+    for_agent: bool = True,
+    holder_email: str | None = None,
+    serial_stats: tuple[bool, int] | None = None,
+) -> dict:
+    """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。
+
+    serial_stats: 可选预计算 (serial_openable, serial_ports)，列表接口批量传入避免 N+1。
+    """
     allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     from app.domain import consistency
+
+    if serial_stats is None:
+        stats_map = _batch_serial_stats(session, [d.device_id])
+        serial_stats = stats_map.get(d.device_id, (False, 0))
 
     data = {
         "device_id": d.device_id,
@@ -271,6 +327,9 @@ def _public_device(d: Device, session: Session, for_agent: bool = True,
         "share_scope": d.share_scope or "shared",
         "locked": bool(d.locked),
         "holder_email": holder_email,
+        # 只读派生：设备中心「串口」按钮灰显用；不落库
+        "serial_openable": bool(serial_stats[0]),
+        "serial_ports": int(serial_stats[1]),
     }
     # v0.31：工程配置指纹与一致性结论（Agent 视图也给精简版，便于申请前自查）
     data["config"] = consistency.check_device(session, d)
@@ -336,8 +395,15 @@ def list_devices(
             .all()
         )
         holders = {dev_id: email for dev_id, email in rows}
+    serial_map = _batch_serial_stats(session, [d.device_id for d in devices])
     return [
-        _public_device(d, session, for_agent=for_agent, holder_email=holders.get(d.device_id))
+        _public_device(
+            d,
+            session,
+            for_agent=for_agent,
+            holder_email=holders.get(d.device_id),
+            serial_stats=serial_map.get(d.device_id, (False, 0)),
+        )
         for d in devices
     ]
 
