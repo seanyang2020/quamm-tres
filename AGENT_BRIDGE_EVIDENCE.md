@@ -30,10 +30,10 @@ task_id: t976
 ## c. 版本/提交证据
 
 ```
-2a1eb7e fix(web): 客户端下载收进 COMRes 设置子页
-2a1eb7ebb4ac1b8e35fb7f9f9bd9dbf08154a7d2
+2a1eb7e / 2a1eb7ebb4ac1b8e35fb7f9f9bd9dbf08154a7d2  ← 功能提交
+（交付 HEAD 以 git log -1 --format=%H 为准）
 git status --short → 干净（提交后）
-git diff --stat HEAD~1..HEAD → 6 files, +254/-169
+git diff --stat 2a1eb7e^..2a1eb7e → 6 files, +254/-169
 ```
 
 Gerrit change：不适用。
