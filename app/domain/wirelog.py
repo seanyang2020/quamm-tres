@@ -333,7 +333,6 @@ def reconcile_identity(session, node_id, slot, observed, actor=None):
         binding.bound_device_id = None
         binding.shell_mac = None
         binding.shell_ip = None
-        binding.write_granted_to = None
         _audit(session, node_id, "port_freed", actor=actor,
                detail={"slot": slot, "old_device": device_id,
                        "observed_mac": mac})
@@ -500,7 +499,6 @@ def register(session, token, payload):
         "node_id": node.node_id,
         "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
         "config": node.config_json or {},
-        "write_policy": _write_policy(session, node),
     }
 
 
@@ -517,7 +515,6 @@ def heartbeat(session, token, payload):
     return {
         "node_id": node.node_id,
         "config": node.config_json or {},
-        "write_policy": _write_policy(session, node),
     }
 
 
@@ -564,36 +561,6 @@ def bind_port(session, node_id, slot, device_id=None, actor=None, confirm=False)
            detail={"slot": slot, "device": device_id})
     session.commit()
     return {"node_id": node_id, "slot": slot, "device_id": device_id}
-
-
-# ------------------------------------------------------------- 写授权（R-3）
-
-def _write_policy(session, node):
-    rows = (session.query(WireLogPortBinding)
-            .filter_by(node_id=node.node_id).all())
-    return {
-        str(r.slot): {"write_granted_to": r.write_granted_to,
-                      "shell_reachable": r.shell_reachable,
-                      "bound_device_id": r.bound_device_id}
-        for r in rows
-    }
-
-
-def grant_write(session, node_id, slot, principal, actor=None):
-    binding = _get_binding_or_raise(session, node_id, slot)
-    binding.write_granted_to = principal
-    _audit(session, node_id, "grant_write", actor=actor,
-           detail={"slot": slot, "to": principal})
-    session.commit()
-    return _write_policy(session, session.get(WireLogNode, node_id))
-
-
-def revoke_write(session, node_id, slot, actor=None):
-    binding = _get_binding_or_raise(session, node_id, slot)
-    binding.write_granted_to = None
-    _audit(session, node_id, "revoke_write", actor=actor, detail={"slot": slot})
-    session.commit()
-    return _write_policy(session, session.get(WireLogNode, node_id))
 
 
 def _get_binding_or_raise(session, node_id, slot):
@@ -676,7 +643,6 @@ def get_node(session, node_id):
             "shell_reachable": b.shell_reachable, "shell_mac": b.shell_mac,
             "shell_ip": b.shell_ip, "bound_device_id": b.bound_device_id,
             "bound_device": _device_summary(session, b.bound_device_id),
-            "write_granted_to": b.write_granted_to,
             "health_state": b.health_state,
         } for b in bindings],
     }
@@ -773,7 +739,6 @@ def device_bindings(session, device_id):
             "slot": b.slot, "tty": b.tty_name, "baud": b.baud,
             "shell_reachable": b.shell_reachable,
             "shell_mac": b.shell_mac, "shell_ip": b.shell_ip,
-            "write_granted_to": b.write_granted_to,
             "health_state": b.health_state,
         })
     return out

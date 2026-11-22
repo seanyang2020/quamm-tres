@@ -51,13 +51,7 @@ check("串口就绪态", b1["shell_reachable"] is True)
 
 # 心跳
 hb = wirelog.heartbeat(s, token, {"ip": "172.16.60.122", "ports": []})
-check("心跳回写策略", "1" in hb["write_policy"])
-
-# 写授权
-pol = wirelog.grant_write(s, node_id, 1, "principal-7")
-check("写授权生效", pol["1"]["write_granted_to"] == "principal-7")
-pol = wirelog.revoke_write(s, node_id, 1)
-check("撤销写授权", pol["1"]["write_granted_to"] is None)
+check("心跳回配置", hb["config"] == {} or isinstance(hb["config"], dict))
 
 # 配置下发
 cfg = wirelog.set_config(s, node_id, {"raw_tcp_enable": 1})

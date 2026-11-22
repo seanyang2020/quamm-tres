@@ -15,7 +15,7 @@ def _node(**kw):
 def _binding(**kw):
     defaults = dict(
         endpoint=None, tcp_port=None, shell_ip=None, com_name=None,
-        tty_name=None, baud=115200, write_granted_to=None,
+        tty_name=None, baud=115200,
     )
     defaults.update(kw)
     return SimpleNamespace(**defaults)

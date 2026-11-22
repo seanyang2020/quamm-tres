@@ -1325,30 +1325,6 @@ def wl_bind_port(node_id: str, slot: int,
     return _guard(_wl_bind_impl, node_id, slot, device_id)
 
 
-def _wl_grant_impl(session, auth, node_id, slot, principal):
-    if not auth.is_admin:
-        raise DomainError("FORBIDDEN", "写授权只允许管理员")
-    return wl_svc.grant_write(session, node_id, slot, principal, auth.email)
-
-
-@mcp.tool()
-def wl_grant_write(node_id: str, slot: int, principal: str) -> dict:
-    """授予某路串口写权限给指定 principal（仅管理员）。"""
-    return _guard(_wl_grant_impl, node_id, slot, principal)
-
-
-def _wl_revoke_impl(session, auth, node_id, slot):
-    if not auth.is_admin:
-        raise DomainError("FORBIDDEN", "撤销写授权只允许管理员")
-    return wl_svc.revoke_write(session, node_id, slot, auth.email)
-
-
-@mcp.tool()
-def wl_revoke_write(node_id: str, slot: int) -> dict:
-    """撤销某路串口写权限（仅管理员），撤销后连接回只读。"""
-    return _guard(_wl_revoke_impl, node_id, slot)
-
-
 @mcp.tool()
 def wl_audit_tail(node_id: str | None = None, limit: int = 50) -> list[dict]:
     """查 WireLog 审计（注册/心跳/配置/授权/绑定）。"""

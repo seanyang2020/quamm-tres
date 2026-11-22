@@ -53,7 +53,7 @@ r = c.post("/api/wirelog/register",
                             "shell_mac": "aa:bb:cc:11:22:33",
                             "shell_ip": "172.16.60.99"}]})
 check("register 200", r.status_code == 200, r.text)
-check("注册回写策略", "1" in r.json()["write_policy"])
+check("注册回策略已移除", "write_policy" not in r.json())
 
 # 坏 token 注册 401
 r = c.post("/api/wirelog/register",
@@ -74,16 +74,5 @@ r = c.get(f"/api/wirelog/nodes/{node_id}",
 info = r.json()
 check("详情自动绑定", info["ports"][0]["bound_device_id"] == "dev-dut1")
 check("详情串口就绪", info["ports"][0]["shell_reachable"] is True)
-
-# 写授权
-r = c.post(f"/api/wirelog/nodes/{node_id}/write-grant",
-           json={"slot": 1, "principal": "p7"},
-           cookies={web_auth.SESSION_COOKIE: cookie})
-check("写授权 200", r.status_code == 200 and
-      r.json()["1"]["write_granted_to"] == "p7")
-r = c.post(f"/api/wirelog/nodes/{node_id}/write-grant",
-           json={"slot": 1, "revoke": True},
-           cookies={web_auth.SESSION_COOKIE: cookie})
-check("撤销 200", r.json()["1"]["write_granted_to"] is None)
 
 print("RESULT", "ALL_PASS" if not fails else f"FAIL={fails}")

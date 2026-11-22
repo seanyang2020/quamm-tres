@@ -675,7 +675,6 @@ class WireLogPortBinding(Base):
     )
     tty_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     baud: Mapped[int] = mapped_column(Integer, default=115200, nullable=False)
-    write_granted_to: Mapped[str | None] = mapped_column(String(128), nullable=True)
     health_state: Mapped[str] = mapped_column(
         String(16), default="unknown", server_default="unknown", nullable=False
     )

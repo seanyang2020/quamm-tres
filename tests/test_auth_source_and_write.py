@@ -217,13 +217,13 @@ def test_shell_can_write_by_auth_status(db):
         s.close()
 
 
-def test_write_grant_still_200_but_not_gate(client, db, admin_cookie):
+def test_write_grant_removed(client, db, admin_cookie):
+    """读写授权已整体下线：接口不存在，approved 节点默认读写。"""
     s = db.session()
     try:
         migrate(s)
         node, _ = _add_token_only_node(s, node_id="wl_wg_01", name="wg")
         node_id = node.node_id
-        # 需要一条 binding 才能 grant
         from app.models import WireLogPortBinding
         s.add(WireLogPortBinding(
             node_id=node_id, slot=1, baud=115200, health_state="online",
@@ -238,7 +238,7 @@ def test_write_grant_still_200_but_not_gate(client, db, admin_cookie):
         json={"slot": 1, "principal": "user@corp.com"},
         cookies=admin_cookie,
     )
-    assert r.status_code == 200, r.text
+    assert r.status_code in (404, 405), r.text
 
     s = db.session()
     try:
@@ -246,10 +246,6 @@ def test_write_grant_still_200_but_not_gate(client, db, admin_cookie):
         can_write, write_mode, _ = _shell_write_access(s, node)
         assert can_write is True
         assert write_mode == "rw"
-        # 即使撤销写授权，approved 节点仍可写
-        wirelog.revoke_write(s, node_id, 1, actor="admin")
-        can2, mode2, _ = _shell_write_access(s, node)
-        assert can2 is True and mode2 == "rw"
     finally:
         s.close()
 

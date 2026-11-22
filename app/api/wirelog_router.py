@@ -135,21 +135,6 @@ def post_bind(node_id: str, payload: dict = Body(default={}),
                         identity.email)
 
 
-@router.post("/nodes/{node_id}/write-grant")
-def post_grant(node_id: str, payload: dict = Body(...),
-               session: Session = Depends(get_session),
-               identity=Depends(web_auth.require_admin)):
-    """[deprecated] 写权限默认读写（节点 approved 即 can_write），此接口仅为兼容保留。
-
-    Web 控制台已移除「写授权」入口；历史脚本 / MCP 仍可调用，不再作为能否写入的门槛。
-    """
-    if payload.get("revoke"):
-        return _domain_http(wirelog.revoke_write, session, node_id,
-                            payload["slot"], identity.email)
-    return _domain_http(wirelog.grant_write, session, node_id,
-                        payload["slot"], payload["principal"], identity.email)
-
-
 @router.post("/enroll")
 def post_enroll(payload: dict = Body(default={}),
                 session: Session = Depends(get_session),
@@ -301,7 +286,6 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         tty = binding.tty_name if binding is not None else None
         baud = binding.baud if binding is not None else None
         com_name = binding.com_name if binding is not None else None
-        # t966：节点 approved 即默认可写；write_granted_to 保留兼容，不再作门槛
         can_write, write_mode, write_reason = _shell_write_access(session, node)
         node_name = node.display_name or node.node_id
         # t969：打开前先做 TRES→endpoint 可达性探测，避免等 TCP 超时才报错
