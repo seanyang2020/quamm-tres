@@ -31,16 +31,21 @@ task_id: t976
 
 ## c. 版本/提交证据
 
+f78b539 / f78b539a664bfd771f77d51bcb93f6a82cc235cb  ← 功能提交  
+0773062 / 0773062f1e883fdf9861e3fcf0d5df28ba23cf69  ← HEAD（证据）
+
 ```
-f78b539 feat(packages): 新增客户端安装包上传/下载分发
-f78b539a664bfd771f77d51bcb93f6a82cc235cb
+git log -1 --oneline
+0773062 docs(evidence): t976 验收证据定稿
+
+git status --short
+（干净）
+
+git diff --stat f78b539^..f78b539
+8 files changed, 863 insertions(+)
 ```
 
-- `git log -1 --oneline`：`8a71734 docs(evidence): 回填 t976 客户端下载验收证据`
-- `git status --short`：干净
-- 功能提交：`f78b539` / `f78b539a664bfd771f77d51bcb93f6a82cc235cb`
-- 证据提交：`8a71734` / `8a717348ff2f8b31c95f8cb241530d24ee6dd200`
-- Gerrit change：不适用
+Gerrit change：不适用。
 
 ## d. 验证/自测
 
