@@ -32,10 +32,10 @@ task_id: t976
 ## c. 版本/提交证据
 
 f78b539 / f78b539a664bfd771f77d51bcb93f6a82cc235cb  ← 功能提交
-09186f5 / 09186f5248d2a490beca7196c306a18b227f3bfd  ← HEAD（证据）
+（交付 HEAD 以 `git log -1 --format=%H` 为准；功能提交见上行）
 
 ```
-87ca8fc docs(evidence): t976 验收证据定稿
+f10188e docs(evidence): t976 验收四要素定稿
 git status --short → 干净（提交后）
 git diff --stat f78b539^..f78b539 → 8 files, +863
 ```
