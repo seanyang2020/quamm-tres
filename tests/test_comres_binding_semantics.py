@@ -106,3 +106,28 @@ def test_unknown_device_with_only_usb_serial(session):
     b = session.query(WireLogPortBinding).filter_by(
         node_id=p["node_id"], com_name="COM16").one()
     assert b.bound_device_id is None
+
+
+def test_stale_placeholder_cleared_when_usb_serial_declared(session):
+    """旧占位（拿适配器SN当设备SN）在明确 usb_serial 且无身份后被清掉。"""
+    p = _prov(session, "pc")
+    base = {"node_id": p["node_id"], "local_ip": "172.16.10.25"}
+    r1 = comres.register(session, p["node_token"], {
+        **base, "ports": [{"com": "COM16", "endpoint": "tcp://172.16.10.25:9210",
+                           "health_state": "online", "sn": "0403:6001:AI8ID21CA"}]})
+    first_id = r1["ports"][0]["bound_device_id"]
+    assert first_id
+    assert r1["ports"][0]["bound"] is True
+
+    r2 = comres.register(session, p["node_token"], {
+        **base, "ports": [{"com": "COM16", "endpoint": "tcp://172.16.10.25:9210",
+                           "health_state": "online", "sn": "0403:6001:AI8ID21CA",
+                           "usb_serial": "0403:6001:AI8ID21CA"}]})
+    port = r2["ports"][0]
+    assert port["bound"] is False
+    assert port["bound_device_id"] is None
+    b = session.query(WireLogPortBinding).filter_by(
+        node_id=p["node_id"], com_name="COM16").one()
+    assert b.bound_device_id is None
+    dev = session.query(Device).filter(Device.device_id == first_id).first()
+    assert dev is not None and dev.status == "retired"

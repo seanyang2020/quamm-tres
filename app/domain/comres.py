@@ -809,6 +809,18 @@ def _retire_superseded_placeholder(session, device_id: str) -> None:
            detail={"device_id": device_id, "display_name": dev.display_name})
 
 
+def _is_comres_placeholder(session, device_id: str | None) -> bool:
+    """该绑定是否指向 auto 建出来的 comres-<适配器SN> 占位设备。"""
+    if not device_id:
+        return False
+    dev = session.query(Device).filter(Device.device_id == device_id).first()
+    if dev is None:
+        return False
+    channel = str(getattr(dev, "register_channel", "") or "")
+    name = str(getattr(dev, "display_name", "") or "")
+    return channel.startswith("comres") or name.startswith("comres-")
+
+
 def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                       local_ip: str | None) -> dict:
     """匹配 / 自动建档 / 冲突进池；命中或建档则绑定并标记 auto:* 占位。
@@ -829,7 +841,19 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
     # 必须重新匹配，否则一次弱身份（只剩适配器 SN）会把错误绑定锁死到 TTL 结束。
     prev_device_id = binding.bound_device_id
     drifted = _binding_identity_drifted(session, binding, port)
-    if _is_auto_allocation(binding) and _allocation_marker_active(binding) and not drifted:
+    sn, mac, _ip = _port_identity(port)
+    # 上报方已把「适配器SN」与设备身份分开，但这次没有设备身份：
+    # 原绑定若只是 comres-<适配器SN> 占位，说明它是拿桥的SN冒充设备，必须清掉。
+    stale_placeholder = bool(
+        port.get("usb_serial") and not sn and not mac and prev_device_id
+        and _is_comres_placeholder(session, prev_device_id)
+    )
+    if (
+        _is_auto_allocation(binding)
+        and _allocation_marker_active(binding)
+        and not drifted
+        and not stale_placeholder
+    ):
         _renew_auto_lease_if_needed(binding)
         return {
             "basis": "keep_bound",
@@ -838,7 +862,6 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             "bound": True,
         }
 
-    sn, mac, _ip = _port_identity(port)
     device, basis = _match_device(session, port, local_ip)
 
     def _keep_prev(why: str) -> dict:
@@ -858,11 +881,12 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
         if port.get("usb_serial") and not sn and not mac:
             # 上报方明确区分了「适配器SN」，但这次没拿到设备身份：不造设备、不保留旧占位
             if prev_device_id:
-                _retire_superseded_placeholder(session, prev_device_id)
+                # 先解绑再 retire：占位设备只有在没有任何端口引用时才可 retired
                 binding.bound_device_id = None
                 binding.allocated_by = None
                 binding.allocated_expire = None
                 session.flush()
+                _retire_superseded_placeholder(session, prev_device_id)
             _audit(session, binding.node_id, "comres_match", result="unknown_device",
                    detail={"com": binding.com_name, "com_key": binding.com_key,
                            "usb_serial": port.get("usb_serial")})
