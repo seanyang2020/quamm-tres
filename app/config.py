@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     comres_reach_enabled: bool = True
     comres_reach_interval_s: int = 300
 
+    # 客户端安装包分发（t976）：standalone / ELSB zip|exe|msi
+    data_dir: str = "./var"                       # packages/ 子目录落此
+    package_max_bytes: int = 200 * 1024 * 1024    # 单包上限，默认 200MB
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -721,3 +721,34 @@ class WireLogAudit(Base):
     result: Mapped[str | None] = mapped_column(String(16), nullable=True)
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime())
+
+
+class WlPackage(Base):
+    """Standalone（deskserialhub / ELSB）客户端安装包元数据。
+
+    实体文件落在 ``<data_dir>/packages/<id>-<filename>``；删除为硬删（行+文件）。
+    """
+
+    __tablename__ = "wl_package"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False)  # Windows | Linux
+    filename: Mapped[str] = mapped_column(String(256), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    channel: Mapped[str] = mapped_column(
+        String(16), default="prod", server_default="prod", nullable=False
+    )  # prod | beta
+    uploaded_by: Mapped[str] = mapped_column(String(256), nullable=False)
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    download_count: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+
+    __table_args__ = (
+        Index("uq_wl_package_name_ver_plat", "name", "version", "platform", unique=True),
+        Index("ix_wl_package_channel_uploaded", "channel", "uploaded_at"),
+    )

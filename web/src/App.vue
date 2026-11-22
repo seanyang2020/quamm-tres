@@ -8,6 +8,7 @@ const pages = [
   { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
   { key: 'wirelog', label: 'COMRes' },
+  { key: 'packages', label: '客户端下载' },
   { key: 'settings', label: '设置' },
 ]
 const active = ref('devices')
@@ -1186,6 +1187,20 @@ const comresAutoApprove = ref(true)
 const comresAuthFilter = ref('all') // all | pending | approved | rejected | revoked
 const comresAuthBusyId = ref(null)
 
+// 客户端安装包（t976）
+const packages = ref([])
+const packagesLoading = ref(false)
+const packagesError = ref('')
+const packageUploadBusy = ref(false)
+const packageForm = reactive({
+  name: 'elsb',
+  version: '',
+  platform: 'Windows',
+  channel: 'prod',
+  notes: '',
+  file: null,
+})
+
 const comresAllRows = computed(() => {
   const inactive = comresInactive.value || []
   if (comresShowInactiveOnly.value) {
@@ -1427,6 +1442,101 @@ async function runComresReachability() {
     ElMessage.error('可达探测失败：' + String(e.message || e))
   } finally {
     comresReachBusy.value = false
+  }
+}
+
+function formatBytes(n) {
+  const v = Number(n) || 0
+  if (v < 1024) return v + ' B'
+  if (v < 1024 * 1024) return (v / 1024).toFixed(1) + ' KB'
+  return (v / (1024 * 1024)).toFixed(2) + ' MB'
+}
+
+function sha12(s) {
+  return (s || '').slice(0, 12)
+}
+
+async function loadPackages() {
+  packagesLoading.value = true
+  packagesError.value = ''
+  try {
+    const r = await api('/api/packages')
+    packages.value = Array.isArray(r && r.items) ? r.items : []
+  } catch (e) {
+    packages.value = []
+    packagesError.value = String(e.message || e)
+    ElMessage.error('安装包列表加载失败：' + packagesError.value)
+  } finally {
+    packagesLoading.value = false
+  }
+}
+
+function onPackageFileChange(uploadFile) {
+  packageForm.file = uploadFile && uploadFile.raw ? uploadFile.raw : null
+  if (packageForm.file && !packageForm.version) {
+    const m = String(packageForm.file.name || '').match(/(\d+\.\d+\.\d+)/)
+    if (m) packageForm.version = m[1]
+  }
+}
+
+async function uploadPackage() {
+  if (!packageForm.file) {
+    ElMessage.warning('请先选择安装包文件')
+    return
+  }
+  if (!packageForm.version || !packageForm.name) {
+    ElMessage.warning('请填写名称与版本号')
+    return
+  }
+  packageUploadBusy.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', packageForm.file)
+    fd.append('name', packageForm.name)
+    fd.append('version', packageForm.version)
+    fd.append('platform', packageForm.platform)
+    fd.append('channel', packageForm.channel)
+    if (packageForm.notes) fd.append('notes', packageForm.notes)
+    await api('/api/packages', { method: 'POST', body: fd })
+    ElMessage.success('上传成功')
+    packageForm.version = ''
+    packageForm.notes = ''
+    packageForm.file = null
+    await loadPackages()
+  } catch (e) {
+    ElMessage.error('上传失败：' + String(e.message || e))
+  } finally {
+    packageUploadBusy.value = false
+  }
+}
+
+async function deletePackage(row) {
+  try {
+    await ElMessageBox.confirm(
+      `删除安装包 ${row.name} ${row.version}（${row.platform}）？`,
+      '确认删除',
+      { type: 'warning' },
+    )
+  } catch (e) { return }
+  try {
+    await api('/api/packages/' + row.id, { method: 'DELETE' })
+    ElMessage.success('已删除')
+    await loadPackages()
+  } catch (e) {
+    ElMessage.error('删除失败：' + String(e.message || e))
+  }
+}
+
+function packageDownloadHref(row) {
+  return apiUrl(row.download_url || ('/api/packages/' + row.id + '/download'))
+}
+
+async function copySha256(row) {
+  try {
+    await navigator.clipboard.writeText(row.sha256 || '')
+    ElMessage.success('已复制完整 sha256')
+  } catch (e) {
+    ElMessage.error('复制失败')
   }
 }
 
@@ -1767,6 +1877,7 @@ function switchPage(key) {
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
   else if (key === 'wirelog') { loadWlNodes(); loadComresResources() }
+  else if (key === 'packages') { loadPackages() }
   else if (key === 'settings') {
     loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback(); loadBuildServers()
     if (me.value && me.value.role === 'admin') loadScreenshotStats()
@@ -3218,6 +3329,99 @@ const legendRole = [
             </div>
           </div>
         </el-drawer>
+      </div>
+
+      <!-- 客户端下载（standalone / ELSB 安装包） -->
+      <div v-else-if="active === 'packages'">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px;flex-wrap:wrap">
+          <h2 style="margin:0">客户端下载</h2>
+          <el-button size="small" :loading="packagesLoading" @click="loadPackages">刷新</el-button>
+        </div>
+        <el-alert type="info" :closable="false" show-icon style="margin-bottom:12px"
+                  title="下载 standalone（ELSB）安装包；解压后双击 start_gui.pyw 或 start.cmd 启动，配置 TRES 地址与 token 即可自助注册" />
+        <el-alert v-if="packagesError" type="error" :closable="false" show-icon
+                  :title="'列表：' + packagesError" style="margin-bottom:10px" />
+
+        <el-card v-if="me.role === 'admin'" style="margin-bottom:16px" shadow="never">
+          <template #header><span>上传安装包（仅管理员）</span></template>
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+            <div>
+              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">文件（zip / exe / msi）</div>
+              <el-upload :auto-upload="false" :show-file-list="true" :limit="1"
+                         accept=".zip,.exe,.msi"
+                         :on-change="onPackageFileChange"
+                         :on-remove="() => { packageForm.file = null }">
+                <el-button size="small">选择文件</el-button>
+              </el-upload>
+            </div>
+            <div>
+              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">名称</div>
+              <el-input v-model="packageForm.name" size="small" style="width:120px" />
+            </div>
+            <div>
+              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">版本</div>
+              <el-input v-model="packageForm.version" size="small" placeholder="0.33.0" style="width:110px" />
+            </div>
+            <div>
+              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">平台</div>
+              <el-select v-model="packageForm.platform" size="small" style="width:110px">
+                <el-option label="Windows" value="Windows" />
+                <el-option label="Linux" value="Linux" />
+              </el-select>
+            </div>
+            <div>
+              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">渠道</div>
+              <el-select v-model="packageForm.channel" size="small" style="width:100px">
+                <el-option label="prod" value="prod" />
+                <el-option label="beta" value="beta" />
+              </el-select>
+            </div>
+            <div>
+              <div class="comres-muted" style="font-size:12px;margin-bottom:4px">说明</div>
+              <el-input v-model="packageForm.notes" size="small" style="width:180px" placeholder="可选" />
+            </div>
+            <el-button size="small" type="primary" plain :loading="packageUploadBusy" @click="uploadPackage">上传</el-button>
+          </div>
+        </el-card>
+
+        <el-card shadow="never">
+          <template #header><span>安装包列表</span></template>
+          <el-table :data="packages" border size="small" stripe v-loading="packagesLoading">
+            <el-table-column prop="name" label="名称" min-width="100" />
+            <el-table-column prop="version" label="版本" width="100" />
+            <el-table-column prop="platform" label="平台" width="100" />
+            <el-table-column label="渠道" width="90">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.channel === 'prod' ? 'success' : 'warning'">{{ row.channel }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="大小" width="100">
+              <template #default="{ row }">{{ formatBytes(row.size_bytes) }}</template>
+            </el-table-column>
+            <el-table-column label="sha256" min-width="140">
+              <template #default="{ row }">
+                <el-tooltip :content="row.sha256" placement="top">
+                  <el-button link type="primary" size="small" @click="copySha256(row)">{{ sha12(row.sha256) }}…</el-button>
+                </el-tooltip>
+              </template>
+            </el-table-column>
+            <el-table-column prop="uploaded_by" label="上传人" min-width="140" show-overflow-tooltip />
+            <el-table-column label="时间" min-width="170">
+              <template #default="{ row }">{{ formatLocal(row.uploaded_at) }}</template>
+            </el-table-column>
+            <el-table-column prop="download_count" label="下载次数" width="90" />
+            <el-table-column label="操作" width="160" fixed="right">
+              <template #default="{ row }">
+                <el-button size="small" type="primary" plain tag="a"
+                           :href="packageDownloadHref(row)">下载</el-button>
+                <el-button v-if="me.role === 'admin'" size="small" type="danger" plain
+                           @click="deletePackage(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="!packages.length && !packagesLoading && !packagesError"
+                    description="还没有安装包，管理员可在上方上传" />
+        </el-card>
       </div>
 
       <!-- 设置：系统 + 设备类型 + 通讯录 + SMTP + 介绍 + 审计 -->

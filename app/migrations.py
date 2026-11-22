@@ -181,6 +181,7 @@ def migrate(session: Session) -> None:
     _ensure_columns(session, "patrol_run", _PATROL_RUN_COLUMNS)
     _ensure_wl_client_apply_table(session)
     _ensure_columns(session, "wl_client_apply", _WL_CLIENT_APPLY_COLUMNS)
+    _ensure_wl_package_table(session)
 
 
 def _ensure_device_position_index(session: Session) -> None:
@@ -224,6 +225,17 @@ def _ensure_wl_client_apply_table(session: Session) -> None:
     if "wl_client_apply" in inspect(engine).get_table_names():
         return
     Base.metadata.tables["wl_client_apply"].create(bind=engine, checkfirst=True)
+
+
+def _ensure_wl_package_table(session: Session) -> None:
+    """t976：客户端安装包表 wl_package；create_all 建，inspect 缺表则补建（幂等）。"""
+    from app import models  # noqa: F401
+    from app.db import Base
+
+    engine = session.get_bind()
+    if "wl_package" in inspect(engine).get_table_names():
+        return
+    Base.metadata.tables["wl_package"].create(bind=engine, checkfirst=True)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:

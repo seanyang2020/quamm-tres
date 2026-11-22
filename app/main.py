@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.router import router as api_router
 from app.api.comres_router import router as comres_router
+from app.api.packages_router import router as packages_router
 from app.api.wirelog_router import router as wirelog_router
 from app.config import settings
 from app.db import SessionLocal, init_db
@@ -48,6 +49,7 @@ app = FastAPI(title="Quamm TRES", lifespan=lifespan)
 app.include_router(api_router)
 app.include_router(wirelog_router, prefix="/api")
 app.include_router(comres_router, prefix="/api")  # COMRes §2.7；旧 /api/wirelog 并存
+app.include_router(packages_router, prefix="/api")  # t976 客户端安装包分发
 app.mount("/mcp", mcp_app)
 
 # 静态看板：优先 web/dist（Vue 构建产物），否则退化为内联看板
