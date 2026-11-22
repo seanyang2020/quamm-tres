@@ -309,9 +309,10 @@ def _match_device(session: Session, port: dict, local_ip: str | None):
         if device is not None:
             return device, "fp_sn"
 
-    sn = (port.get("sn") or "").strip()
-    if sn and sn != fp_sn:
-        device = _device_by_sn(session, sn)
+    port_sn = (port.get("sn") or "").strip()
+    # 上报方带了 usb_serial → port.sn 是适配器序列号，不参与设备匹配
+    if port_sn and not port.get("usb_serial"):
+        device = _device_by_sn(session, port_sn)
         if device is not None:
             return device, "sn"
 
@@ -564,9 +565,17 @@ def _upsert_comres_binding(session, node: WireLogNode, port: dict,
 
 
 def _port_identity(port: dict) -> tuple[str | None, str | None, str | None]:
-    """从 port 提取 (sn, mac, ip)；优先 fingerprint.identity，缺失为 None。"""
+    """从 port 提取 (sn, mac, ip)；优先 fingerprint.identity，缺失为 None。
+
+    身份优先级：fingerprint.identity.sn（板子 shell 读到的设备 SN）> 显式
+    ``device_sn`` > ``port.sn``。但上报方若带了 ``usb_serial``，说明它已明确区分
+    「适配器序列号 vs 设备序列号」，此时 ``port.sn`` 是适配器序列号，不算设备身份。
+    """
     ident = _fp_identity(port)
-    sn = (ident.get("sn") or port.get("sn") or "").strip() or None
+    port_sn = (port.get("sn") or "").strip()
+    if port_sn and port.get("usb_serial"):
+        port_sn = ""
+    sn = (ident.get("sn") or port.get("device_sn") or port_sn).strip() or None
     mac = (ident.get("mac") or port.get("mac") or port.get("shell_mac") or "").strip().lower() or None
     ip = (ident.get("ip") or port.get("ip") or port.get("shell_ip") or "").strip() or None
     return sn, mac, ip
@@ -712,7 +721,10 @@ def _fill_device_missing(session: Session, device: Device, port: dict) -> list[s
 
 def _create_device_from_port(session: Session, port: dict,
                              actor: str | None = None) -> Device:
-    """port 带 sn 或 mac 且库中无匹配时建档；register_channel=comres_tcp。"""
+    """port 带设备身份（mac，或 fingerprint/device_sn 的 SN）时建档。
+
+    ``port.sn`` 是 USB 适配器序列号，不算身份，避免造出 comres-<适配器SN> 这类假设备。
+    """
     sn, mac, ip = _port_identity(port)
     if not sn and not mac:
         raise DomainError("COMRES_NO_IDENTITY", "自动建档需要 sn 或 mac")
@@ -751,6 +763,52 @@ def _other_binding_for_device(session: Session, device_id: str,
     return q.first()
 
 
+def _binding_identity_drifted(session, binding: WireLogPortBinding,
+                              port: dict) -> bool:
+    """端口上报的设备身份，和当前绑定设备是否已经对不上。
+
+    - 有 MAC：MAC 不同即漂移（绑定设备 MAC 为空也算，交给重新匹配决定）；
+    - 无 MAC 有 IP：IP 不同即漂移；
+    - 都没有：不算漂移（沿用旧绑定）。
+    """
+    if not binding.bound_device_id:
+        return False
+    dev = session.get(Device, binding.bound_device_id)
+    if dev is None:
+        return False
+    mac = (port.get("mac") or port.get("shell_mac") or "").strip().lower()
+    if not mac:
+        ident = _fp_identity(port)
+        mac = (ident.get("mac") or "").strip().lower()
+    if mac:
+        return (dev.mac or "").strip().lower() != mac
+    ip = (port.get("ip") or port.get("shell_ip") or "").strip()
+    if ip:
+        return (dev.ip or "").strip() != ip
+    return False
+
+
+def _retire_superseded_placeholder(session, device_id: str) -> None:
+    """被更强身份顶掉的 comres 自动占位设备（comres-<适配器SN>）标记 retired。
+
+    只处理 comres_tcp 通道、名字是 comres- 前缀、且当前没有任何端口绑定的占位，
+    真设备（有 MAC / 有实际业务字段）不动。
+    """
+    dev = session.get(Device, device_id)
+    if dev is None or dev.register_channel != RegisterChannel.COMRES_TCP:
+        return
+    if not str(dev.display_name or "").startswith("comres-"):
+        return
+    others = (session.query(WireLogPortBinding)
+              .filter(WireLogPortBinding.bound_device_id == device_id).count())
+    if others:
+        return
+    dev.status = DeviceStatus.RETIRED
+    dev.retired_at = utcnow()
+    _audit(session, "", "comres_placeholder_retired", result="ok",
+           detail={"device_id": device_id, "display_name": dev.display_name})
+
+
 def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
                       local_ip: str | None) -> dict:
     """匹配 / 自动建档 / 冲突进池；命中或建档则绑定并标记 auto:* 占位。
@@ -765,8 +823,13 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             "allocated": True,
             "bound": True,
         }
-    # 已有 auto 占位：刷新 TTL，仍报 bound
-    if _is_auto_allocation(binding) and _allocation_marker_active(binding):
+    _enrich_port_from_fingerprint(port)
+
+    # 已有 auto 占位：身份没变才 keep_bound；探到更准的身份（MAC/IP）或换了设备，
+    # 必须重新匹配，否则一次弱身份（只剩适配器 SN）会把错误绑定锁死到 TTL 结束。
+    prev_device_id = binding.bound_device_id
+    drifted = _binding_identity_drifted(session, binding, port)
+    if _is_auto_allocation(binding) and _allocation_marker_active(binding) and not drifted:
         _renew_auto_lease_if_needed(binding)
         return {
             "basis": "keep_bound",
@@ -775,12 +838,23 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             "bound": True,
         }
 
-    _enrich_port_from_fingerprint(port)
     sn, mac, _ip = _port_identity(port)
     device, basis = _match_device(session, port, local_ip)
 
-    # 未命中：有 sn/mac → 自动建档；否则进池
+    def _keep_prev(why: str) -> dict:
+        """重新匹配没结果/冲突时，保住原绑定，别把在用端口踢成未绑定。"""
+        _renew_auto_lease_if_needed(binding)
+        _audit(session, binding.node_id, "comres_match", result="keep_prev",
+               detail={"com": binding.com_name, "com_key": binding.com_key,
+                       "basis": why, "device_id": prev_device_id,
+                       "sn": sn, "mac": mac})
+        return {"basis": "keep_prev", "device_id": prev_device_id,
+                "allocated": False, "bound": True}
+
+    # 未命中：漂移场景保旧绑定；有设备身份 → 自动建档；否则进池
     if device is None:
+        if drifted and prev_device_id:
+            return _keep_prev("identity_drift_no_match")
         if not sn and not mac:
             _audit(session, binding.node_id, "comres_match",
                    result="miss", detail={
@@ -812,6 +886,8 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
 
     # 冲突：该 device 已被其它端口绑定 → 本端口进池，不覆盖
     other = _other_binding_for_device(session, device.device_id, binding.id)
+    if other is not None and drifted and prev_device_id:
+        return _keep_prev(f"identity_drift_conflict:{other.node_id}/{other.com_name}")
     if other is not None:
         _audit(session, binding.node_id, "comres_device_register",
                result="conflict", detail={
@@ -832,6 +908,10 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
 
     # 本端口已绑同一 device，或尚未绑定：幂等绑定 + auto 占位
     binding.bound_device_id = device.device_id
+    if prev_device_id and prev_device_id != device.device_id:
+        # 先落一次 flush 再回收占位，否则旧占位还被本端口引用着（count=1）
+        session.flush()
+        _retire_superseded_placeholder(session, prev_device_id)
     _mark_allocated(binding, by=f"auto:{basis}")
     # sn/mac 路径记 comres_device_register；纯 IP 命中仍走 comres_match
     if basis in ("sn", "mac", "fp_sn", "fp_mac") or filled:
