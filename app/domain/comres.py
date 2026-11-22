@@ -877,6 +877,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
         and not stale_placeholder
     ):
         _renew_auto_lease_if_needed(binding)
+        _retire_orphan_placeholders(session, port.get("usb_serial"))
         return {
             "basis": "keep_bound",
             "device_id": binding.bound_device_id,
