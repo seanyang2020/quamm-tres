@@ -597,13 +597,31 @@ def _parse_fingerprint_json(raw: str | None):
     return val if isinstance(val, dict) else None
 
 
+def _fingerprint_has_content(fp: dict) -> bool:
+    """指纹必须有身份或系统字段才算有效；空壳（只有 schema/verdict）一律不落库。"""
+    if not isinstance(fp, dict):
+        return False
+    ident = fp.get("identity") if isinstance(fp.get("identity"), dict) else {}
+    sysd = fp.get("system") if isinstance(fp.get("system"), dict) else {}
+    for key in ("mac", "sn", "ip"):
+        if str(ident.get(key) or "").strip():
+            return True
+    for key in ("os", "kernel", "hostname", "project", "model", "build_info",
+                "uname", "proc_version"):
+        if str(sysd.get(key) or "").strip():
+            return True
+    return bool(fp.get("net"))
+
+
 def _persist_fingerprint(session: Session, binding: WireLogPortBinding,
                          port: dict) -> None:
-    """带 fingerprint 则落库；无则保留旧值。identity 回填 shell_*（仅空时）。"""
+    """带有效 fingerprint 则落库；空壳/缺失保留旧值。identity 回填 shell_*（仅空时）。"""
     fp = port.get("fingerprint")
     if fp is None:
         return
     if not isinstance(fp, dict):
+        return
+    if not _fingerprint_has_content(fp):
         return
 
     new_json = json.dumps(fp, ensure_ascii=False)

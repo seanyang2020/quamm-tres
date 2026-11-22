@@ -331,3 +331,52 @@ def test_fingerprint_change_audits_cleared_fields(session):
     detail = json.loads(audits[1].detail)
     assert detail["first"] is False
     assert "identity.sn" in detail["cleared_fields"]
+
+
+def test_register_ignores_empty_fingerprint(session):
+    """空壳指纹（只有 schema/verdict，无任何身份与系统字段）不得入库，也不得覆盖旧值。"""
+    p = _prov(session, "fp-empty")
+    fp = _sample_fp()
+    comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "10.9.0.1",
+        "ports": [{"com": "COM-EMP", "endpoint": "tcp://10.9.0.1:9411",
+                   "health_state": "online", "fingerprint": fp}],
+    })
+    b = (session.query(WireLogPortBinding)
+         .filter_by(node_id=p["node_id"], com_name="COM-EMP").one())
+    assert b.fingerprint_json is not None
+
+    shell = {
+        "schema": "fp.v1", "verdict": "failed",
+        "identity": {"mac": "", "sn": "", "ip": ""},
+        "net": [],
+        "system": {"os": "", "kernel": "", "hostname": "", "project": "",
+                   "model": "", "build_info": "", "uname": "", "proc_version": ""},
+        "raw": {}, "errors": [],
+    }
+    comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "10.9.0.1",
+        "ports": [{"com": "COM-EMP", "endpoint": "tcp://10.9.0.1:9411",
+                   "health_state": "online", "fingerprint": shell}],
+    })
+    session.expire_all()
+    b = (session.query(WireLogPortBinding)
+         .filter_by(node_id=p["node_id"], com_name="COM-EMP").one())
+    stored = json.loads(b.fingerprint_json)
+    assert stored["identity"]["mac"] == "aa:bb:cc:dd:ee:01"
+
+
+def test_register_empty_fingerprint_on_fresh_port_stays_null(session):
+    p = _prov(session, "fp-empty2")
+    comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "10.9.0.2",
+        "ports": [{"com": "COM-EMP2", "endpoint": "tcp://10.9.0.2:9421",
+                   "health_state": "online",
+                   "fingerprint": {"schema": "fp.v1", "verdict": "failed",
+                                   "identity": {"mac": ""}, "net": [],
+                                   "system": {}, "raw": {}, "errors": []}}],
+    })
+    b = (session.query(WireLogPortBinding)
+         .filter_by(node_id=p["node_id"], com_name="COM-EMP2").one())
+    assert b.fingerprint_json is None
+
