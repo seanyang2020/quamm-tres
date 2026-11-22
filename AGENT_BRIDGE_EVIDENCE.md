@@ -36,10 +36,10 @@ f78b539 feat(packages): 新增客户端安装包上传/下载分发
 f78b539a664bfd771f77d51bcb93f6a82cc235cb
 ```
 
-- `git log -1 --oneline`：`a23cc0e docs(evidence): 回填 t976 客户端下载验收证据`
+- `git log -1 --oneline`：`8a71734 docs(evidence): 回填 t976 客户端下载验收证据`
 - `git status --short`：干净
 - 功能提交：`f78b539` / `f78b539a664bfd771f77d51bcb93f6a82cc235cb`
-- 证据提交：`a23cc0e` / `a23cc0e18ba4cd13ba38f44259a3e87f3a4d9ac5`
+- 证据提交：`8a71734` / `8a717348ff2f8b31c95f8cb241530d24ee6dd200`
 - Gerrit change：不适用
 
 ## d. 验证/自测
