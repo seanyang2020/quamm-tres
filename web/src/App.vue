@@ -1166,7 +1166,6 @@ const wlConfigForm = ref({
   keepalive_enabled: true,
   keepalive_interval_s: 60,
   consistency_interval_s: 600,
-  rotate_local_token: false,
 })
 // /api/comres/resources → { allocated, bound, pool, inactive }
 const comresAllocated = ref([])
@@ -3197,50 +3196,44 @@ const legendRole = [
             </el-table-column>
           </el-table>
 
-          <el-row :gutter="16" style="margin-top:16px">
-            <el-col :span="24">
-              <h3>下发配置（下次心跳生效）</h3>
-              <el-form label-width="140" size="small">
-                <el-form-item label="心跳周期（秒）">
-                  <el-select v-model="wlConfigForm.heartbeat_interval_s" style="width:160px">
-                    <el-option :value="30" label="30 秒" />
-                    <el-option :value="60" label="60 秒" />
-                    <el-option :value="120" label="120 秒" />
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="日志级别">
-                  <el-select v-model="wlConfigForm.log_level" style="width:160px">
-                    <el-option value="debug" label="debug" />
-                    <el-option value="info" label="info" />
-                    <el-option value="warn" label="warn" />
-                    <el-option value="error" label="error" />
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="启用保活探测">
-                  <el-switch v-model="wlConfigForm.keepalive_enabled" />
-                </el-form-item>
-                <el-form-item label="保活周期（秒）">
-                  <el-select v-model="wlConfigForm.keepalive_interval_s" style="width:160px">
-                    <el-option :value="30" label="30 秒" />
-                    <el-option :value="60" label="60 秒" />
-                    <el-option :value="120" label="120 秒" />
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="一致性检测周期（秒）">
-                  <el-select v-model="wlConfigForm.consistency_interval_s" style="width:160px">
-                    <el-option :value="300" label="300 秒" />
-                    <el-option :value="600" label="600 秒" />
-                    <el-option :value="900" label="900 秒" />
-                  </el-select>
-                </el-form-item>
-                <el-form-item label="轮换本地串口 token">
-                  <el-switch v-model="wlConfigForm.rotate_local_token" />
-                </el-form-item>
-              </el-form>
-              <el-button size="small" type="primary"
-                         @click="saveWlConfig">保存并下发</el-button>
-            </el-col>
-          </el-row>
+          <div class="wl-config-bar">
+            <span class="wl-config-title">下发配置<em>（下次心跳生效）</em></span>
+            <el-form inline size="small" class="wl-config-form">
+              <el-form-item label="心跳">
+                <el-select v-model="wlConfigForm.heartbeat_interval_s" style="width:104px">
+                  <el-option :value="30" label="30 秒" />
+                  <el-option :value="60" label="60 秒" />
+                  <el-option :value="120" label="120 秒" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="日志">
+                <el-select v-model="wlConfigForm.log_level" style="width:96px">
+                  <el-option value="debug" label="debug" />
+                  <el-option value="info" label="info" />
+                  <el-option value="warn" label="warn" />
+                  <el-option value="error" label="error" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="保活">
+                <el-switch v-model="wlConfigForm.keepalive_enabled" size="small" />
+              </el-form-item>
+              <el-form-item label="保活周期">
+                <el-select v-model="wlConfigForm.keepalive_interval_s" style="width:104px">
+                  <el-option :value="30" label="30 秒" />
+                  <el-option :value="60" label="60 秒" />
+                  <el-option :value="120" label="120 秒" />
+                </el-select>
+              </el-form-item>
+              <el-form-item label="一致性">
+                <el-select v-model="wlConfigForm.consistency_interval_s" style="width:104px">
+                  <el-option :value="300" label="300 秒" />
+                  <el-option :value="600" label="600 秒" />
+                  <el-option :value="900" label="900 秒" />
+                </el-select>
+              </el-form-item>
+            </el-form>
+            <el-button size="small" type="primary" @click="saveWlConfig">保存并下发</el-button>
+          </div>
         </el-card>
         </template>
 
@@ -4411,6 +4404,22 @@ const legendRole = [
 </template>
 
 <style>
+.wl-config-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 8px;
+  background: var(--el-fill-color-lighter);
+}
+.wl-config-title { font-size: 14px; font-weight: 600; white-space: nowrap; }
+.wl-config-title em { font-style: normal; font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
+.wl-config-form .el-form-item { margin: 0 10px 0 0; }
+.wl-config-form .el-form-item__label { padding-right: 6px; font-size: 12px; }
+>
 .auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f5f7fa; }
 .auth-card { width: 420px; }
 .auth-card h2 { margin-top: 0; }
