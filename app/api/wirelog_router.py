@@ -481,6 +481,9 @@ def post_create_serial_device(node_id: str, slot: int,
         mac=payload.get("mac"),
         sn=payload.get("sn"),
         ip=payload.get("ip"),
+        share_scope=payload.get("share_scope"),
+        allowed_emails=payload.get("allowed_emails"),
+        allowed_agent_labels=payload.get("allowed_agent_labels"),
     )
 
 

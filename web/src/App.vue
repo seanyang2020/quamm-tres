@@ -486,6 +486,9 @@ async function submitSerialDevice() {
         display_name: deviceAddConfirm.value.note || null,
         model_class: deviceAddConfirm.value.model_class || null,
         mac: id.mac || null, sn: id.sn || null, ip: id.ip || null,
+        share_scope: deviceAddConfirm.value.share_scope || 'shared',
+        allowed_emails: deviceAddConfirm.value.allowed_emails || [],
+        allowed_agent_labels: deviceAddConfirm.value.allowed_agent_labels || [],
       }),
     })
     ElMessage.success(r.result === 'existing'

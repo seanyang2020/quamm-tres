@@ -83,20 +83,24 @@ def run_patrol_round(
     failures: list[dict] = []
 
     for d in devices:
-        # v0.32：只提供串口的独立设备（source=serial）没有 ADB，按它绑定的那路
-        # 串口探测结果记账；既不能走 adb 分支，也不能因为没 ip 被直接跳过。
-        if d.source == "serial":
-            # 先按串口判活；补了 ADB 地址的设备再试 ADB，通了就用 ADB 结果，
-            # 不通仍回落串口，保证「后补 ADB」不会把可用设备打成离线。
-            result = _serial_device_result(session, d)
+        # 双通道设备（source=serial 或已挂串口）：ADB 优先，失败回落串口。
+        # 这样「串口先建机、后补 ADB」和「已有设备补挂串口」都能判活。
+        has_serial = (
+            session.query(WireLogPortBinding)
+            .filter(WireLogPortBinding.bound_device_id == d.device_id)
+            .first()
+        ) is not None
+        if d.source == "serial" or has_serial:
+            result = None
             if d.ip:
-                # 只试 ADB，不在这里重复走串口；ADB 不通就用上面的串口结果。
                 adb = RealXosProber().probe(
                     d.ip, d.adb_port or 5555,
                     timeout=settings.probe_timeout_seconds,
                 )
                 if adb.reachable_l3:
                     result = adb
+            if result is None:
+                result = _serial_device_result(session, d)
         elif not d.ip:
             continue
         # device 表的 ip/adb_port 即探测地址；端口缺失时按 ip:5555 组。

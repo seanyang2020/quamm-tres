@@ -26,7 +26,7 @@ from app.models import (
 )
 from app.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils import hash_token, new_id, new_device_id, new_token, token_prefix, utcnow
-from app.domain.catalog import DomainError
+from app.domain.catalog import DomainError, _apply_share
 from app.constants import DeviceStatus, HealthLevel, RegisterChannel
 
 HEARTBEAT_INTERVAL_S = 60
@@ -887,7 +887,9 @@ def list_serial_resources(session, node_id=None):
 def create_device_from_binding(session, node_id, slot, owner=None,
                                display_name=None, position_code=None,
                                actor=None, model_class=None,
-                               mac=None, sn=None, ip=None):
+                               mac=None, sn=None, ip=None,
+                               share_scope=None, allowed_emails=None,
+                               allowed_agent_labels=None):
     """把一路串口落地成一台「以串口为主通道」的设备（ADB 可后补）。
 
     统一身份：优先写回串口指纹里的 MAC / SN / IP，使这台设备之后用 IP/ADB
@@ -985,6 +987,7 @@ def create_device_from_binding(session, node_id, slot, owner=None,
         created_at=now,
     )
     session.add(device)
+    _apply_share(device, share_scope, allowed_emails, allowed_agent_labels)
     session.flush()
     binding.bound_device_id = device.device_id
     _audit(session, node_id, "create_device_from_serial", actor=actor,
