@@ -3327,7 +3327,7 @@ const legendRole = [
                     :row-class-name="({ row }) => portHasSerial(row) ? '' : 'comres-no-serial'">
             <el-table-column label="资源" min-width="150">
               <template #default="{ row }">
-                <a v-if="portHasSerial(row)" class="wl-com-link" @click="openPortConsole(row)">
+                <a v-if="portHasSerial(row)" class="wl-com-link" @click="openWlShell(row)">
                   {{ portTcpComLabel(row) }}<span class="wl-com-open">↗</span>
                 </a>
                 <span v-else class="comres-muted">无串口资源</span>
@@ -3417,7 +3417,7 @@ const legendRole = [
                   </span>
                 </el-tooltip>
                 <template v-if="portCanOpen(row)">
-                  <el-button size="small" type="primary" link @click="openPortConsole(row)">打开控制台</el-button>
+                  <el-button size="small" type="primary" link @click="openWlShell(row)">串口 Shell</el-button>
                 </template>
               </template>
             </el-table-column>
@@ -3492,7 +3492,7 @@ const legendRole = [
                     :row-class-name="comresRowClass" max-height="480">
             <el-table-column label="资源" min-width="140">
               <template #default="{ row }">
-                <a v-if="portHasSerial(row) && !row.inactive" class="wl-com-link" @click="openPortConsole(row)">
+                <a v-if="portHasSerial(row) && !row.inactive" class="wl-com-link" @click="openWlShell(row)">
                   {{ portTcpComLabel(row) }}<span class="wl-com-open">↗</span>
                 </a>
                 <span v-else class="comres-muted">{{ portHasSerial(row) ? portTcpComLabel(row) : '无串口资源' }}</span>
@@ -3565,7 +3565,7 @@ const legendRole = [
                   </span>
                 </el-tooltip>
                 <el-button v-if="portCanOpen(row) && !row.inactive" size="small" type="primary" link
-                           @click="openPortConsole(row)">打开控制台</el-button>
+                           @click="openWlShell(row)">串口 Shell</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -3627,10 +3627,11 @@ const legendRole = [
                 <span class="bundle-label">串口</span>
                 <div style="flex:1">
                   <div v-for="ch in b.channels.serial" :key="ch.com_key" class="bundle-serial">
-                    <a class="wl-com-link" @click="openPortConsole({
+                    <a class="wl-com-link" @click="openWlShell({
                       node_id: ch.source.node_id, slot: ch.source.slot,
                       node_ip: ch.source.node_ip, tcp_port: ch.tcp_port,
-                      com: ch.com, health_state: ch.health_state, inactive: false,
+                      com: ch.com, tty: ch.com, baud: ch.baud,
+                      endpoint: ch.endpoint, health_state: ch.health_state, inactive: false,
                     })">{{ ch.com }}<span class="wl-com-open">↗</span></a>
                     <span class="wl-endpoint" style="margin-left:8px">{{ bundleSerialEndpoint(ch) }}</span>
                     <el-tag size="small" :type="ch.health_state === 'online' ? 'success' : 'info'"
@@ -4628,7 +4629,7 @@ const legendRole = [
           </el-table-column>
           <el-table-column label="TCP COM（浏览器入口）" min-width="240">
             <template #default="{ row }">
-              <a class="wl-com-link" @click="openPortConsole(row)">
+              <a class="wl-com-link" @click="openWlShell(row)">
                 {{ row.com_name || row.tty || ('TCP COM ' + row.slot) }}<span class="wl-com-open">↗</span>
               </a>
               <div class="wl-com-sub">
