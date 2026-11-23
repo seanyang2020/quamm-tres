@@ -1130,6 +1130,19 @@ def _serial_device_info(session, device_id):
         info["serial"] = serial_svc.serial_summary(session, device_id)
     except DomainError:
         info["serial"] = {"available": False}
+    # v0.42：ADB + TCP COM 成套（serial_channels 与设备捆绑）
+    try:
+        from app.domain import bundle as bundle_svc
+
+        b = bundle_svc.device_bundle(session, device_id)
+        info["serial_channels"] = b["channels"]["serial"]
+        info["bundle"] = {
+            "device_id": b["device_id"],
+            "complete": b["complete"],
+            "lease": b["lease"],
+        }
+    except Exception:  # noqa: BLE001 - 附加信息，不阻断 device_info
+        info["serial_channels"] = []
     return info
 
 

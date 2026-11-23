@@ -690,6 +690,14 @@ def apply(
                     "串口已开通：用 serial_access.token 直连日志机（MCP Bearer / raw TCP login）。"
                     "丢了再调 res_serial_token(lease_id) 重取。"
                 )
+            # v0.42：COMRes 串口通道随租约一起返回（ADB 不通时可直接用同一台设备的 COM）
+            try:
+                from app.domain import bundle as bundle_svc
+
+                result["serial_channels"] = bundle_svc.device_bundle(
+                    session, device.device_id)["channels"]["serial"]
+            except Exception:  # noqa: BLE001 - 资源包是附加信息，不影响发租
+                result["serial_channels"] = []
             # v0.14：版本门禁只拦 X/Y；未知版本放行但警告，patch 落后仅提示
             state = (verdict or {}).get("state")
             if state == "UNKNOWN_VERSION":
