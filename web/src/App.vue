@@ -3342,89 +3342,72 @@ const legendRole = [
           </template>
           <el-table :data="comresAllRows" border size="small" stripe v-loading="comresLoading"
                     :row-class-name="comresRowClass" max-height="480">
-            <el-table-column prop="node_id" label="node_id" min-width="150" show-overflow-tooltip />
-            <el-table-column prop="node_ip" label="IP" width="120" />
-            <el-table-column label="com" min-width="100">
+            <el-table-column label="资源" min-width="140">
               <template #default="{ row }">
-                <span :class="{ 'comres-muted': !portHasSerial(row) || row.inactive }">{{ row.com || '—' }}</span>
+                <a v-if="portHasSerial(row) && !row.inactive" class="wl-com-link" @click="openPortConsole(row)">
+                  {{ portTcpComLabel(row) }}<span class="wl-com-open">↗</span>
+                </a>
+                <span v-else class="comres-muted">{{ portHasSerial(row) ? portTcpComLabel(row) : '无串口资源' }}</span>
+                <div class="wl-com-sub">
+                  {{ row.tty || row.com || '—' }}<span v-if="row.baud"> · {{ row.baud }}</span>
+                </div>
               </template>
             </el-table-column>
-            <el-table-column prop="slot" label="slot" width="60" />
-            <el-table-column label="endpoint" min-width="160" show-overflow-tooltip>
+            <el-table-column label="接入方式" min-width="210">
               <template #default="{ row }">
-                <span :class="{ 'comres-muted': !portHasSerial(row) || row.inactive }">{{ row.endpoint || '—' }}</span>
+                <span class="wl-endpoint">{{ portEndpointText(row) }}</span>
+                <el-button size="small" link type="primary" style="margin-left:4px"
+                           :disabled="!portHasSerial(row) || row.inactive"
+                           @click="copyPortEndpoint(row)">复制</el-button>
               </template>
             </el-table-column>
-            <el-table-column width="90">
-              <template #header>
-                <el-tooltip content="节点自报，非 TRES 连通性" placement="top">
-                  <span>自检</span>
-                </el-tooltip>
-              </template>
-              <template #default="{ row }">{{ row.health_state || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="可达" width="100">
+            <el-table-column label="来源" min-width="150">
               <template #default="{ row }">
-                <el-tooltip :content="comresReachLabel(row).tip" placement="top">
-                  <span :style="{ color: comresReachLabel(row).ok === true ? '#16a34a' : (comresReachLabel(row).ok === false ? '#dc2626' : undefined) }"
-                        :class="{ 'comres-muted': comresReachLabel(row).ok == null }">
-                    {{ comresReachLabel(row).text }}
-                  </span>
-                </el-tooltip>
+                <el-button size="small" link type="primary" class="wl-source-link"
+                           @click="gotoPortSource(row)">{{ portSourceName(row) }}</el-button>
+                <div class="wl-com-sub">{{ row.node_id }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="指纹" width="88">
+            <el-table-column label="接入设备" min-width="210">
               <template #default="{ row }">
-                <el-tag v-if="row.fp_verdict" size="small" :type="fpVerdictMeta(row.fp_verdict).type">
-                  {{ fpVerdictMeta(row.fp_verdict).text }}
+                <el-button v-if="row.bound_device_id || row.device_id" size="small" link type="primary"
+                           @click="jumpToDevice(row.bound_device_id || row.device_id)">
+                  {{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}
+                </el-button>
+                <el-tag v-else size="small" type="info">未绑定</el-tag>
+                <div class="wl-com-sub">{{ row.mac || '无 MAC' }}</div>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" min-width="160">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.inactive ? 'info' : (row.health_state === 'online' ? 'success' : 'info')">
+                  {{ row.inactive ? comresInactiveLabel(row) : (row.health_state || '未知') }}
                 </el-tag>
-                <span v-else class="comres-muted">—</span>
+                <el-tag v-if="row.fp_verdict" size="small" style="margin-left:4px"
+                        :type="fpVerdictMeta(row.fp_verdict).type">
+                  指纹 {{ fpVerdictMeta(row.fp_verdict).text }}
+                </el-tag>
+                <div class="wl-com-sub">
+                  <el-tooltip :content="comresReachLabel(row).tip" placement="top">
+                    <span :style="{ color: comresReachLabel(row).ok === true ? '#16a34a' : (comresReachLabel(row).ok === false ? '#dc2626' : undefined) }">
+                      连通 {{ comresReachLabel(row).text }}
+                    </span>
+                  </el-tooltip>
+                </div>
               </template>
             </el-table-column>
-            <el-table-column label="原因" min-width="110">
-              <template #default="{ row }">
-                <span v-if="row.inactive" class="comres-muted">{{ comresInactiveLabel(row) }}</span>
-                <span v-else class="comres-muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="allocated" width="90">
+            <el-table-column label="占用" min-width="190">
               <template #default="{ row }">
                 <el-tag size="small" :type="row.allocated ? 'warning' : 'info'">
-                  {{ row.allocated ? '是' : '否' }}
+                  {{ row.allocated ? '已占用' : '未分配' }}
                 </el-tag>
+                <div class="wl-com-sub">
+                  {{ comresOccupancyLabel(row) }}
+                  <span v-if="row.allocated && row.allocated_expire"> · 到期 {{ formatLocal(row.allocated_expire) }}</span>
+                </div>
               </template>
             </el-table-column>
-            <el-table-column label="allocated_by" min-width="120" show-overflow-tooltip>
-              <template #default="{ row }">{{ row.allocated_by || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="占用/池" min-width="220" show-overflow-tooltip>
-              <template #default="{ row }">
-                <span v-if="row.inactive" class="comres-muted">{{ comresInactiveLabel(row) }}</span>
-                <span v-else-if="!portHasSerial(row)" class="comres-muted">无串口资源</span>
-                <span v-else>{{ comresOccupancyLabel(row) }}</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="allocated_expire" min-width="170">
-              <template #default="{ row }">
-                {{ row.allocated && row.allocated_expire ? formatLocal(row.allocated_expire) : '—' }}
-              </template>
-            </el-table-column>
-            <el-table-column label="bound device" min-width="140">
-              <template #default="{ row }">
-                <el-button v-if="row.bound_device_id || row.device_id" link type="primary"
-                           @click="jumpToDevice(row.bound_device_id || row.device_id)">
-                  {{ row.bound_device_id || row.device_id }}
-                </el-button>
-                <span v-else class="comres-muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="sn" min-width="100">
-              <template #default="{ row }">{{ row.sn || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="mac" min-width="120">
-              <template #default="{ row }">{{ row.mac || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="操作" width="200" fixed="right">
+            <el-table-column label="操作" width="180" fixed="right">
               <template #default="{ row }">
                 <el-tooltip :content="portHasFingerprint(row) ? '查看设备指纹' : '该端口未上报指纹'" placement="top">
                   <span style="display:inline-block">
@@ -3433,9 +3416,8 @@ const legendRole = [
                                @click="openFingerprintDrawer(row)">设备信息</el-button>
                   </span>
                 </el-tooltip>
-                <el-button v-if="portCanOpen(row)" size="small" type="primary" link
-                           @click="openWlShell(row)">打开串口</el-button>
-                <span v-else class="comres-muted">无串口资源</span>
+                <el-button v-if="portCanOpen(row) && !row.inactive" size="small" type="primary" link
+                           @click="openPortConsole(row)">打开控制台</el-button>
               </template>
             </el-table-column>
           </el-table>
