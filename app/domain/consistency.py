@@ -44,9 +44,13 @@ def defconfig_short(name: str | None) -> str | None:
 
 
 def _other_devices(session: Session, d: Device):
-    """同池其它设备。Device.adb_address 是 property，不能直接进 query，取 ip+port 拼。"""
+    """同池其它设备。Device.adb_address 是 property，不能直接进 query，取 ip+port 拼。
+
+    重复登记判据只认真实身份：ADB 地址（ip+port）或 MAC；同 config_sha256
+    只说明同一批次固件，多台同型号设备共用镜像是正常现象，不算重复。
+    """
     return (
-        session.query(Device.device_id, Device.ip, Device.adb_port, Device.eng_config)
+        session.query(Device.device_id, Device.ip, Device.adb_port, Device.mac)
         .filter(Device.device_id != d.device_id, Device.status != "retired")
         .all()
     )
@@ -80,21 +84,17 @@ def check_device(session: Session, d: Device) -> dict[str, Any]:
     issues: list[str] = []
     verdict = "unknown"
 
-    # ---- 重复登记：同 IP / 同指纹 ----
+    # ---- 重复登记：同 ADB 地址 / 同 MAC ----
     dup_ids: list[str] = []
     my_ip = (d.ip or "").strip()
     my_port = d.adb_port or 5555
-    for other_id, other_ip, other_port, other_cfg in _other_devices(session, d):
+    my_mac = (d.mac or "").strip().lower()
+    for other_id, other_ip, other_port, other_mac in _other_devices(session, d):
         if my_ip and other_ip and other_ip.strip() == my_ip and (other_port or 5555) == my_port:
             dup_ids.append(other_id)
             continue
-        if sha256 and other_cfg:
-            try:
-                ocfg = json.loads(other_cfg)
-            except (ValueError, TypeError):
-                continue
-            if isinstance(ocfg, dict) and (ocfg.get("build_info") or {}).get("config_sha256") == sha256:
-                dup_ids.append(other_id)
+        if my_mac and other_mac and other_mac.strip().lower() == my_mac:
+            dup_ids.append(other_id)
     if dup_ids:
         issues.append("重复登记：" + "、".join(sorted(set(dup_ids))))
         verdict = "duplicate"
@@ -168,20 +168,20 @@ def audit_pool(session: Session) -> dict[str, Any]:
     legacy = [r for r in rows if r["state"] == "legacy"]
     unknown = [r for r in rows if r["state"] == "unknown"]
 
-    # 重复登记：按 IP 与按指纹分组
-    by_ip: dict[str, list[str]] = {}
-    by_sha: dict[str, list[str]] = {}
+    # 重复登记：按 ADB 地址与 MAC 分组（同镜像不算重复）
+    by_addr: dict[str, list[str]] = {}
+    by_mac: dict[str, list[str]] = {}
     for d in devices:
         ip = (d.ip or "").strip()
         if ip:
-            by_ip.setdefault(ip, []).append(d.device_id)
-    for r in fp:
-        if r["sha8"]:
-            by_sha.setdefault(r["sha8"], []).append(r["device_id"])
+            by_addr.setdefault(f"{ip}:{d.adb_port or 5555}", []).append(d.device_id)
+        mac = (d.mac or "").strip().lower()
+        if mac:
+            by_mac.setdefault(mac, []).append(d.device_id)
 
     dup_groups: list[list[str]] = []
     seen_key: set[str] = set()
-    for group in list(by_ip.values()) + list(by_sha.values()):
+    for group in list(by_addr.values()) + list(by_mac.values()):
         if len(group) <= 1:
             continue
         key = "|".join(sorted(group))
