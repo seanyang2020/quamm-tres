@@ -1092,6 +1092,8 @@ def register(session: Session, token: str, payload: dict) -> dict:
         node.sw_version = str(payload["sw_version"])
     if payload.get("caps") is not None:
         node.caps_json = payload["caps"]
+    if isinstance(payload.get("config"), dict):
+        node.config_json = {**(node.config_json or {}), **payload["config"]}
     node.last_heartbeat_at = now
     node.status = "online"
 
@@ -1138,6 +1140,8 @@ def heartbeat(session: Session, token: str, payload: dict) -> dict:
     local_ip = payload.get("local_ip") or payload.get("ip")
     if local_ip:
         node.ip = str(local_ip).strip()
+    if isinstance(payload.get("config"), dict):
+        node.config_json = {**(node.config_json or {}), **payload["config"]}
     node.last_heartbeat_at = now
     node.status = "online"
 
@@ -1536,10 +1540,19 @@ def console_url(session: Session, node_id: str, slot: int | None = None) -> dict
     if node is None:
         raise DomainError("NODE_NOT_FOUND", f"节点不存在: {node_id}")
     host = node.ip
-    if not host:
-        raise DomainError("NODE_NO_IP", f"节点 {node_id} 还没有上报 IP")
     cfg = node.config_json or {}
-    http_port = int(cfg.get("http_port") or 8787)
+    path = str(cfg.get("console_path") or "/")
+    if not path.startswith("/"):
+        path = "/" + path
+    base = str(cfg.get("console_base_url") or "").strip()
+    if base:
+        url = base.rstrip("/") + path
+    else:
+        host = str(cfg.get("console_host") or "").strip() or host
+        if not host:
+            raise DomainError("NODE_NO_IP", f"节点 {node_id} 还没有上报 IP")
+        http_port = int(cfg.get("http_port") or 8787)
+        url = f"http://{host}:{http_port}{path}"
     token = (node.caps_json or {}).get("local_token")  # 节点上报的 serialhub 本地 token
     if not token and getattr(node, "token_cipher", None):
         try:
@@ -1548,7 +1561,6 @@ def console_url(session: Session, node_id: str, slot: int | None = None) -> dict
             token = decrypt_secret(node.token_cipher)
         except Exception:  # noqa: BLE001 - 解密失败就退回无 token 地址
             token = None
-    url = f"http://{host}:{http_port}/"
     if token:
         url += f"#t={token}"
     return {"node_id": node_id, "url": url, "has_token": bool(token),
