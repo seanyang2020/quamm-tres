@@ -112,6 +112,41 @@ def bundle_of_device(device_id: str,
     return _domain_http(bundle_svc.device_bundle, session, device_id)
 
 
+@router.post("/recover")
+def recover(payload: dict = Body(...),
+            session: Session = Depends(get_session),
+            identity=Depends(web_auth.require_login)):
+    """串口恢复：readonly / restart_adbd / reboot（管理员或租约持有人）。"""
+    from app.domain import serial_recover
+
+    device_id = (payload or {}).get("device_id")
+    level = (payload or {}).get("level")
+    slot = (payload or {}).get("slot")
+    if not device_id or not level:
+        raise HTTPException(status_code=400, detail="device_id 与 level 必填")
+    return _domain_http(
+        serial_recover.recover, session,
+        device_id=device_id, level=level,
+        actor=getattr(identity, "email", "web"),
+        email=getattr(identity, "email", ""),
+        is_admin=getattr(identity, "role", "") == "admin",
+        slot=int(slot) if slot is not None else None,
+    )
+
+
+@router.get("/recover/levels")
+def recover_levels():
+    """串口恢复可选级别（供 Web 渲染）。"""
+    from app.domain import serial_recover
+
+    return {
+        "levels": [
+            {"key": k, "label": v["label"], "commands": v["commands"]}
+            for k, v in serial_recover.LEVELS.items()
+        ]
+    }
+
+
 @router.get("/ports/{node_id}/{slot}/fingerprint")
 def get_port_fingerprint(node_id: str, slot: int,
                          session: Session = Depends(get_session),

@@ -1187,8 +1187,16 @@ def _serial_config_impl(session, auth, device_id, ports, replace=False):
     )
 
 
-def _serial_report_impl(session, auth, device_id, action_key, result, detail=None):
-    return serial_svc.report_result(
+def _serial_recover_impl(session, auth, device_id, level="readonly", slot=None):
+    from app.domain import serial_recover
+
+    return serial_recover.recover(
+        session, device_id=device_id, level=level, actor=_serial_actor(auth),
+        email=auth.email, is_admin=auth.is_admin, slot=slot,
+    )
+
+
+def _serial_report_impl(session, auth, device_id, action_key, result, detail=None):    return serial_svc.report_result(
         session, device_id, action_key, result, by=_serial_actor(auth), detail=detail
     )
 
@@ -1197,6 +1205,33 @@ def _serial_report_impl(session, auth, device_id, action_key, result, detail=Non
 def res_serial_caps(device_id: str) -> dict:
     """查一台设备的串口能力：端口、动作（含 hex 序列）、电源/模式状态、当前谁占着。"""
     return _guard_ro(serial_svc.caps, device_id)
+
+
+@mcp.tool()
+def res_recover(device_id: str, level: str = "readonly",
+                slot: int | None = None) -> dict:
+    """ADB 不通时用同设备的 TCP COM 恢复/排障（需租约或管理员）。
+
+    level：
+    - readonly：只读排障（id / 机型 / adbd 状态 / dmesg 尾部）
+    - restart_adbd：重启 adbd，不动系统
+    - reboot：整机重启（串口随重启断开属正常）
+
+    内部走节点 serialhub MCP：takeover 写锁 → 写命令 → tail 哨兵回读 → 释放锁。
+    返回 output/commands/channel，可据此判断是 serial 链路问题还是系统问题。
+    """
+    return _guard(_serial_recover_impl, device_id, level, slot)
+
+
+@mcp.tool()
+def res_serial_recover_levels() -> list[dict]:
+    """串口恢复支持的级别与将执行的命令（供 Agent 先展示再执行）。"""
+    from app.domain import serial_recover
+
+    return [
+        {"key": k, "label": v["label"], "commands": v["commands"]}
+        for k, v in serial_recover.LEVELS.items()
+    ]
 
 
 @mcp.tool()

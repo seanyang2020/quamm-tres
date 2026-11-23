@@ -15,7 +15,7 @@ from app.models import Device, Lease, LeaseState, ProductType, WireLogNode
 _ACTIVE = tuple(sorted(LeaseState.ACTIVE))
 
 
-def _serial_channel(item: dict) -> dict:
+def _serial_channel(item: dict, lease_id: str | None = None) -> dict:
     node = item.get("node_id")
     return {
         "channel": "serial",
@@ -35,6 +35,8 @@ def _serial_channel(item: dict) -> dict:
             "ip": item.get("ip"),
         },
         "state": item.get("state"),
+        "lease_id": lease_id,
+        "allocation": "with_device" if lease_id else "bound",
         "allocated_expire": item.get("allocated_expire"),
         "source": {
             "node_id": node,
@@ -105,7 +107,11 @@ def build_bundles(session: Session) -> dict:
     }
     bundles = []
     for d in devices:
-        serials = [_serial_channel(x) for x in by_device.get(d.device_id, [])]
+        lease = _active_lease(session, d.device_id)
+        serials = [
+            _serial_channel(x, lease["lease_id"] if lease else None)
+            for x in by_device.get(d.device_id, [])
+        ]
         bundles.append({
             "device_id": d.device_id,
             "identity": {
@@ -128,7 +134,7 @@ def build_bundles(session: Session) -> dict:
                 "adb": _adb_channel(d),
                 "serial": serials,
             },
-            "lease": _active_lease(session, d.device_id),
+            "lease": lease,
             "complete": bool(serials),
         })
 

@@ -1186,6 +1186,14 @@ const bundleError = ref('')
 const bundleLoading = ref(false)
 const bundleOnlySerial = ref(true)  // 默认只显示有串口的设备
 
+// 串口恢复
+const recoverDialog = ref(false)
+const recoverDevice = ref(null)
+const recoverChannel = ref(null)
+const recoverLevel = ref('readonly')
+const recoverBusy = ref(false)
+const recoverResult = ref(null)
+
 // t981：设备指纹抽屉
 const fpDrawer = ref(false)
 const fpDrawerTitle = ref('设备指纹')
@@ -1618,6 +1626,46 @@ const bundleRows = computed(() => {
 
 function bundleSerialEndpoint(ch) {
   return ch.endpoint || (ch.tcp_port ? `tcp://<节点IP>:${ch.tcp_port}` : '—')
+}
+
+function openRecover(device, ch) {
+  recoverDevice.value = device
+  recoverChannel.value = ch
+  recoverLevel.value = 'readonly'
+  recoverResult.value = null
+  recoverDialog.value = true
+}
+
+async function runRecover() {
+  if (!recoverDevice.value || !recoverChannel.value) return
+  if (recoverLevel.value !== 'readonly') {
+    try {
+      await ElMessageBox.confirm(
+        recoverLevel.value === 'reboot'
+          ? '确定要整机重启？设备会断开数十秒。'
+          : '确定重启 adbd？ADB 会短暂中断。',
+        '串口恢复确认', { type: 'warning', confirmButtonText: '执行', cancelButtonText: '取消' },
+      )
+    } catch (e) { return }
+  }
+  recoverBusy.value = true
+  recoverResult.value = null
+  try {
+    recoverResult.value = await api('/api/comres/recover', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_id: recoverDevice.value.device_id,
+        level: recoverLevel.value,
+        slot: recoverChannel.value.source.slot,
+      }),
+    })
+    ElMessage.success(recoverResult.value.ok ? '串口恢复完成' : '已下发，但未确认完成，请看输出')
+  } catch (e) {
+    ElMessage.error('串口恢复失败：' + String(e.message || e))
+  } finally {
+    recoverBusy.value = false
+  }
 }
 
 async function runComresReachability() {
@@ -3100,6 +3148,42 @@ const legendRole = [
 
       <!-- COMRes：节点视图 / 资源池 / 设置（原 WireLog tab，key 仍为 wirelog） -->
       <div v-else-if="active === 'wirelog'">
+        <!-- 串口恢复对话框（readonly / restart_adbd / reboot） -->
+        <el-dialog v-model="recoverDialog" title="串口恢复" width="720px" append-to-body>
+          <div v-if="recoverDevice">
+            <p style="margin:0 0 8px">
+              设备 <strong>{{ recoverDevice.identity.display_name || recoverDevice.device_id }}</strong>
+              · {{ recoverChannel && recoverChannel.com }}
+              · {{ recoverChannel && recoverChannel.endpoint }}
+            </p>
+            <el-radio-group v-model="recoverLevel">
+              <el-radio-button label="readonly">只读排障</el-radio-button>
+              <el-radio-button label="restart_adbd">重启 adbd</el-radio-button>
+              <el-radio-button label="reboot">整机重启</el-radio-button>
+            </el-radio-group>
+            <el-alert v-if="recoverLevel !== 'readonly'" type="warning" :closable="false" show-icon
+                      style="margin-top:10px"
+                      :title="recoverLevel === 'reboot'
+                        ? '会整机重启，ADB 与串口会短暂断开，属正常现象'
+                        : '会重启 adbd，ADB 连接短暂中断后自动恢复'" />
+            <div v-if="recoverResult">
+              <p style="margin:12px 0 6px">
+                <el-tag size="small" :type="recoverResult.ok ? 'success' : 'danger'">
+                  {{ recoverResult.ok ? '完成' : '未确认完成' }}
+                </el-tag>
+                <span class="comres-muted" style="font-size:12px;margin-left:8px">
+                  {{ recoverResult.level_label }} · {{ recoverResult.duration_ms }}ms
+                </span>
+              </p>
+              <pre class="recover-out">{{ recoverResult.output || '（无输出）' }}</pre>
+            </div>
+          </div>
+          <template #footer>
+            <el-button @click="recoverDialog = false">关闭</el-button>
+            <el-button type="danger" :loading="recoverBusy" @click="runRecover">执行</el-button>
+          </template>
+        </el-dialog>
+
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px;flex-wrap:wrap">
           <h2 style="margin:0">COMRes</h2>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -3555,6 +3639,11 @@ const legendRole = [
                             :type="fpVerdictMeta(ch.fp_verdict).type">
                       指纹 {{ fpVerdictMeta(ch.fp_verdict).text }}
                     </el-tag>
+                    <el-tag v-if="ch.lease_id" size="small" type="warning" style="margin-left:4px">
+                      随设备租用
+                    </el-tag>
+                    <el-button size="small" type="danger" plain style="margin-left:8px"
+                               @click="openRecover(b, ch)">串口恢复</el-button>
                     <span class="comres-muted" style="font-size:12px;margin-left:8px">
                       {{ ch.baud ? ch.baud + ' baud' : '' }}
                     </span>
@@ -4869,4 +4958,8 @@ const legendRole = [
   width: 42px; flex: 0 0 42px; color: #909399; font-size: 12px;
 }
 .bundle-serial { padding: 2px 0; }
-</style>
+.recover-out {
+  margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto;
+  background: #0f1115; color: #d7dbe7; border-radius: 8px;
+  white-space: pre-wrap; word-break: break-all; font-size: 12px;
+}</style>
