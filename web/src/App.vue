@@ -333,6 +333,10 @@ const deviceAddMode = ref('ip')
 const discoveryNetworks = ref('')
 const discovering = ref(false)
 const discoveryResults = ref([])
+// UART（串口）接入：从未绑定的串口资源直接建一台「串口为主通道」的设备
+const serialAddResources = ref([])
+const serialAddLoading = ref(false)
+const serialAddPick = ref(null)
 
 function openDeviceAdd(presetModel) {
   // v0.29.2：打开即刷新机型字典，避免刚派生/新增的机型在下拉里看不到
@@ -349,11 +353,63 @@ function openDeviceAdd(presetModel) {
   deviceAddAgentAuto.value = new Set()
   discoveryNetworks.value = ''
   discoveryResults.value = []
+  serialAddResources.value = []
+  serialAddPick.value = null
   deviceAddVisible.value = true
 }
 
-async function runDiscovery() {
-  discovering.value = true
+async function loadSerialAddResources() {
+  serialAddLoading.value = true
+  try {
+    const r = await api('/api/wirelog/serial-resources')
+    serialAddResources.value = (r.resources || []).filter((x) => !x.bound_device_id)
+  } catch (e) { ElMessage.error('读取串口资源失败：' + String(e.message || e)) }
+  finally { serialAddLoading.value = false }
+}
+
+function serialIdentity(row) {
+  const p = row.probe || {}
+  const ident = p.identity || {}
+  return {
+    mac: (ident.mac || row.shell_mac || '').toLowerCase(),
+    sn: ident.sn || '',
+    ip: ident.ip || row.shell_ip || '',
+    model: (p.system || {}).project || (p.system || {}).model || '',
+    verdict: p.verdict || '',
+  }
+}
+
+function pickSerialResource(row) {
+  const id = serialIdentity(row)
+  serialAddPick.value = row
+  deviceAddProbe.value = {
+    serial: true,
+    probe: {
+      level: row.shell_reachable ? 'L3' : 'L0',
+      mac: id.mac, sn: id.sn, model: id.model,
+      endpoint: row.endpoint, com: row.com_name || row.tty_name,
+      node: row.node_name || row.node_id, slot: row.slot,
+      reachable: row.shell_reachable,
+    },
+    identity_match: { result: 'new' },
+  }
+  const model = enabledProductTypes.value.some((t) => t.type_code === id.model) ? id.model : ''
+  deviceAddConfirm.value = {
+    position_code: '', owner: '', model_class: model,
+    note: (row.com_name || row.tty_name || ('COM' + row.slot)) + '@' + (row.node_name || row.node_id),
+    share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [],
+  }
+  deviceAddAgentInfo.value = {}
+  deviceAddAgentSeen.value = new Set()
+  deviceAddAgentAuto.value = new Set()
+  deviceAddStep.value = 2
+}
+
+function onDeviceAddModeChange(mode) {
+  if (mode === 'serial') loadSerialAddResources()
+}
+
+async function runDiscovery() {  discovering.value = true
   try {
     const nets = discoveryNetworks.value.split(',').map((s) => s.trim()).filter(Boolean)
     const r = await api('/api/devices/discover', {
@@ -412,6 +468,33 @@ async function submitDeviceProbe() {
     }
     deviceAddStep.value = 2
   } catch (e) { ElMessage.error(e.message) } finally { deviceAddProbing.value = false }
+}
+
+async function submitSerialDevice() {
+  if (!serialAddPick.value) { ElMessage.error('请选择一路串口'); return }
+  if (!deviceAddConfirm.value.position_code.trim()) { ElMessage.error('请填写位置'); return }
+  if (!deviceAddConfirm.value.owner.trim()) { ElMessage.error('请填写负责人'); return }
+  deviceAddSaving.value = true
+  try {
+    const id = serialIdentity(serialAddPick.value)
+    const r = await api('/api/wirelog/nodes/' + serialAddPick.value.node_id
+      + '/slots/' + serialAddPick.value.slot + '/create-device', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        owner: deviceAddConfirm.value.owner,
+        position_code: deviceAddConfirm.value.position_code,
+        display_name: deviceAddConfirm.value.note || null,
+        model_class: deviceAddConfirm.value.model_class || null,
+        mac: id.mac || null, sn: id.sn || null, ip: id.ip || null,
+      }),
+    })
+    ElMessage.success(r.result === 'existing'
+      ? '该串口已归到现有设备 ' + r.device_id
+      : '设备已从串口创建：' + r.device_id)
+    deviceAddVisible.value = false
+    loadDevices()
+    loadComresBundles().catch(() => {})
+  } catch (e) { ElMessage.error(e.message) } finally { deviceAddSaving.value = false }
 }
 
 async function submitDeviceRegister() {
@@ -4312,9 +4395,11 @@ const legendRole = [
         </el-steps>
 
         <template v-if="deviceAddStep === 1">
-          <el-radio-group v-model="deviceAddMode" style="margin-bottom: 14px">
+          <el-radio-group v-model="deviceAddMode" style="margin-bottom: 14px"
+                          @change="onDeviceAddModeChange">
             <el-radio-button value="ip">IP 直连</el-radio-button>
             <el-radio-button value="discover">设备发现</el-radio-button>
+            <el-radio-button value="serial">串口（UART）</el-radio-button>
           </el-radio-group>
 
           <el-form v-if="deviceAddMode === 'ip'" label-width="100px">
@@ -4331,7 +4416,7 @@ const legendRole = [
             </el-form-item>
           </el-form>
 
-          <div v-else>
+          <div v-else-if="deviceAddMode === 'discover'">
             <div style="display: flex; gap: 8px; margin-bottom: 10px">
               <el-input
                 v-model="discoveryNetworks"
@@ -4381,6 +4466,47 @@ const legendRole = [
               </el-table-column>
             </el-table>
           </div>
+
+          <div v-else>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+              <span class="form-hint" style="margin:0">选一路未绑定的串口，TRES 会按指纹 MAC/SN/IP 直接建机，并与该口绑定。</span>
+              <el-button size="small" :loading="serialAddLoading" @click="loadSerialAddResources">刷新</el-button>
+            </div>
+            <el-table :data="serialAddResources" border size="small" max-height="320" v-loading="serialAddLoading">
+              <el-table-column label="日志机/路" min-width="150">
+                <template #default="{ row }">
+                  {{ row.node_name || row.node_id }} · 路{{ row.slot }}
+                  <el-tag v-if="row.node_status !== 'online'" size="small" type="info">{{ row.node_status }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="TCP COM / 接入" min-width="200">
+                <template #default="{ row }">
+                  <div>{{ row.com_name || row.tty_name || ('COM' + row.slot) }}</div>
+                  <div class="wl-endpoint">{{ row.endpoint || '—' }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="指纹身份" min-width="210">
+                <template #default="{ row }">
+                  <div>MAC {{ serialIdentity(row).mac || '—' }}</div>
+                  <div>IP {{ serialIdentity(row).ip || '—' }} · {{ serialIdentity(row).model || '未识别' }}</div>
+                </template>
+              </el-table-column>
+              <el-table-column label="就绪" width="80">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.shell_reachable ? 'success' : 'info'">
+                    {{ row.shell_reachable ? '可达' : '不可达' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="80">
+                <template #default="{ row }">
+                  <el-button size="small" link type="primary" @click="pickSerialResource(row)">选择</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!serialAddResources.length && !serialAddLoading"
+                      description="没有未绑定的串口资源（先在 COMRes 里确认节点在线、端口已纳管）" />
+          </div>
         </template>
 
         <template v-else>
@@ -4389,6 +4515,16 @@ const legendRole = [
             <el-descriptions-item label="MAC">{{ deviceAddProbe.probe?.mac || '-' }}</el-descriptions-item>
             <el-descriptions-item label="SN">{{ deviceAddProbe.probe?.sn || '-' }}</el-descriptions-item>
             <el-descriptions-item label="探测机型">{{ deviceAddProbe.probe?.model || '-' }}</el-descriptions-item>
+            <el-descriptions-item v-if="deviceAddProbe.serial" label="串口">
+              {{ deviceAddProbe.probe.node }} · 路{{ deviceAddProbe.probe.slot }}
+              · {{ deviceAddProbe.probe.com || '—' }}
+              <el-tag size="small" :type="deviceAddProbe.probe.reachable ? 'success' : 'info'" style="margin-left:6px">
+                {{ deviceAddProbe.probe.reachable ? '可达' : '不可达' }}
+              </el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="deviceAddProbe.serial" label="接入地址">
+              <span class="wl-endpoint">{{ deviceAddProbe.probe.endpoint || '—' }}</span>
+            </el-descriptions-item>
           </el-descriptions>
           <el-alert
             v-if="deviceAddProbe?.identity_match?.result === 'existing'"
@@ -4449,6 +4585,7 @@ const legendRole = [
           <el-button @click="deviceAddVisible = false">取消</el-button>
           <el-button v-if="deviceAddStep === 2" @click="deviceAddStep = 1">上一步</el-button>
           <el-button v-if="deviceAddStep === 1 && deviceAddMode === 'ip'" type="primary" :loading="deviceAddProbing" @click="submitDeviceProbe">探测</el-button>
+          <el-button v-else-if="deviceAddStep === 2 && deviceAddMode === 'serial'" type="primary" :loading="deviceAddSaving" @click="submitSerialDevice">从串口创建</el-button>
           <el-button v-else-if="deviceAddStep === 2" type="primary" :loading="deviceAddSaving" @click="submitDeviceRegister">确认注册</el-button>
         </template>
       </el-dialog>
@@ -4476,7 +4613,10 @@ const legendRole = [
             </el-select>
           </el-form-item>
           <template v-if="me.role === 'admin'">
-            <el-form-item label="IP"><el-input v-model="deviceEditRow.ip" /></el-form-item>
+            <el-form-item label="IP">
+              <el-input v-model="deviceEditRow.ip" />
+              <div class="form-hint">串口接入的设备可在这里后补 ADB IP：ADB 通了优先走 ADB，不通仍按串口判活。</div>
+            </el-form-item>
             <el-form-item label="ADB 端口"><el-input-number v-model="deviceEditRow.adb_port" :min="1" :max="65535" /></el-form-item>
             <el-form-item label="MAC"><el-input v-model="deviceEditRow.mac" /></el-form-item>
           </template>

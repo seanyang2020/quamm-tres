@@ -610,13 +610,24 @@ def device_probe_batch(
 # ---------- 注册 ----------
 
 def _match_existing(session: Session, probe: dict) -> Device | None:
-    """强锚比对：MAC / SN / asset_tag 任一唯一命中即认定为已有设备。"""
+    """强锚比对：MAC / SN / asset_tag 任一唯一命中即认定为已有设备。
+
+    MAC/SN 都拿不到时（常见于仅串口接入的设备），用 IP 兜底命中
+    source=serial 的在册设备，避免同一个 IP 重复建机。
+    """
     for key in ("mac", "sn", "asset_tag"):
         value = probe.get(key)
         if value:
             found = session.query(Device).filter(getattr(Device, key) == value).first()
             if found:
                 return found
+    ip = str(probe.get("ip") or "").strip()
+    if ip and not probe.get("mac") and not probe.get("sn"):
+        found = (session.query(Device)
+                 .filter(Device.ip == ip, Device.source == "serial",
+                         Device.status != DeviceStatus.RETIRED).first())
+        if found:
+            return found
     return None
 
 
@@ -765,7 +776,14 @@ def device_register(
         device = existing
         device.ip = probe.get("ip") or device.ip
         device.adb_port = probe.get("adb_port") or device.adb_port
-        device.source = probe.get("source") or device.source
+        # 已挂串口的设备保持 source=serial：巡检会先试 ADB，失败回落串口。
+        has_serial = (
+            session.query(WireLogPortBinding)
+            .filter(WireLogPortBinding.bound_device_id == device.device_id)
+            .first()
+        ) is not None
+        if not has_serial:
+            device.source = probe.get("source") or device.source
         device.android_version = probe.get("android_version") or device.android_version
         device.position_code = position_code
         device.owner = owner

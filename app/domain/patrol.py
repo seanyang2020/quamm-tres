@@ -23,7 +23,7 @@ from app.domain.notices import notify_device_offline, notify_device_recovered
 from app.domain import device_recovery as recovery
 from concurrent.futures import ThreadPoolExecutor
 
-from app.domain.probe import ProbeResult, probe_device
+from app.domain.probe import ProbeResult, RealXosProber, probe_device
 from app.domain.prober_real import tcp_port_open
 from app.models import Device, Lease, PatrolRun, WireLogPortBinding
 from app.utils import new_run_id, utcnow
@@ -86,7 +86,17 @@ def run_patrol_round(
         # v0.32：只提供串口的独立设备（source=serial）没有 ADB，按它绑定的那路
         # 串口探测结果记账；既不能走 adb 分支，也不能因为没 ip 被直接跳过。
         if d.source == "serial":
+            # 先按串口判活；补了 ADB 地址的设备再试 ADB，通了就用 ADB 结果，
+            # 不通仍回落串口，保证「后补 ADB」不会把可用设备打成离线。
             result = _serial_device_result(session, d)
+            if d.ip:
+                # 只试 ADB，不在这里重复走串口；ADB 不通就用上面的串口结果。
+                adb = RealXosProber().probe(
+                    d.ip, d.adb_port or 5555,
+                    timeout=settings.probe_timeout_seconds,
+                )
+                if adb.reachable_l3:
+                    result = adb
         elif not d.ip:
             continue
         # device 表的 ip/adb_port 即探测地址；端口缺失时按 ip:5555 组。

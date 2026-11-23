@@ -11,11 +11,13 @@ import json
 import secrets
 import time
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import (
     Device,
+    ProductType,
     WireLogAudit,
     WireLogClientApply,
     WireLogEnrollment,
@@ -884,11 +886,16 @@ def list_serial_resources(session, node_id=None):
 
 def create_device_from_binding(session, node_id, slot, owner=None,
                                display_name=None, position_code=None,
-                               actor=None):
-    """把一路串口落地成一台「只提供串口」的独立设备（无 ADB）。
+                               actor=None, model_class=None,
+                               mac=None, sn=None, ip=None):
+    """把一路串口落地成一台「以串口为主通道」的设备（ADB 可后补）。
 
-    这类设备靠 tcp com 探测判活（宿主每轮上报 shell_reachable），
-    探得到就转正进可用池；没有 ip 也不走 adb 分支。
+    统一身份：优先写回串口指纹里的 MAC / SN / IP，使这台设备之后用 IP/ADB
+    添加时能按同一身份命中，不会重复建机；若该 MAC/SN/IP 已属于现有设备，
+    则只把这路串口挂到它名下（返回 ``result=existing``），不新建。
+
+    这类设备靠 tcp com 探测判活（宿主每轮上报 shell_reachable）；
+    补了 ADB 地址后由巡检优先走 ADB，ADB 不通再回落到串口。
     """
     binding = _get_binding_or_raise(session, node_id, slot)
     if binding.bound_device_id:
@@ -898,22 +905,83 @@ def create_device_from_binding(session, node_id, slot, owner=None,
                 "WL_SLOT_ALREADY_BOUND",
                 f"路 {slot} 已绑定设备 {binding.bound_device_id}",
             )
+
+    probe = _json_or_none(binding.probe_json) or {}
+    ident = probe.get("identity") or {}
+    system = probe.get("system") or {}
+    fp_mac = str(ident.get("mac") or "").strip().lower() or None
+    fp_sn = str(ident.get("sn") or "").strip() or None
+    fp_ip = str(ident.get("ip") or "").strip() or None
+    use_mac = (str(mac or "").strip().lower() or fp_mac
+               or (str(binding.shell_mac).strip().lower() if binding.shell_mac else None))
+    use_sn = str(sn or "").strip() or fp_sn
+    use_ip = str(ip or "").strip() or fp_ip or binding.shell_ip
+
+    # 机型：显式传入选；否则用指纹 project（板端常是 framex/qm10xd），
+    # 只有命中机型字典才落库，避免把探测型号当 type_code。
+    mc = str(model_class or "").strip() or None
+    if mc is None:
+        project = str(system.get("project") or "").strip().lower()
+        mc = project if project and session.get(ProductType, project) is not None else None
+    if mc is not None and session.get(ProductType, mc) is None:
+        raise DomainError("UNKNOWN_MODEL", f"机型 {mc} 不在机型字典中")
+
+    # 同一台设备：按 MAC → SN → IP 命中现有记录就只挂串口，不重复建机。
+    existing = None
+    if use_mac:
+        existing = (session.query(Device)
+                    .filter(func.lower(Device.mac) == use_mac,
+                            Device.status != DeviceStatus.RETIRED).first())
+    if existing is None and use_sn:
+        existing = (session.query(Device)
+                    .filter(Device.sn == use_sn,
+                            Device.status != DeviceStatus.RETIRED).first())
+    if existing is None and use_ip:
+        existing = (session.query(Device)
+                    .filter(Device.ip == use_ip,
+                            Device.status != DeviceStatus.RETIRED).first())
+
     now = utcnow()
+    if existing is not None:
+        binding.bound_device_id = existing.device_id
+        if existing.ip is None and use_ip:
+            existing.ip = use_ip
+        if existing.mac is None and use_mac:
+            existing.mac = use_mac
+        if existing.sn is None and use_sn:
+            existing.sn = use_sn
+        if existing.model_class is None and mc:
+            existing.model_class = mc
+        _audit(session, node_id, "bind_serial_to_existing", actor=actor,
+               detail={"slot": slot, "device": existing.device_id,
+                       "matched_mac": use_mac, "matched_ip": use_ip})
+        session.commit()
+        return {"result": "existing", "device_id": existing.device_id,
+                "node_id": node_id, "slot": slot,
+                "display_name": existing.display_name,
+                "identity": {"mac": existing.mac, "sn": existing.sn,
+                             "ip": existing.ip}}
+
     name = display_name or (
         f"{binding.com_name or binding.tty_name or ('slot' + str(slot))}@{node_id}"
     )
+    reachable = bool(binding.shell_reachable)
     device = Device(
         device_id=new_device_id(),
         display_name=name,
-        model_class=None,
+        model_class=mc,
         owner=owner or actor or "system",
         position_code=position_code,
-        status=DeviceStatus.PENDING,
-        health_level=HealthLevel.L0,
+        mac=use_mac,
+        sn=use_sn,
+        ip=use_ip,
+        adb_port=5555,
+        status=DeviceStatus.AVAILABLE if reachable else DeviceStatus.PENDING,
+        health_level=HealthLevel.L3 if reachable else HealthLevel.L0,
+        last_seen_at=now if reachable else None,
         registered_by=actor,
         register_channel=RegisterChannel.SERIAL_HOST,
         source="serial",
-        ip=None,
         created_at=now,
     )
     session.add(device)
@@ -921,10 +989,13 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     binding.bound_device_id = device.device_id
     _audit(session, node_id, "create_device_from_serial", actor=actor,
            detail={"slot": slot, "device": device.device_id,
-                   "endpoint": binding.endpoint, "com": binding.com_name})
+                   "endpoint": binding.endpoint, "com": binding.com_name,
+                   "mac": use_mac, "sn": use_sn, "ip": use_ip})
     session.commit()
-    return {"device_id": device.device_id, "node_id": node_id, "slot": slot,
-            "display_name": name, "source": "serial"}
+    return {"result": "created", "device_id": device.device_id,
+            "node_id": node_id, "slot": slot, "display_name": name,
+            "source": "serial",
+            "identity": {"mac": use_mac, "sn": use_sn, "ip": use_ip}}
 
 
 def detach_binding(session, node_id, slot, actor=None):

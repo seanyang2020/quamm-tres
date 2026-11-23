@@ -470,13 +470,17 @@ def post_create_serial_device(node_id: str, slot: int,
                               payload: dict = Body(default={}),
                               session: Session = Depends(get_session),
                               identity=Depends(web_auth.require_admin)):
-    """把一路串口落地成独立设备（无 ADB，靠串口探测判活）。"""
+    """从一路串口建机：写回指纹身份，命中现有设备则只挂串口（ADB 可后补）。"""
     return _domain_http(
         wirelog.create_device_from_binding, session, node_id, slot,
         owner=payload.get("owner"),
         display_name=payload.get("display_name"),
         position_code=payload.get("position_code"),
         actor=identity.email,
+        model_class=payload.get("model_class"),
+        mac=payload.get("mac"),
+        sn=payload.get("sn"),
+        ip=payload.get("ip"),
     )
 
 
