@@ -1352,13 +1352,27 @@ function portConsoleUrl(row) {
   const hp = (row && row.node_http_port) || 8787
   return 'http://' + host + ':' + hp + '/'
 }
-function openPortConsole(row) {
-  const url = portConsoleUrl(row)
-  if (!url) {
-    ElMessage.warning('该端口未上报节点地址，无法打开控制台')
+async function openPortConsole(row) {
+  const nodeId = (row && row.node_id) || wlDetailId.value
+  if (!nodeId) {
+    // 没有 node_id 时退回旧的裸地址（至少能打开，token 需手工填）
+    const url = portConsoleUrl(row)
+    if (!url) { ElMessage.warning('该端口未上报节点地址，无法打开控制台'); return }
+    window.open(url, '_blank')
     return
   }
-  window.open(url, '_blank')
+  // 先开空白页，避免 await 之后被浏览器当弹窗拦截
+  const win = window.open('about:blank', '_blank')
+  try {
+    const q = new URLSearchParams({ node_id: nodeId })
+    if (row && row.slot != null) q.set('slot', row.slot)
+    const r = await api('/api/comres/console-url?' + q.toString())
+    if (!r || !r.url) throw new Error('节点未返回控制台地址')
+    win.location.href = r.url
+  } catch (e) {
+    if (win) win.close()
+    ElMessage.error('打开控制台失败：' + String(e.message || e))
+  }
 }
 function copyPortEndpoint(row) {
   const text = portEndpointText(row)
@@ -1544,7 +1558,7 @@ async function openFingerprintDrawer(row) {
   }
 }
 
-async function loadComresResources() {
+async function loadComresResources(retry = 1) {
   comresLoading.value = true
   comresError.value = ''
   try {
@@ -1560,6 +1574,12 @@ async function loadComresResources() {
       fail: Number(rs.fail) || 0,
     }
   } catch (e) {
+    // 首屏偶发失败（会话/服务刚重启）不要留下"串口资源 0"的假象：退避重试一次
+    if (retry > 0) {
+      comresLoading.value = false
+      setTimeout(() => loadComresResources(retry - 1), 1500)
+      return
+    }
     comresAllocated.value = []
     comresBound.value = []
     comresPool.value = []
@@ -2098,6 +2118,13 @@ async function boot() {
 onMounted(() => {
   boot()
   window.addEventListener('hashchange', () => { resolveLegacyRoute() })
+  // 回到窗口/切回设备中心时刷新一次串口统计，避免页面长时间挂着显示旧值
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && me.value) loadComresResources(0)
+  })
+})
+watch(active, (v) => {
+  if (v === 'devices' && me.value) loadComresResources(0)
 })
 
 async function offerBrowserSave(email, password) {
@@ -3517,6 +3544,7 @@ const legendRole = [
                 <div style="flex:1">
                   <div v-for="ch in b.channels.serial" :key="ch.com_key" class="bundle-serial">
                     <a class="wl-com-link" @click="openPortConsole({
+                      node_id: ch.source.node_id, slot: ch.source.slot,
                       node_ip: ch.source.node_ip, tcp_port: ch.tcp_port,
                       com: ch.com, health_state: ch.health_state, inactive: false,
                     })">{{ ch.com }}<span class="wl-com-open">↗</span></a>

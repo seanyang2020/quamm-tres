@@ -1523,3 +1523,33 @@ def list_resources(session: Session) -> dict:
             "total": reach_total, "ok": reach_ok_n, "fail": reach_fail_n,
         },
     }
+
+
+def console_url(session: Session, node_id: str, slot: int | None = None) -> dict:
+    """节点控制台地址（含 token 片段）。
+
+    浏览器点开即可用，无需在页面上手工填 token：
+    token 放在 URL fragment（``#t=``）里，不会进服务端日志/Referer，
+    页面读取后写入 localStorage 并清掉 hash。
+    """
+    node = session.get(WireLogNode, node_id)
+    if node is None:
+        raise DomainError("NODE_NOT_FOUND", f"节点不存在: {node_id}")
+    host = node.ip
+    if not host:
+        raise DomainError("NODE_NO_IP", f"节点 {node_id} 还没有上报 IP")
+    cfg = node.config_json or {}
+    http_port = int(cfg.get("http_port") or 8787)
+    token = None
+    if getattr(node, "token_cipher", None):
+        try:
+            from app.secret_crypto import decrypt_secret
+
+            token = decrypt_secret(node.token_cipher)
+        except Exception:  # noqa: BLE001 - 解密失败就退回无 token 地址
+            token = None
+    url = f"http://{host}:{http_port}/"
+    if token:
+        url += f"#t={token}"
+    return {"node_id": node_id, "url": url, "has_token": bool(token),
+            "slot": slot}

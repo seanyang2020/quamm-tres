@@ -86,6 +86,14 @@ def resources(session: Session = Depends(get_session),
     return comres.list_resources(session)
 
 
+@router.get("/console-url")
+def get_console_url(node_id: str, slot: int | None = None,
+                    session: Session = Depends(get_session),
+                    _id=Depends(web_auth.require_login)):
+    """控制台地址：带 token 片段，点开即用（不再手工填 token）。"""
+    return _domain_http(comres.console_url, session, node_id, slot)
+
+
 @router.get("/bundles")
 def bundles(session: Session = Depends(get_session),
             _id=Depends(web_auth.require_login)):
