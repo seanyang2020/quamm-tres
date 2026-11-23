@@ -39,6 +39,7 @@
   <button id="btnReconnect" title="重新连接该路串口">重连</button>
   <button id="btnClear" title="清屏（不影响串口）">清屏</button>
   <button id="btnClose" title="断开串口连接">断开</button>
+  <button id="btnExit" title="断开并关闭本页">关闭页面</button>
 </div>
 <div id="term"></div>
   <div id="hint">经 COMRes / serialhub raw TCP 接入。节点已授权时默认读写；未授权节点只读。</div>
@@ -191,6 +192,14 @@
     if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
     setState('已断开', 'err');
     term.write('\r\n\u001b[90m[已断开] 可点「重连」恢复\u001b[0m\r\n');
+  };
+  document.getElementById('btnExit').onclick = function () {
+    closingByUser = true;
+    if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
+    if (window.opener) { window.close(); return; }
+    // 非脚本打开的标签页一般不允许 window.close，退回上一页
+    if (history.length > 1) history.back();
+    else location.href = 'about:blank';
   };
 
   connect();
