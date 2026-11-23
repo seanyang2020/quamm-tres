@@ -4396,7 +4396,7 @@ const legendRole = [
       </div>
 
       <!-- 全局弹窗：手工添加设备（两步：探测 -> 注册） -->
-      <el-dialog v-model="deviceAddVisible" title="添加设备" width="680px" :close-on-click-modal="false">
+      <el-dialog v-model="deviceAddVisible" title="添加设备" width="920px" :close-on-click-modal="false">
         <el-steps :active="deviceAddStep - 1" align-center finish-status="success" style="margin-bottom: 16px">
           <el-step title="探测设备" />
           <el-step title="确认信息" />
@@ -4477,10 +4477,12 @@ const legendRole = [
 
           <div v-else>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <span class="form-hint" style="margin:0">选一路未绑定的串口，TRES 会按指纹 MAC/SN/IP 直接建机，并与该口绑定。</span>
+              <span class="form-hint" style="margin:0">点击任意一行选中；TRES 会按指纹 MAC/SN/IP 直接建机，并与该口绑定。</span>
               <el-button size="small" :loading="serialAddLoading" @click="loadSerialAddResources">刷新</el-button>
             </div>
-            <el-table :data="serialAddResources" border size="small" max-height="320" v-loading="serialAddLoading">
+            <el-table :data="serialAddResources" border size="small" max-height="320"
+                      v-loading="serialAddLoading" style="width:100%"
+                      :row-style="{ cursor: 'pointer' }" @row-click="pickSerialResource">
               <el-table-column label="日志机/路" min-width="150">
                 <template #default="{ row }">
                   {{ row.node_name || row.node_id }} · 路{{ row.slot }}
@@ -4508,7 +4510,7 @@ const legendRole = [
               </el-table-column>
               <el-table-column label="操作" width="80">
                 <template #default="{ row }">
-                  <el-button size="small" link type="primary" @click="pickSerialResource(row)">选择</el-button>
+                  <el-button size="small" link type="primary" @click.stop="pickSerialResource(row)">选择</el-button>
                 </template>
               </el-table-column>
             </el-table>
