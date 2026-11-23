@@ -1540,8 +1540,8 @@ def console_url(session: Session, node_id: str, slot: int | None = None) -> dict
         raise DomainError("NODE_NO_IP", f"节点 {node_id} 还没有上报 IP")
     cfg = node.config_json or {}
     http_port = int(cfg.get("http_port") or 8787)
-    token = None
-    if getattr(node, "token_cipher", None):
+    token = (node.caps_json or {}).get("local_token")  # 节点上报的 serialhub 本地 token
+    if not token and getattr(node, "token_cipher", None):
         try:
             from app.secret_crypto import decrypt_secret
 
