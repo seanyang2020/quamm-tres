@@ -379,17 +379,22 @@ function serialIdentity(row) {
   }
 }
 
+function serialReady(row) {
+  return row.node_status === 'online'
+    && (!!row.shell_reachable || ['online', 'probed'].includes(String(row.health_state || '').toLowerCase()))
+}
+
 function pickSerialResource(row) {
   const id = serialIdentity(row)
   serialAddPick.value = row
   deviceAddProbe.value = {
     serial: true,
     probe: {
-      level: row.shell_reachable ? 'L3' : 'L0',
+      level: serialReady(row) ? 'L3' : 'L0',
       mac: id.mac, sn: id.sn, model: id.model,
       endpoint: row.endpoint, com: row.com_name || row.tty_name,
       node: row.node_name || row.node_id, slot: row.slot,
-      reachable: row.shell_reachable,
+      reachable: serialReady(row),
     },
     identity_match: { result: 'new' },
   }
@@ -4496,8 +4501,8 @@ const legendRole = [
               </el-table-column>
               <el-table-column label="就绪" width="80">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="row.shell_reachable ? 'success' : 'info'">
-                    {{ row.shell_reachable ? '可达' : '不可达' }}
+                  <el-tag size="small" :type="serialReady(row) ? 'success' : 'info'">
+                    {{ serialReady(row) ? '可达' : '不可达' }}
                   </el-tag>
                 </template>
               </el-table-column>

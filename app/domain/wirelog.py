@@ -967,7 +967,10 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     name = display_name or (
         f"{binding.com_name or binding.tty_name or ('slot' + str(slot))}@{node_id}"
     )
-    reachable = bool(binding.shell_reachable)
+    node = session.get(WireLogNode, node_id)
+    reachable = (node is not None and node.status == "online"
+                 and (bool(binding.shell_reachable)
+                      or (binding.health_state or "").lower() in ("online", "probed")))
     device = Device(
         device_id=new_device_id(),
         display_name=name,

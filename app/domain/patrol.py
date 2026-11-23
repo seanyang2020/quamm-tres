@@ -25,7 +25,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.domain.probe import ProbeResult, RealXosProber, probe_device
 from app.domain.prober_real import tcp_port_open
-from app.models import Device, Lease, PatrolRun, WireLogPortBinding
+from app.models import Device, Lease, PatrolRun, WireLogNode, WireLogPortBinding
 from app.utils import new_run_id, utcnow
 
 
@@ -228,7 +228,12 @@ def _serial_device_result(session: Session, d: Device):
     )
     if b is None:
         return ProbeResult(level=HealthLevel.L0, extra={"reason": "no_binding"})
-    if b.shell_reachable:
+    node = session.get(WireLogNode, b.node_id)
+    if node is None or node.status != "online":
+        return ProbeResult(level=HealthLevel.L0,
+                           extra={"reason": "serial_host_not_online",
+                                  "node": b.node_id})
+    if b.shell_reachable or (b.health_state or "").lower() in ("online", "probed"):
         return ProbeResult(
             level=HealthLevel.L3,
             extra={"serial_endpoint": b.endpoint, "com": b.com_name,
