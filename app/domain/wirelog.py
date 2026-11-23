@@ -928,6 +928,22 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     if mc is not None and session.get(ProductType, mc) is None:
         raise DomainError("UNKNOWN_MODEL", f"机型 {mc} 不在机型字典中")
 
+    # 未达 L3 不允许添加（含“身份命中已有设备、只挂串口”路径）。
+    node = session.get(WireLogNode, node_id)
+    reachable = (node is not None and node.status == "online"
+                 and (bool(binding.shell_reachable)
+                      or (binding.health_state or "").lower() in ("online", "probed")))
+    if not reachable:
+        raise DomainError("SERIAL_NOT_L3",
+                          "串口未达到 L3（节点不在线或串口不可达），请先手动探测")
+    manual = probe.get("probe") or {}
+    if probe.get("verdict") != "manual_probe" or manual.get("level") != "L3":
+        raise DomainError("SERIAL_NOT_L3",
+                          "串口未经过手动探测或探测未达 L3，请先点「探测」")
+    if not any((use_mac, use_sn, use_ip)):
+        raise DomainError("SERIAL_NOT_L3",
+                          "串口未取到 MAC/SN/IP，无法达到 L3；请先手动探测或补身份")
+
     # 同一台设备：按 MAC → SN → IP 命中现有记录就只挂串口，不重复建机。
     existing = None
     if use_mac:
@@ -967,20 +983,6 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     name = display_name or (
         f"{binding.com_name or binding.tty_name or ('slot' + str(slot))}@{node_id}"
     )
-    node = session.get(WireLogNode, node_id)
-    reachable = (node is not None and node.status == "online"
-                 and (bool(binding.shell_reachable)
-                      or (binding.health_state or "").lower() in ("online", "probed")))
-    if not reachable:
-        raise DomainError("SERIAL_NOT_L3",
-                          "串口未达到 L3（节点不在线或串口不可达），请先手动探测")
-    manual = probe.get("probe") or {}
-    if probe.get("verdict") != "manual_probe" or manual.get("level") != "L3":
-        raise DomainError("SERIAL_NOT_L3",
-                          "串口未经过手动探测或探测未达 L3，请先点「探测」")
-    if not any((use_mac, use_sn, use_ip)):
-        raise DomainError("SERIAL_NOT_L3",
-                          "串口未取到 MAC/SN/IP，无法达到 L3；请先手动探测或补身份")
     device = Device(
         device_id=new_device_id(),
         display_name=name,
