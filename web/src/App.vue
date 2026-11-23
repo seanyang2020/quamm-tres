@@ -3543,24 +3543,47 @@ const legendRole = [
           </el-card>
         </div>
 
-        <el-drawer v-model="fpDrawer" :title="fpDrawerTitle" size="560px" direction="rtl">
+        <el-drawer v-model="fpDrawer" :title="fpDrawerTitle" size="660px" direction="rtl">
           <div v-loading="fpDrawerLoading">
             <template v-if="fpDrawerData && fpDrawerData.fingerprint">
-              <div class="fp-meta" style="margin-bottom:12px">
+              <div class="fp-summary">
                 <el-tag size="small" :type="fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).type">
                   {{ fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).text }}
                 </el-tag>
-                <span class="comres-muted" style="font-size:12px;margin-left:8px">
+                <span class="fp-summary-text">
                   {{ fpDrawerData.fingerprint.schema || 'fp.v1' }}
-                  · {{ fpDrawerData.fingerprint.pattern_id || '—' }}
-                  · {{ fpDrawerData.fingerprint.collected_at || '—' }}
+                  <span v-if="fpDrawerData.fingerprint.pattern_id"> · {{ fpDrawerData.fingerprint.pattern_id }}</span>
                 </span>
+                <span class="fp-summary-time">{{ fpDrawerData.fingerprint.collected_at || '—' }}</span>
+              </div>
+
+              <div class="fp-grid">
+                <el-card shadow="never" class="fp-section-card">
+                  <template #header><span>标识</span></template>
+                  <el-descriptions :column="1" size="small" border class="fp-desc">
+                    <el-descriptions-item label="SN">{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.sn) || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="主 MAC">{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.mac) || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="主 IP">{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.ip) || '—' }}</el-descriptions-item>
+                  </el-descriptions>
+                </el-card>
+
+                <el-card shadow="never" class="fp-section-card">
+                  <template #header><span>系统</span></template>
+                  <el-descriptions :column="1" size="small" border class="fp-desc">
+                    <el-descriptions-item label="OS">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.os) || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="内核">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.kernel) || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="主机名">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.hostname) || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="项目">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.project) || '—' }}</el-descriptions-item>
+                    <el-descriptions-item label="型号">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.model) || '—' }}</el-descriptions-item>
+                  </el-descriptions>
+                </el-card>
               </div>
 
               <el-card shadow="never" class="fp-section-card">
                 <template #header><span>网卡</span></template>
-                <el-table :data="fpNetRows(fpDrawerData.fingerprint)" size="small" border>
-                  <el-table-column label="接口" min-width="100">
+                <el-table v-if="fpNetRows(fpDrawerData.fingerprint).length"
+                          :data="fpNetRows(fpDrawerData.fingerprint)" size="small" border class="fp-net-table">
+                  <el-table-column label="接口" min-width="90">
                     <template #default="{ row }">
                       {{ row.iface || '—' }}
                       <el-tag v-if="row.primary" size="small" type="success" style="margin-left:4px">主</el-tag>
@@ -3568,70 +3591,23 @@ const legendRole = [
                   </el-table-column>
                   <el-table-column prop="mac" label="MAC" min-width="140" show-overflow-tooltip />
                   <el-table-column prop="ip" label="IP" min-width="120" show-overflow-tooltip />
-                  <el-table-column label="up" width="60">
+                  <el-table-column label="up" width="56">
                     <template #default="{ row }">{{ row.up === true ? '是' : (row.up === false ? '否' : '—') }}</template>
                   </el-table-column>
                 </el-table>
-                <el-empty v-if="!fpNetRows(fpDrawerData.fingerprint).length" description="无网卡信息" :image-size="48" />
-              </el-card>
-
-              <el-card shadow="never" class="fp-section-card">
-                <template #header><span>标识</span></template>
-                <el-form label-width="100px" size="small" class="fp-form">
-                  <el-form-item label="SN">
-                    <span>{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.sn) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="指纹判定">
-                    <el-tag size="small" :type="fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).type">
-                      {{ fpVerdictMeta(fpDrawerData.fp_verdict || fpDrawerData.fingerprint.verdict).text }}
-                    </el-tag>
-                  </el-form-item>
-                  <el-form-item label="主 MAC">
-                    <span>{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.mac) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="主 IP">
-                    <span>{{ (fpDrawerData.fingerprint.identity && fpDrawerData.fingerprint.identity.ip) || '—' }}</span>
-                  </el-form-item>
-                </el-form>
-              </el-card>
-
-              <el-card shadow="never" class="fp-section-card">
-                <template #header><span>系统</span></template>
-                <el-form label-width="100px" size="small" class="fp-form">
-                  <el-form-item label="OS">
-                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.os) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="内核">
-                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.kernel) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="主机名">
-                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.hostname) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="项目">
-                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.project) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="型号">
-                    <span>{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.model) || '—' }}</span>
-                  </el-form-item>
-                </el-form>
+                <div v-else class="fp-empty-line">未上报网卡信息（指纹判定为 partial 时常见，设备侧可能未回全）</div>
               </el-card>
 
               <el-card shadow="never" class="fp-section-card">
                 <template #header><span>构建</span></template>
-                <el-form label-width="100px" size="small" class="fp-form">
-                  <el-form-item label="build_info">
-                    <span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.build_info) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="proc_version">
-                    <span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.proc_version) || '—' }}</span>
-                  </el-form-item>
-                  <el-form-item label="uname">
-                    <span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.uname) || '—' }}</span>
-                  </el-form-item>
-                </el-form>
+                <el-descriptions :column="1" size="small" border class="fp-desc fp-desc-mono">
+                  <el-descriptions-item label="build_info"><span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.build_info) || '—' }}</span></el-descriptions-item>
+                  <el-descriptions-item label="proc_version"><span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.proc_version) || '—' }}</span></el-descriptions-item>
+                  <el-descriptions-item label="uname"><span class="mono">{{ (fpDrawerData.fingerprint.system && fpDrawerData.fingerprint.system.uname) || '—' }}</span></el-descriptions-item>
+                </el-descriptions>
               </el-card>
 
-              <el-collapse>
+              <el-collapse class="fp-raw-collapse">
                 <el-collapse-item title="原始输出（raw + errors）" name="raw">
                   <pre class="fp-raw mono">{{ JSON.stringify({
                     raw: fpDrawerData.fingerprint.raw || null,
@@ -4681,32 +4657,47 @@ const legendRole = [
   margin-bottom: 10px;
   background: var(--el-fill-color-blank, #fff);
 }
-/* t981：设备指纹抽屉 */
+/* t981：设备指纹抽屉（紧凑卡片） */
+.fp-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px; margin-bottom: 10px;
+  background: #f7f9fc; border: 1px solid #e5e8ef; border-radius: 10px;
+}
+.fp-summary-text { font-size: 12px; color: #6b7280; }
+.fp-summary-time { margin-left: auto; font-size: 12px; color: #9aa1ac; white-space: nowrap; }
+.fp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .fp-section-card {
   --el-card-bg-color: #fbfcfe;
   --el-card-border-color: #e5e8ef;
-  margin-bottom: 12px;
-  border-radius: 12px;
+  margin-bottom: 10px;
+  border-radius: 10px;
   background: #fbfcfe;
   border: 1px solid #e5e8ef;
   box-shadow: 0 1px 2px rgba(16, 24, 40, .04);
 }
-.fp-form .el-form-item { margin-bottom: 8px; }
-.fp-form .el-form-item__label { color: #6b7280; }
+.fp-section-card .el-card__header {
+  padding: 7px 12px; font-size: 13px; font-weight: 600;
+  border-bottom: 1px solid #eef1f6;
+}
+.fp-section-card .el-card__body { padding: 8px 12px; }
+.fp-desc .el-descriptions__label {
+  width: 76px; white-space: nowrap; color: #6b7280;
+  padding: 6px 8px !important; font-weight: 400;
+}
+.fp-desc .el-descriptions__content {
+  padding: 6px 8px !important; font-size: 12px; word-break: break-all;
+}
+.fp-desc-mono .el-descriptions__label { width: 104px; }
+.fp-net-table .el-table__cell { padding: 5px 0; }
+.fp-empty-line { font-size: 12px; color: #9aa1ac; padding: 2px 2px 4px; }
+.fp-raw-collapse .el-collapse-item__header { font-size: 12px; height: 36px; line-height: 36px; }
 .fp-raw {
   margin: 0; padding: 10px 12px; max-height: 280px; overflow: auto;
   background: #f5f7fa; border: 1px solid #e4e7ed; border-radius: 8px;
   white-space: pre-wrap; word-break: break-all; font-size: 12px;
 }
-@media (max-width: 640px) {
-  .fp-form { --el-form-label-width: 80px; }
-  .fp-form .el-form-item {
-    display: block;
-  }
-  .fp-form .el-form-item__label {
-    display: block; text-align: left; padding: 0 0 4px; line-height: 1.4;
-  }
-  .fp-form .el-form-item__content { margin-left: 0 !important; }
+@media (max-width: 720px) {
+  .fp-grid { grid-template-columns: 1fr; gap: 0; }
 }
 
 </style>
