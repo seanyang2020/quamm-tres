@@ -971,6 +971,16 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     reachable = (node is not None and node.status == "online"
                  and (bool(binding.shell_reachable)
                       or (binding.health_state or "").lower() in ("online", "probed")))
+    if not reachable:
+        raise DomainError("SERIAL_NOT_L3",
+                          "串口未达到 L3（节点不在线或串口不可达），请先手动探测")
+    manual = probe.get("probe") or {}
+    if probe.get("verdict") != "manual_probe" or manual.get("level") != "L3":
+        raise DomainError("SERIAL_NOT_L3",
+                          "串口未经过手动探测或探测未达 L3，请先点「探测」")
+    if not any((use_mac, use_sn, use_ip)):
+        raise DomainError("SERIAL_NOT_L3",
+                          "串口未取到 MAC/SN/IP，无法达到 L3；请先手动探测或补身份")
     device = Device(
         device_id=new_device_id(),
         display_name=name,

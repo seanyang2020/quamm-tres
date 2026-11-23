@@ -337,6 +337,7 @@ const discoveryResults = ref([])
 const serialAddResources = ref([])
 const serialAddLoading = ref(false)
 const serialAddPick = ref(null)
+const serialProbingKey = ref('')
 
 function openDeviceAdd(presetModel) {
   // v0.29.2：打开即刷新机型字典，避免刚派生/新增的机型在下拉里看不到
@@ -384,17 +385,64 @@ function serialReady(row) {
     && (!!row.shell_reachable || ['online', 'probed'].includes(String(row.health_state || '').toLowerCase()))
 }
 
+function serialQualified(row) {
+  return serialLevel(row) === 'L3'
+}
+
+function serialLevel(row) {
+  const p = row.probe || {}
+  const id = (p.identity || {})
+  if (p.verdict === 'manual_probe' && (p.probe || {}).level === 'L3'
+      && (id.mac || id.sn || id.ip)) {
+    return 'L3'
+  }
+  return serialReady(row) ? 'L2' : 'L0'
+}
+
+async function probeSerialResource(row) {
+  const key = row.node_id + ':' + row.slot
+  if (serialProbingKey.value) return
+  serialProbingKey.value = key
+  try {
+    const r = await api('/api/wirelog/nodes/' + row.node_id + '/slots/' + row.slot
+      + '/probe-serial', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+    if (r.level === 'L3') {
+      ElMessage.success('探测成功 L3：MAC ' + (r.identity?.mac || '—')
+        + ' / SN ' + (r.identity?.sn || '—') + ' / IP ' + (r.identity?.ip || '—'))
+    } else if (r.level === 'L2') {
+      ElMessage.warning('串口有响应，但没取到 MAC/SN/IP（L2）；不允许添加，请检查设备或补身份')
+    } else {
+      ElMessage.error('探测失败：没有收到串口响应（L0）')
+    }
+    await loadSerialAddResources()
+  } catch (e) {
+    ElMessage.error('手动探测失败：' + String(e.message || e))
+  } finally { serialProbingKey.value = '' }
+}
+
+function onSerialRowClick(row) {
+  if (!serialQualified(row)) {
+    ElMessage.info('该串口未达 L3，先点「探测」补齐指纹')
+    return
+  }
+  pickSerialResource(row)
+}
+
 function pickSerialResource(row) {
+  if (!serialQualified(row)) {
+    ElMessage.warning('该串口未达 L3（需可达且取到 MAC/SN/IP），不能添加')
+    return
+  }
   const id = serialIdentity(row)
   serialAddPick.value = row
   deviceAddProbe.value = {
     serial: true,
     probe: {
-      level: serialReady(row) ? 'L3' : 'L0',
+      level: 'L3',
       mac: id.mac, sn: id.sn, model: id.model,
       endpoint: row.endpoint, com: row.com_name || row.tty_name,
       node: row.node_name || row.node_id, slot: row.slot,
-      reachable: serialReady(row),
+      reachable: true,
     },
     identity_match: { result: 'new' },
   }
@@ -4477,40 +4525,47 @@ const legendRole = [
 
           <div v-else>
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-              <span class="form-hint" style="margin:0">点击任意一行选中；TRES 会按指纹 MAC/SN/IP 直接建机，并与该口绑定。</span>
+              <span class="form-hint" style="margin:0">L3 = 节点在线、串口实测可达且已取到 MAC/SN/IP；L2/L0 请先点「探测」，达到 L3 才允许添加。</span>
               <el-button size="small" :loading="serialAddLoading" @click="loadSerialAddResources">刷新</el-button>
             </div>
             <el-table :data="serialAddResources" border size="small" max-height="320"
                       v-loading="serialAddLoading" style="width:100%"
-                      :row-style="{ cursor: 'pointer' }" @row-click="pickSerialResource">
+                      :row-style="{ cursor: 'pointer' }" @row-click="onSerialRowClick">
               <el-table-column label="日志机/路" min-width="150">
                 <template #default="{ row }">
                   {{ row.node_name || row.node_id }} · 路{{ row.slot }}
                   <el-tag v-if="row.node_status !== 'online'" size="small" type="info">{{ row.node_status }}</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="TCP COM / 接入" min-width="200">
+              <el-table-column label="TCP COM / 接入" min-width="190">
                 <template #default="{ row }">
                   <div>{{ row.com_name || row.tty_name || ('COM' + row.slot) }}</div>
                   <div class="wl-endpoint">{{ row.endpoint || '—' }}</div>
                 </template>
               </el-table-column>
-              <el-table-column label="指纹身份" min-width="210">
+              <el-table-column label="指纹身份" min-width="220">
                 <template #default="{ row }">
                   <div>MAC {{ serialIdentity(row).mac || '—' }}</div>
+                  <div>SN {{ serialIdentity(row).sn || '—' }}</div>
                   <div>IP {{ serialIdentity(row).ip || '—' }} · {{ serialIdentity(row).model || '未识别' }}</div>
                 </template>
               </el-table-column>
-              <el-table-column label="就绪" width="80">
+              <el-table-column label="等级" width="100">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="serialReady(row) ? 'success' : 'info'">
-                    {{ serialReady(row) ? '可达' : '不可达' }}
+                  <el-tag size="small" :type="serialLevel(row) === 'L3' ? 'success' : (serialLevel(row) === 'L2' ? 'warning' : 'info')">
+                    {{ serialLevel(row) === 'L2' ? 'L2·无指纹' : serialLevel(row) }}
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="80">
+              <el-table-column label="操作" width="150">
                 <template #default="{ row }">
-                  <el-button size="small" link type="primary" @click.stop="pickSerialResource(row)">选择</el-button>
+                  <el-button size="small" link type="primary"
+                             :loading="serialProbingKey === (row.node_id + ':' + row.slot)"
+                             :disabled="!!serialProbingKey"
+                             @click.stop="probeSerialResource(row)">探测</el-button>
+                  <el-button size="small" link type="primary"
+                             :disabled="!serialQualified(row)"
+                             @click.stop="pickSerialResource(row)">选择</el-button>
                 </template>
               </el-table-column>
             </el-table>

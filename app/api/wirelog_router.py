@@ -15,7 +15,7 @@ from fastapi import (APIRouter, Body, Depends, Header, HTTPException, Response,
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal, get_session
-from app.domain import comres, comres_apply, wirelog
+from app.domain import comres, comres_apply, serial_probe, wirelog
 from app.domain.catalog import DomainError
 from app.domain.comres import _parse_ip_port
 from app.domain.prober_uart import RAW_TCP_AUTH
@@ -463,6 +463,15 @@ def get_serial_resources(node_id: str | None = None,
                          session: Session = Depends(get_session),
                          identity=Depends(web_auth.require_login)):
     return {"resources": wirelog.list_serial_resources(session, node_id)}
+
+
+@router.post("/nodes/{node_id}/slots/{slot}/probe-serial")
+def post_probe_serial(node_id: str, slot: int,
+                      session: Session = Depends(get_session),
+                      identity=Depends(web_auth.require_admin)):
+    """手动探测一路串口：直连 TCP COM，回读提示符并补指纹（管理员）。"""
+    return _domain_http(serial_probe.probe_binding, session, node_id, slot,
+                        actor=identity.email)
 
 
 @router.post("/nodes/{node_id}/slots/{slot}/create-device")
