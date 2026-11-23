@@ -86,6 +86,24 @@ def resources(session: Session = Depends(get_session),
     return comres.list_resources(session)
 
 
+@router.get("/bundles")
+def bundles(session: Session = Depends(get_session),
+            _id=Depends(web_auth.require_login)):
+    """设备资源包：ADB + 串口成套（同一台设备一次拿全）。"""
+    from app.domain import bundle as bundle_svc
+
+    return bundle_svc.build_bundles(session)
+
+
+@router.get("/bundles/{device_id}")
+def bundle_of_device(device_id: str,
+                     session: Session = Depends(get_session),
+                     _id=Depends(web_auth.require_login)):
+    from app.domain import bundle as bundle_svc
+
+    return _domain_http(bundle_svc.device_bundle, session, device_id)
+
+
 @router.get("/ports/{node_id}/{slot}/fingerprint")
 def get_port_fingerprint(node_id: str, slot: int,
                          session: Session = Depends(get_session),

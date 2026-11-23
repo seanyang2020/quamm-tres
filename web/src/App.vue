@@ -19,6 +19,7 @@ const comresTab = ref('nodes')
 const COMRES_TABS = [
   { key: 'nodes', label: '节点视图' },
   { key: 'pool', label: '资源池视图' },
+  { key: 'bundles', label: '设备资源包' },
   { key: 'settings', label: '设置' },
 ]
 
@@ -1179,6 +1180,12 @@ const comresReachBusy = ref(false)
 const comresShowInactiveOnly = ref(false)
 const comresPruneBusy = ref(false)
 
+// 设备资源包（v0.42）：ADB + 串口成套
+const bundleData = ref(null)      // { devices, unattached_serial, summary }
+const bundleError = ref('')
+const bundleLoading = ref(false)
+const bundleOnlySerial = ref(true)  // 默认只显示有串口的设备
+
 // t981：设备指纹抽屉
 const fpDrawer = ref(false)
 const fpDrawerTitle = ref('设备指纹')
@@ -1565,6 +1572,34 @@ async function loadComresResources() {
   }
 }
 
+async function loadComresBundles() {
+  bundleLoading.value = true
+  bundleError.value = ''
+  try {
+    bundleData.value = await api('/api/comres/bundles')
+  } catch (e) {
+    bundleData.value = null
+    bundleError.value = String(e.message || e)
+    ElMessage.error('设备资源包加载失败：' + bundleError.value)
+  } finally {
+    bundleLoading.value = false
+  }
+}
+
+const bundleRows = computed(() => {
+  const rows = (bundleData.value && bundleData.value.devices) || []
+  const list = bundleOnlySerial.value ? rows.filter((x) => x.channels.serial.length) : rows
+  return [...list].sort((a, b) => {
+    const d = (b.channels.serial.length ? 1 : 0) - (a.channels.serial.length ? 1 : 0)
+    if (d) return d
+    return (a.identity.display_name || a.device_id).localeCompare(b.identity.display_name || b.device_id, 'zh')
+  })
+})
+
+function bundleSerialEndpoint(ch) {
+  return ch.endpoint || (ch.tcp_port ? `tcp://<节点IP>:${ch.tcp_port}` : '—')
+}
+
 async function runComresReachability() {
   comresReachBusy.value = true
   try {
@@ -1680,6 +1715,8 @@ function switchComresTab(key) {
     loadComresResources()
   } else if (key === 'pool') {
     loadComresResources()
+  } else if (key === 'bundles') {
+    loadComresBundles()
   } else if (key === 'settings') {
     loadPackages()
     loadComresAuthSummary()
@@ -3428,6 +3465,94 @@ const legendRole = [
           </p>
         </el-card>
 
+        <!-- 设备资源包：/api/comres/bundles，ADB 与串口成套 -->
+        <el-card v-else-if="comresTab === 'bundles'" shadow="never" class="comres-panel">
+          <template #header>
+            <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+              <span>设备资源包（/api/comres/bundles）
+                <el-tag size="small" type="success" style="margin-left:8px">
+                  成套 {{ bundleData ? bundleData.summary.with_serial : 0 }} 台
+                </el-tag>
+                <el-tag size="small" type="info" style="margin-left:4px">
+                  串口绑定 {{ bundleData ? bundleData.summary.serial_bound : 0 }}
+                </el-tag>
+                <el-tag size="small" type="warning" effect="plain" style="margin-left:4px">
+                  未归属 {{ bundleData ? bundleData.summary.serial_unattached : 0 }}
+                </el-tag>
+              </span>
+              <div style="display:flex;align-items:center;gap:8px">
+                <el-switch v-model="bundleOnlySerial" size="small"
+                           inline-prompt active-text="有串口" inactive-text="全部" />
+                <el-button size="small" :loading="bundleLoading" @click="loadComresBundles">刷新</el-button>
+              </div>
+            </div>
+          </template>
+          <el-alert v-if="bundleError" type="error" :closable="false" show-icon
+                    :title="'资源包：' + bundleError" style="margin-bottom:10px" />
+          <div v-loading="bundleLoading">
+            <div v-for="b in bundleRows" :key="b.device_id" class="bundle-card">
+              <div class="bundle-head">
+                <el-button size="small" link type="primary" @click="jumpToDevice(b.device_id)">
+                  {{ b.identity.display_name || b.device_id }}
+                </el-button>
+                <el-tag size="small" :type="b.status.status === 'available' ? 'success' : 'info'">
+                  {{ b.status.status }}
+                </el-tag>
+                <el-tag size="small" effect="plain">{{ b.status.health_level }}</el-tag>
+                <el-tag v-if="b.lease" size="small" type="warning">
+                  已租给 {{ b.lease.agent_label || '—' }}
+                </el-tag>
+                <span class="comres-muted" style="font-size:12px">
+                  {{ b.identity.model_name || b.identity.model_class || '未分类' }}
+                  · {{ b.identity.mac || '无 MAC' }}
+                </span>
+              </div>
+              <div class="bundle-row">
+                <span class="bundle-label">ADB</span>
+                <span class="wl-endpoint">{{ b.channels.adb.address }}</span>
+                <span class="comres-muted" style="font-size:12px">ip+port</span>
+              </div>
+              <div v-if="b.channels.serial.length" class="bundle-row" style="align-items:flex-start">
+                <span class="bundle-label">串口</span>
+                <div style="flex:1">
+                  <div v-for="ch in b.channels.serial" :key="ch.com_key" class="bundle-serial">
+                    <a class="wl-com-link" @click="openPortConsole({
+                      node_ip: ch.source.node_ip, tcp_port: ch.tcp_port,
+                      com: ch.com, health_state: ch.health_state, inactive: false,
+                    })">{{ ch.com }}<span class="wl-com-open">↗</span></a>
+                    <span class="wl-endpoint" style="margin-left:8px">{{ bundleSerialEndpoint(ch) }}</span>
+                    <el-tag size="small" :type="ch.health_state === 'online' ? 'success' : 'info'"
+                            style="margin-left:8px">{{ ch.health_state || '未知' }}</el-tag>
+                    <el-tag v-if="ch.fp_verdict" size="small" style="margin-left:4px"
+                            :type="fpVerdictMeta(ch.fp_verdict).type">
+                      指纹 {{ fpVerdictMeta(ch.fp_verdict).text }}
+                    </el-tag>
+                    <span class="comres-muted" style="font-size:12px;margin-left:8px">
+                      {{ ch.baud ? ch.baud + ' baud' : '' }}
+                    </span>
+                    <div class="wl-com-sub">
+                      来源
+                      <el-button size="small" link type="primary" @click="gotoPortSource({
+                        node_id: ch.source.node_id, node_ip: ch.source.node_ip, slot: ch.source.slot,
+                      })">{{ ch.source.display_name }}</el-button>
+                      <span style="margin-left:6px">{{ ch.source.node_id }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="bundle-row">
+                <span class="bundle-label">串口</span>
+                <span class="comres-muted">未绑定（先从资源池分配或等待自动匹配）</span>
+              </div>
+            </div>
+            <el-empty v-if="!bundleRows.length && !bundleLoading" description="暂无设备资源包" />
+          </div>
+          <p class="comres-muted" style="font-size:12px;margin:8px 0 0">
+            一套设备 = ADB 通道 + 其名下的 TCP COM；来源只做溯源，点节点名可跳回节点视图。
+            ADB 不通时用同套串口登录排障（串口恢复入口下一步接入）。
+          </p>
+        </el-card>
+
         <!-- COMRes 设置：自动批准 / 清理 / 客户端下载 -->
         <div v-else-if="comresTab === 'settings'">
           <el-card shadow="never" class="comres-panel" style="margin-bottom:16px">
@@ -4700,4 +4825,20 @@ const legendRole = [
   .fp-grid { grid-template-columns: 1fr; gap: 0; }
 }
 
+/* v0.42 设备资源包：一套设备一张卡 */
+.bundle-card {
+  border: 1px solid #e4e7ed; border-radius: 8px;
+  padding: 10px 12px; margin-bottom: 10px; background: #fff;
+}
+.bundle-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding-bottom: 6px; border-bottom: 1px dashed #ebeef5; margin-bottom: 6px;
+}
+.bundle-row {
+  display: flex; align-items: center; gap: 8px; padding: 3px 0;
+}
+.bundle-label {
+  width: 42px; flex: 0 0 42px; color: #909399; font-size: 12px;
+}
+.bundle-serial { padding: 2px 0; }
 </style>
