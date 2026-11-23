@@ -4617,16 +4617,28 @@ const legendRole = [
       <!-- P9 全局弹窗：设备的 WireLog 串口接入情况 -->
       <el-dialog v-model="wlBindDlg.visible"
                  :title="'串口接入 · ' + (wlBindDlg.device ? (wlBindDlg.device.display_name || wlBindDlg.device.device_id) : '')"
-                 width="860px">
+                 width="1040px">
         <el-table :data="wlBindDlg.rows" border size="small" v-loading="wlBindDlg.loading" max-height="440">
-          <el-table-column label="日志机/路" min-width="180">
+          <el-table-column label="日志机/路" min-width="160">
             <template #default="{ row }">
               <el-button link type="primary" @click="jumpToWlNode(row.node_id)">
                 {{ row.node_display || row.node_id }} · 路{{ row.slot }}
               </el-button>
             </template>
           </el-table-column>
-          <el-table-column prop="tty" label="tty" width="120" show-overflow-tooltip />
+          <el-table-column label="TCP COM（浏览器入口）" min-width="240">
+            <template #default="{ row }">
+              <a class="wl-com-link" @click="openPortConsole(row)">
+                {{ row.com_name || row.tty || ('TCP COM ' + row.slot) }}<span class="wl-com-open">↗</span>
+              </a>
+              <div class="wl-com-sub">
+                <span class="wl-endpoint">{{ row.endpoint || '—' }}</span>
+                <el-button v-if="row.endpoint" link type="primary" size="small"
+                           style="margin-left:4px" @click="copyPortEndpoint(row)">复制</el-button>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="tty" label="tty" width="110" show-overflow-tooltip />
           <el-table-column label="串口就绪" width="90">
             <template #default="{ row }">
               <el-tag size="small" :type="row.shell_reachable ? 'success' : 'info'">

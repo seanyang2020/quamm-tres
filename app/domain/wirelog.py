@@ -735,12 +735,21 @@ def device_bindings(session, device_id):
     out = []
     for b in rows:
         node = session.get(WireLogNode, b.node_id)
+        endpoint = b.endpoint or ""
+        tcp_port = None
+        if endpoint and ":" in endpoint:
+            try:
+                tcp_port = int(endpoint.rsplit(":", 1)[1])
+            except ValueError:
+                tcp_port = None
         out.append({
             "node_id": b.node_id,
             "node_display": node.display_name if node else None,
             "node_status": node.status if node else None,
             "node_ip": node.ip if node else None,
             "slot": b.slot, "tty": b.tty_name, "baud": b.baud,
+            "com_name": b.com_name or b.tty_name,
+            "endpoint": endpoint, "tcp_port": tcp_port,
             "shell_reachable": b.shell_reachable,
             "shell_mac": b.shell_mac, "shell_ip": b.shell_ip,
             "health_state": b.health_state,
