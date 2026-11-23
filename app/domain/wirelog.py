@@ -639,11 +639,15 @@ def get_node(session, node_id):
         "ports": [_port_occupancy_fields(b) | _port_fingerprint_fields(b) | {
             "slot": b.slot, "tty": b.tty_name, "baud": b.baud,
             "endpoint": b.endpoint, "com_name": b.com_name,
+            "tcp_port": b.tcp_port, "node_ip": node.ip,
             "probe": _json_or_none(b.probe_json),
             "shell_reachable": b.shell_reachable, "shell_mac": b.shell_mac,
             "shell_ip": b.shell_ip, "bound_device_id": b.bound_device_id,
             "bound_device": _device_summary(session, b.bound_device_id),
             "health_state": b.health_state,
+            "reach_ok": b.reach_ok, "reach_error": b.reach_error,
+            "reach_checked_at": (b.reach_checked_at.isoformat()
+                                 if b.reach_checked_at else None),
         } for b in bindings],
     }
 
