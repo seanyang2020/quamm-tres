@@ -1558,7 +1558,7 @@ async function openFingerprintDrawer(row) {
   }
 }
 
-async function loadComresResources(retry = 1) {
+async function loadComresResources(retry = 2) {
   comresLoading.value = true
   comresError.value = ''
   try {
