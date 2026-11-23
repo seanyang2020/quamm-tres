@@ -1298,6 +1298,72 @@ function portHasSerial(row) {
   return !!(row.endpoint || row.com || row.com_name || row.tty
     || row.com_key || row.shell_reachable || row.tcp_port)
 }
+/** TCP COM 主键：以槽位/端口号命名，不从 tty 名出发 */
+function portTcpComLabel(row) {
+  if (!row) return '—'
+  if (row.slot != null) return 'TCP COM ' + row.slot
+  if (row.tcp_port != null) return 'TCP COM ' + row.tcp_port
+  return 'TCP COM'
+}
+function portTcpHost(row) {
+  if (!row) return ''
+  if (row.node_ip) return row.node_ip
+  const ep = row.endpoint || ''
+  const m = ep.match(/^tcp:\/\/([^:]+)/i)
+  return m ? m[1] : ''
+}
+function portTcpPortNum(row) {
+  if (!row) return null
+  if (row.tcp_port != null) return row.tcp_port
+  const ep = row.endpoint || ''
+  const m = ep.match(/^tcp:\/\/[^:]+:(\d+)/i)
+  return m ? Number(m[1]) : null
+}
+function portEndpointText(row) {
+  const host = portTcpHost(row)
+  const port = portTcpPortNum(row)
+  if (host && port != null) return 'tcp://' + host + ':' + port
+  return (row && (row.endpoint || row.com_key)) || '—'
+}
+/** 来源节点名：资源行里优先查节点台账，其次用当前详情 */
+function comresNodeById(nodeId) {
+  const list = (wlNodes && wlNodes.value) || []
+  const hit = list.find((n) => n && n.node_id === nodeId)
+  if (hit) return hit
+  if (wlDetail.value && wlDetail.value.node_id === nodeId) return wlDetail.value
+  return null
+}
+function portSourceName(row) {
+  if (!row) return '—'
+  const n = comresNodeById(row.node_id)
+  return (n && (n.display_name || n.node_id)) || row.node_id || '—'
+}
+/** 浏览器可直接打开的串口控制台（serialhub 自带前端） */
+function portConsoleUrl(row) {
+  const host = portTcpHost(row)
+  if (!host) return ''
+  const hp = (row && row.node_http_port) || 8787
+  return 'http://' + host + ':' + hp + '/'
+}
+function openPortConsole(row) {
+  const url = portConsoleUrl(row)
+  if (!url) {
+    ElMessage.warning('该端口未上报节点地址，无法打开控制台')
+    return
+  }
+  window.open(url, '_blank')
+}
+function copyPortEndpoint(row) {
+  const text = portEndpointText(row)
+  if (!text || text === '—') return
+  copyText(text, '已拷贝接入地址')
+}
+function gotoPortSource(row) {
+  if (!row || !row.node_id) return
+  if (wlDetailId.value === row.node_id) return
+  openWlDetail(row.node_id)
+}
+
 /** 已绑定/可用：可打开浏览器 TCP shell */
 function portCanOpen(row) {
   if (!portHasSerial(row)) return false
@@ -1436,9 +1502,11 @@ async function openFingerprintDrawer(row) {
   if (!row) return
   const nodeId = row.node_id
   const slot = row.slot
-  const titleBits = [row.com || row.com_name || '', nodeId, slot != null ? '#' + slot : '']
-    .filter(Boolean)
-  fpDrawerTitle.value = '设备指纹 · ' + titleBits.join(' ')
+  const titleBits = [
+    slot != null ? 'TCP COM ' + slot : (row.com || row.com_name || ''),
+    row.node_id,
+  ].filter(Boolean)
+  fpDrawerTitle.value = '设备指纹 · ' + titleBits.join(' · ')
   fpDrawerData.value = {
     node_id: nodeId,
     slot,
@@ -3103,82 +3171,94 @@ const legendRole = [
           <el-alert type="info" :closable="false" show-icon style="margin:12px 0 0"
                     title="节点凭据由客户端自助申请签发；详情可复制 node_token。宿主自行 register/heartbeat。" />
 
-          <h3>端口明细</h3>
+          <h3>串口资源</h3>
           <el-alert v-if="!(wlDetail.ports && wlDetail.ports.length)"
                     type="info" :closable="false" show-icon
                     title="无串口资源" class="comres-muted" style="margin-bottom:8px" />
           <el-table :data="wlDetail.ports || []" border size="small"
                     :row-class-name="({ row }) => portHasSerial(row) ? '' : 'comres-no-serial'">
-            <el-table-column label="com" min-width="100">
+            <el-table-column label="资源" min-width="150">
               <template #default="{ row }">
-                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.com_name || row.com || '—' }}</span>
+                <a v-if="portHasSerial(row)" class="wl-com-link" @click="openPortConsole(row)">
+                  {{ portTcpComLabel(row) }}<span class="wl-com-open">↗</span>
+                </a>
+                <span v-else class="comres-muted">无串口资源</span>
+                <div class="wl-com-sub">
+                  {{ row.tty || row.com_name || row.com || '—' }}
+                  <span v-if="row.baud"> · {{ row.baud }} 8N1</span>
+                </div>
               </template>
             </el-table-column>
-            <el-table-column prop="slot" label="slot" width="60" />
-            <el-table-column label="endpoint" min-width="160" show-overflow-tooltip>
+            <el-table-column label="接入方式" min-width="220">
               <template #default="{ row }">
-                <span :class="{ 'comres-muted': !portHasSerial(row) }">{{ row.endpoint || '—' }}</span>
+                <span class="wl-endpoint">{{ portEndpointText(row) }}</span>
+                <el-button size="small" link type="primary" style="margin-left:4px"
+                           :disabled="!portHasSerial(row)"
+                           @click="copyPortEndpoint(row)">复制</el-button>
               </template>
             </el-table-column>
-            <el-table-column width="90">
-              <template #header>
-                <el-tooltip content="节点自报，非 TRES 连通性" placement="top">
-                  <span>自检</span>
-                </el-tooltip>
-              </template>
-              <template #default="{ row }">{{ row.health_state || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="可达" width="100">
+            <el-table-column label="来源" min-width="150">
               <template #default="{ row }">
-                <el-tooltip :content="comresReachLabel(row).tip" placement="top">
-                  <span :style="{ color: comresReachLabel(row).ok === true ? '#16a34a' : (comresReachLabel(row).ok === false ? '#dc2626' : undefined) }"
-                        :class="{ 'comres-muted': comresReachLabel(row).ok == null }">
-                    {{ comresReachLabel(row).text }}
-                  </span>
-                </el-tooltip>
+                <el-button size="small" link type="primary" class="wl-source-link"
+                           @click="gotoPortSource(row)">{{ portSourceName(row) }}</el-button>
+                <div class="wl-com-sub">{{ row.node_id || '—' }}</div>
               </template>
             </el-table-column>
-            <el-table-column label="指纹" width="88">
+            <el-table-column label="接入设备" min-width="230">
               <template #default="{ row }">
-                <el-tag v-if="row.fp_verdict" size="small" :type="fpVerdictMeta(row.fp_verdict).type">
-                  {{ fpVerdictMeta(row.fp_verdict).text }}
+                <template v-if="row.bound_device_id">
+                  <el-button size="small" link type="primary"
+                             @click="jumpToDevice(row.bound_device_id)">
+                    {{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}
+                  </el-button>
+                  <el-tag v-if="row.bound_device && row.bound_device.status" size="small"
+                          :type="row.bound_device.status === 'online' ? 'success' : 'info'"
+                          style="margin-left:4px">{{ row.bound_device.status }}</el-tag>
+                  <div class="wl-com-sub">
+                    <span v-if="row.bound_device && row.bound_device.model">
+                      {{ row.bound_device.model }}{{ row.bound_device.project ? ' / ' + row.bound_device.project : '' }} ·
+                    </span>
+                    {{ portMac(row) || '无 MAC' }}
+                  </div>
+                </template>
+                <template v-else>
+                  <el-tag size="small" type="info">未绑定设备</el-tag>
+                  <div class="wl-com-sub">
+                    {{ portMac(row) ? '指纹 MAC ' + portMac(row) : '等待指纹识别' }}
+                  </div>
+                </template>
+              </template>
+            </el-table-column>
+            <el-table-column label="状态" min-width="170">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.health_state === 'online' ? 'success' : 'info'">
+                  {{ row.health_state || '未知' }}
                 </el-tag>
-                <span v-else class="comres-muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="allocated" width="90">
-              <template #default="{ row }">
-                <el-tag size="small" :type="portAllocated(row) ? 'warning' : 'info'">
-                  {{ portAllocated(row) ? '是' : '否' }}
+                <el-tag v-if="row.fp_verdict" size="small" style="margin-left:4px"
+                        :type="fpVerdictMeta(row.fp_verdict).type">
+                  指纹 {{ fpVerdictMeta(row.fp_verdict).text }}
                 </el-tag>
+                <div class="wl-com-sub">
+                  <el-tooltip :content="comresReachLabel(row).tip" placement="top">
+                    <span :style="{ color: comresReachLabel(row).ok === true ? '#16a34a' : (comresReachLabel(row).ok === false ? '#dc2626' : undefined) }">
+                      连通 {{ comresReachLabel(row).text }}
+                    </span>
+                  </el-tooltip>
+                </div>
               </template>
             </el-table-column>
-            <el-table-column label="allocated_by" min-width="120" show-overflow-tooltip>
-              <template #default="{ row }">{{ portAllocatedBy(row) || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="占用/池" min-width="200" show-overflow-tooltip>
+            <el-table-column label="占用" min-width="170">
               <template #default="{ row }">
-                <span v-if="!portHasSerial(row)" class="comres-muted">无串口资源</span>
-                <span v-else>{{ portOccupancyLabel(row) }}</span>
+                <template v-if="portAllocated(row)">
+                  <el-tag size="small" type="warning">已占用</el-tag>
+                  <div class="wl-com-sub">{{ portOccupancyLabel(row) }}</div>
+                </template>
+                <template v-else>
+                  <el-tag size="small" type="info">未分配</el-tag>
+                  <div class="wl-com-sub">{{ portOccupancyLabel(row) }}</div>
+                </template>
               </template>
             </el-table-column>
-            <el-table-column label="bound device" min-width="160">
-              <template #default="{ row }">
-                <el-button v-if="row.bound_device_id" link type="primary"
-                           @click="jumpToDevice(row.bound_device_id)">
-                  {{ row.bound_device ? (row.bound_device.name + ' (' + row.bound_device.status + ')') : row.bound_device_id }}
-                </el-button>
-                <span v-else class="comres-muted">—</span>
-              </template>
-            </el-table-column>
-            <el-table-column label="sn" min-width="120" show-overflow-tooltip>
-              <template #default="{ row }">{{ portSn(row) || '—' }}</template>
-            </el-table-column>
-            <el-table-column label="mac" min-width="140" show-overflow-tooltip>
-              <template #default="{ row }">{{ portMac(row) || '—' }}</template>
-            </el-table-column>
-            <el-table-column prop="tty" label="tty" min-width="100" />
-            <el-table-column prop="baud" label="波特" width="80" />
             <el-table-column label="操作" width="200" fixed="right">
               <template #default="{ row }">
                 <el-tooltip :content="portHasFingerprint(row) ? '查看设备指纹' : '该端口未上报指纹'" placement="top">
@@ -3189,9 +3269,8 @@ const legendRole = [
                   </span>
                 </el-tooltip>
                 <template v-if="portCanOpen(row)">
-                  <el-button size="small" type="primary" link @click="openWlShell(row)">打开串口</el-button>
+                  <el-button size="small" type="primary" link @click="openPortConsole(row)">打开控制台</el-button>
                 </template>
-                <span v-else class="comres-muted">无串口资源</span>
               </template>
             </el-table-column>
           </el-table>
@@ -4419,7 +4498,18 @@ const legendRole = [
 .wl-config-title em { font-style: normal; font-weight: 400; font-size: 12px; color: var(--el-text-color-secondary); }
 .wl-config-form .el-form-item { margin: 0 10px 0 0; }
 .wl-config-form .el-form-item__label { padding-right: 6px; font-size: 12px; }
->
+/* 串口资源表：TCP COM 为主键 */
+.wl-com-link {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--el-color-primary);
+  cursor: pointer;
+}
+.wl-com-link:hover { text-decoration: underline; }
+.wl-com-open { font-size: 12px; margin-left: 4px; font-weight: 400; }
+.wl-com-sub { font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.5; margin-top: 2px; }
+.wl-endpoint { font-family: Consolas, Monaco, "Courier New", monospace; font-size: 12px; }
+.wl-source-link { padding: 0 !important; font-size: 13px; font-weight: 600; }
 .auth-screen { display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f5f7fa; }
 .auth-card { width: 420px; }
 .auth-card h2 { margin-top: 0; }
