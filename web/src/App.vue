@@ -3479,7 +3479,7 @@ const legendRole = [
                 </div>
                 <div>
                   <div class="comres-muted" style="font-size:12px;margin-bottom:4px">版本</div>
-                  <el-input v-model="packageForm.version" size="small" placeholder="0.33.0" />
+                  <el-input v-model="packageForm.version" size="small" placeholder="0.40.0" />
                 </div>
                 <div>
                   <div class="comres-muted" style="font-size:12px;margin-bottom:4px">平台</div>
