@@ -25,11 +25,11 @@ task_id: tres-interactive-shell-fallback-20261124
 ## c. 版本/提交证据
 
 - 分支：`feat/comres`
-- `git log -1 --oneline`：`5a88f08 feat(0.50.0): real 探测器兼容忽略 shell 参数的交互式 adbd 变体`
-- `git rev-parse HEAD`：`5a88f0898b1cddf595b32ec4806454a2116ba503`
-- `git status --short`：干净（本 amend 后）
-- `git show --stat HEAD`：6 files, +621/-125（prober_real + fake adb 单测 + bridge）
+- 主提交：`8fd9078 feat(0.50.0): real 探测器兼容忽略 shell 参数的交互式 adbd 变体`
+- `git rev-parse`（主提交）：`8fd9078127a9100bc9c35d42076aa8a438ebace6`
+- `git show --stat 8fd9078`：6 files, +622/-125
 - Gerrit change：不适用
+- 说明：本文件若另有「证据 hash 回填」小提交，以 `git log -1` 为准；功能改动在 `8fd9078`
 
 ## d. 验证/自测
 
