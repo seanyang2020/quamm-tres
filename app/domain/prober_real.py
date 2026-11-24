@@ -21,6 +21,12 @@ esl2 一类设备没有 eth0、wlan MAC 又是 ``fe:`` 本地管理地址，按�
 
 v0.23：额外读 ``/proc/cpuinfo``，把 features / cpu_part / cpu_implementer /
 has_fpu（Features 含 vfp/neon）放进 ``ProbeResult.extra``，供设备截图选浮点 ABI。
+
+v0.50：部分 adbd 变体接受 ``adb connect``、也上报 product/model，但会忽略
+``adb shell <命令>`` 的参数，只开交互式 root shell（提示符 ``~ #``）。对这类设备
+在常规 ``shell <cmd>`` 探针失败后走交互式 stdin 回退：把探针与全部采集命令按序
+灌入，用 ``__TRES_M<n>__`` 切分输出，映射到与常规路径相同的 ProbeResult 字段。
+环境变量 ``TRES_INTERACTIVE_SHELL_FALLBACK``（默认开；0/false/off 关闭）可关掉回退。
 """
 from __future__ import annotations
 
@@ -44,6 +50,10 @@ ADB_CONNECT_TIMEOUT = 15  # 端口预检已滤掉不可达设备，剩下的要�
 # v0.30.1：TCP 端口预检窗口。不可达设备（离线占多数）用 socket 亚秒级排除，
 # 不再为每台付满 adb connect 超时；adb 只用于端口已通的设备。
 TCP_PREFLIGHT_TIMEOUT = 2.0
+
+# v0.50：交互式 shell 回退会话总超时与输出上限（防挂死 / 防内存涨）。
+INTERACTIVE_SHELL_TIMEOUT = 20
+INTERACTIVE_MAX_OUTPUT = 256 * 1024
 
 
 def tcp_port_open(host: str, port: int, timeout: float = TCP_PREFLIGHT_TIMEOUT) -> bool:
@@ -83,6 +93,14 @@ ADB_BIN = _resolve_adb()
 
 # v0.28.2：shell 活性探针。大写 + 双下划线，不会被 _TOKEN_RE / _MAC_RE 误命中。
 _SHELL_PROBE = "echo __TRES_SHELL_OK__"
+_SHELL_OK_MARK = "__TRES_SHELL_OK__"
+
+
+def _interactive_fallback_enabled() -> bool:
+    """交互式 shell 回退开关；默认开。TRES_INTERACTIVE_SHELL_FALLBACK=0/false/off 关闭。"""
+    raw = (os.environ.get("TRES_INTERACTIVE_SHELL_FALLBACK") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
 
 _MAC_RE = re.compile(r"(?:[0-9a-f]{2}:){5}[0-9a-f]{2}")
 _TOKEN_RE = re.compile(r"[a-z0-9_]{1,64}")
@@ -271,6 +289,177 @@ def _is_fixed(mac: str | None) -> bool:
     return bool(mac) and mac.strip().lower() != "00:00:00:00:00:00"
 
 
+# 交互式回退采集命令序（与常规 shell <cmd> 路径字段一一对应）。
+# 段 i 落在 __TRES_M{i}__ 与 __TRES_M{i+1}__ 之间。
+_INTERACTIVE_CMDS: tuple[str, ...] = (
+    "cat /etc/product_name",
+    "cat /sys/class/net/eth0/address",
+    "cat /sys/class/net/wlan0/address",
+    "cat /proc/cmdline",
+    "test -d /sys/class/net/wlan0 && echo QUAMM_WIFI_OK",
+    "cat /proc/device-tree/compatible",
+    "cat /etc/fw_version",
+    "cat /etc/version",
+    "cat /etc/build-info",
+    _ENG_GREP,
+    "cat /proc/cpuinfo",
+)
+
+
+def _build_interactive_script() -> str:
+    """探针 + 标记切分的采集命令 + exit，经 stdin 灌入交互式 shell。"""
+    lines = [_SHELL_PROBE]
+    for i, cmd in enumerate(_INTERACTIVE_CMDS):
+        lines.append(f"echo __TRES_M{i}__")
+        lines.append(cmd)
+    lines.append(f"echo __TRES_M{len(_INTERACTIVE_CMDS)}__")
+    lines.append("exit")
+    return "\n".join(lines) + "\n"
+
+
+def _line_has_exact_mark(out: str, mark: str) -> bool:
+    """整行精确等于 mark（避开 ``echo __TRES_M0__`` 一类命令回显误命中）。"""
+    for line in (out or "").replace("\r", "\n").split("\n"):
+        if line.strip() == mark:
+            return True
+    return False
+
+
+def _parse_marked_output(out: str, n_sections: int) -> list[str]:
+    """按独立行 ``__TRES_M<n>__`` 切分交互式输出；缺标记的段为空串。
+
+    交互会话 stdout 常先回显整段 stdin 脚本（含 ``echo __TRES_M0__``），再用
+    子串 find 会切到脚本区而非真实命令输出。只认整行精确等于标记。
+    """
+    lines = (out or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    idx: dict[int, int] = {}
+    for i, line in enumerate(lines):
+        s = line.strip()
+        for n in range(n_sections + 1):
+            if n not in idx and s == f"__TRES_M{n}__":
+                idx[n] = i
+    sections: list[str] = []
+    for i in range(n_sections):
+        if i not in idx:
+            sections.append("")
+            continue
+        start = idx[i] + 1
+        end = idx.get(i + 1, len(lines))
+        sections.append("\n".join(lines[start:end]))
+    return sections
+
+
+def _kill_proc(proc: subprocess.Popen | None) -> None:
+    """确保 adb/shell 子进程被回收，不泄漏。"""
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.kill()
+    except OSError:
+        return
+    try:
+        proc.wait(timeout=2)
+    except Exception:
+        pass
+
+
+def _run_interactive_shell(
+    address: str, timeout: int = INTERACTIVE_SHELL_TIMEOUT
+) -> tuple[bool, list[str]]:
+    """开交互式 ``adb -s <addr> shell``，stdin 灌入探针+采集脚本。
+
+    返回 ``(shell_ok, sections)``；sections 与 ``_INTERACTIVE_CMDS`` 对齐。
+    总超时 + 输出上限 + finally 杀进程，任何异常都不挂死 worker。
+    """
+    script = _build_interactive_script()
+    # GNU timeout 包一层；Popen.communicate 再加 subprocess 超时双保险。
+    full = ["timeout", str(timeout), ADB_BIN, "-s", address, "shell"]
+    proc: subprocess.Popen | None = None
+    out = ""
+    try:
+        proc = subprocess.Popen(
+            full,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            raw, _ = proc.communicate(script, timeout=timeout + 1)
+            out = raw or ""
+        except subprocess.TimeoutExpired:
+            _kill_proc(proc)
+            try:
+                raw, _ = proc.communicate(timeout=2) if proc else ("", None)
+                out = raw or ""
+            except Exception:
+                out = ""
+            return False, []
+        if len(out) > INTERACTIVE_MAX_OUTPUT:
+            out = out[:INTERACTIVE_MAX_OUTPUT]
+        # 必须整行命中，避免 stdin 回显里的 ``echo __TRES_SHELL_OK__`` 误判
+        shell_ok = _line_has_exact_mark(out, _SHELL_OK_MARK)
+        if not shell_ok:
+            return False, []
+        return True, _parse_marked_output(out, len(_INTERACTIVE_CMDS))
+    except (FileNotFoundError, OSError) as exc:
+        logger.info("real probe interactive shell spawn failed %s: %s", address, exc)
+        return False, []
+    finally:
+        _kill_proc(proc)
+
+
+def _fields_from_interactive_sections(sections: list[str]) -> dict:
+    """把标记切分段映射为与常规路径相同的采集字段。"""
+    def sec(i: int) -> str:
+        return sections[i] if i < len(sections) else ""
+
+    product_name = _first_token(sec(0))
+    eth_mac = _first_mac(sec(1))
+    wlan_mac = _first_mac(sec(2))
+    cmd_out = sec(3)
+    storage_type = "unknown"
+    if "spi_nor" in cmd_out:
+        storage_type = "nor"
+    elif "spi_nfc" in cmd_out:
+        storage_type = "nand"
+    # 整行命中，避免命令回显 ``echo QUAMM_WIFI_OK`` 误判
+    has_wifi = _line_has_exact_mark(sec(4), "QUAMM_WIFI_OK")
+    dt_out = sec(5)
+    # compatible 常为 \0 分隔且无尾换行，prompt 会粘在同行；只抽取逗号对 token
+    joined_dt = " ".join(dt_out.replace("\x00", " ").split())
+    dt_pairs = re.findall(r"[a-z0-9_+.-]+(?:,[a-z0-9_+.-]+)+", joined_dt, re.I)
+    board_dt = " ".join(dt_pairs) if dt_pairs else None
+    firmware_version = _first_version(sec(6))
+    if firmware_version is None:
+        firmware_version = _first_version(sec(7))
+    build_info = _parse_kv(sec(8))
+    eng_config = _parse_eng_config(sec(9))
+    if product_name is None:
+        product_name = (
+            (build_info.get("project") or "").strip()
+            or (eng_config.get("product") or "").strip()
+            or (eng_config.get("project_type") or "").strip()
+            or None
+        )
+    features, cpu_part, cpu_implementer, has_fpu = _parse_cpuinfo(sec(10))
+    return {
+        "product_name": product_name,
+        "eth_mac": eth_mac,
+        "wlan_mac": wlan_mac,
+        "storage_type": storage_type,
+        "has_wifi": has_wifi,
+        "board_dt": board_dt,
+        "firmware_version": firmware_version,
+        "build_info": build_info,
+        "eng_config": eng_config,
+        "features": features,
+        "cpu_part": cpu_part,
+        "cpu_implementer": cpu_implementer,
+        "has_fpu": has_fpu,
+    }
+
+
 class RealXosProber:
     """真实 XOS 设备探测后端。
 
@@ -314,80 +503,118 @@ class RealXosProber:
             return self._result(ProbeResult, HealthLevel.L0, None, None, None, None, "unknown", False, None, None)
 
         shell_ok = False
+        used_interactive = False
         try:
             # 2) shell 活性探针：adb 连得上 ≠ shell 可执行（adbd exec 失败、offline 都要判 L0）
             _, alive_out = _run(["-s", address, "shell", _SHELL_PROBE], timeout)
-            shell_ok = "__TRES_SHELL_OK__" in alive_out
+            shell_ok = _SHELL_OK_MARK in alive_out
             if not shell_ok:
                 # 并发扫描下首次可能被饿死，放宽超时补一次
                 _, alive_out = _run(
                     ["-s", address, "shell", _SHELL_PROBE], max(timeout + 2, 8)
                 )
-                shell_ok = "__TRES_SHELL_OK__" in alive_out
-            if not shell_ok:
-                logger.info("real probe shell dead %s: %s", address, alive_out[:120])
+                shell_ok = _SHELL_OK_MARK in alive_out
 
-            # 3) 逐个读文件（每条命令都带 timeout；文件不存在时 stdout 为空 -> 跳过）
-            _, pn_out = _run(["-s", address, "shell", "cat /etc/product_name"], timeout)
-            product_name = _first_token(pn_out)
-            # 并发扫描下首次读取可能被饿死，空结果时补一次（放宽超时）。
-            if product_name is None:
-                _, pn_out = _run(
-                    ["-s", address, "shell", "cat /etc/product_name"], max(timeout + 2, 8)
+            # 2b) v0.50：常规 shell <cmd> 失败时，交互式 stdin 回退（可关）
+            if not shell_ok and _interactive_fallback_enabled():
+                logger.info(
+                    "real probe interactive shell fallback %s (cmd shell got: %s)",
+                    address, (alive_out or "")[:80],
                 )
+                ok, sections = _run_interactive_shell(
+                    address, max(timeout * 2, INTERACTIVE_SHELL_TIMEOUT)
+                )
+                if ok:
+                    used_interactive = True
+                    shell_ok = True
+                    fields = _fields_from_interactive_sections(sections)
+                    product_name = fields["product_name"]
+                    eth_mac = fields["eth_mac"]
+                    wlan_mac = fields["wlan_mac"]
+                    storage_type = fields["storage_type"]
+                    has_wifi = fields["has_wifi"]
+                    board_dt = fields["board_dt"]
+                    firmware_version = fields["firmware_version"]
+                    build_info = fields["build_info"]
+                    eng_config = fields["eng_config"]
+                    features = fields["features"]
+                    cpu_part = fields["cpu_part"]
+                    cpu_implementer = fields["cpu_implementer"]
+                    has_fpu = fields["has_fpu"]
+                    logger.info(
+                        "real probe interactive shell ok %s product=%s",
+                        address, product_name,
+                    )
+                else:
+                    logger.info(
+                        "real probe shell dead %s (interactive fallback failed): %s",
+                        address, (alive_out or "")[:120],
+                    )
+            elif not shell_ok:
+                logger.info("real probe shell dead %s: %s", address, (alive_out or "")[:120])
+
+            # 3) 常规路径：逐个读文件（交互式回退已采到则跳过，保证正常设备零行为变化）
+            if not used_interactive:
+                _, pn_out = _run(["-s", address, "shell", "cat /etc/product_name"], timeout)
                 product_name = _first_token(pn_out)
+                # 并发扫描下首次读取可能被饿死，空结果时补一次（放宽超时）。
+                if product_name is None:
+                    _, pn_out = _run(
+                        ["-s", address, "shell", "cat /etc/product_name"], max(timeout + 2, 8)
+                    )
+                    product_name = _first_token(pn_out)
 
-            _, eth_out = _run(["-s", address, "shell", "cat /sys/class/net/eth0/address"], timeout)
-            eth_mac = _first_mac(eth_out)  # 无 eth0 -> None（跳过）
+                _, eth_out = _run(["-s", address, "shell", "cat /sys/class/net/eth0/address"], timeout)
+                eth_mac = _first_mac(eth_out)  # 无 eth0 -> None（跳过）
 
-            _, wlan_out = _run(["-s", address, "shell", "cat /sys/class/net/wlan0/address"], timeout)
-            wlan_mac = _first_mac(wlan_out)
+                _, wlan_out = _run(["-s", address, "shell", "cat /sys/class/net/wlan0/address"], timeout)
+                wlan_mac = _first_mac(wlan_out)
 
-            _, cmd_out = _run(["-s", address, "shell", "cat /proc/cmdline"], timeout)
-            if "spi_nor" in cmd_out:
-                storage_type = "nor"
-            elif "spi_nfc" in cmd_out:
-                storage_type = "nand"
+                _, cmd_out = _run(["-s", address, "shell", "cat /proc/cmdline"], timeout)
+                if "spi_nor" in cmd_out:
+                    storage_type = "nor"
+                elif "spi_nfc" in cmd_out:
+                    storage_type = "nand"
 
-            _, wifi_out = _run(
-                ["-s", address, "shell", "test -d /sys/class/net/wlan0 && echo QUAMM_WIFI_OK"],
-                timeout,
-            )
-            has_wifi = "QUAMM_WIFI_OK" in wifi_out
-
-            _, dt_out = _run(
-                ["-s", address, "shell", "cat /proc/device-tree/compatible"], timeout
-            )
-            # device-tree compatible 是 \0 分隔的多串，替换为空格后折成一行。
-            joined_dt = " ".join(dt_out.replace("\x00", " ").split())
-            # 只认含 "xxx,yyy" 逗号对的 compatible 串；挡登录 shell 横幅垃圾。
-            board_dt = joined_dt if re.search(r"[a-z0-9]+,[a-z0-9]+", joined_dt) else None
-
-            _, fw_out = _run(["-s", address, "shell", "cat /etc/fw_version"], timeout)
-            firmware_version = _first_version(fw_out)
-            if firmware_version is None:
-                _, ver_out = _run(["-s", address, "shell", "cat /etc/version"], timeout)
-                firmware_version = _first_version(ver_out)
-
-            # v0.31：工程配置指纹（新构建固件才有，老固件读空 -> 跳过）
-            _, bi_out = _run(["-s", address, "shell", "cat /etc/build-info"], timeout)
-            build_info = _parse_kv(bi_out)
-            _, cfg_out = _run(
-                ["-s", address, "shell", _ENG_GREP], max(timeout, 10)
-            )
-            eng_config = _parse_eng_config(cfg_out)
-            # product_name 缺失时用工程配置兜底（新固件可能不再带 /etc/product_name）
-            if product_name is None:
-                product_name = (
-                    (build_info.get("project") or "").strip()
-                    or (eng_config.get("product") or "").strip()
-                    or (eng_config.get("project_type") or "").strip()
-                    or None
+                _, wifi_out = _run(
+                    ["-s", address, "shell", "test -d /sys/class/net/wlan0 && echo QUAMM_WIFI_OK"],
+                    timeout,
                 )
+                has_wifi = "QUAMM_WIFI_OK" in wifi_out
 
-            # v0.23：读 /proc/cpuinfo 判定浮点 ABI（Features 含 vfp/neon 即硬浮点）。
-            _, cpu_out = _run(["-s", address, "shell", "cat /proc/cpuinfo"], timeout)
-            features, cpu_part, cpu_implementer, has_fpu = _parse_cpuinfo(cpu_out)
+                _, dt_out = _run(
+                    ["-s", address, "shell", "cat /proc/device-tree/compatible"], timeout
+                )
+                # device-tree compatible 是 \0 分隔的多串，替换为空格后折成一行。
+                joined_dt = " ".join(dt_out.replace("\x00", " ").split())
+                # 只认含 "xxx,yyy" 逗号对的 compatible 串；挡登录 shell 横幅垃圾。
+                board_dt = joined_dt if re.search(r"[a-z0-9]+,[a-z0-9]+", joined_dt) else None
+
+                _, fw_out = _run(["-s", address, "shell", "cat /etc/fw_version"], timeout)
+                firmware_version = _first_version(fw_out)
+                if firmware_version is None:
+                    _, ver_out = _run(["-s", address, "shell", "cat /etc/version"], timeout)
+                    firmware_version = _first_version(ver_out)
+
+                # v0.31：工程配置指纹（新构建固件才有，老固件读空 -> 跳过）
+                _, bi_out = _run(["-s", address, "shell", "cat /etc/build-info"], timeout)
+                build_info = _parse_kv(bi_out)
+                _, cfg_out = _run(
+                    ["-s", address, "shell", _ENG_GREP], max(timeout, 10)
+                )
+                eng_config = _parse_eng_config(cfg_out)
+                # product_name 缺失时用工程配置兜底（新固件可能不再带 /etc/product_name）
+                if product_name is None:
+                    product_name = (
+                        (build_info.get("project") or "").strip()
+                        or (eng_config.get("product") or "").strip()
+                        or (eng_config.get("project_type") or "").strip()
+                        or None
+                    )
+
+                # v0.23：读 /proc/cpuinfo 判定浮点 ABI（Features 含 vfp/neon 即硬浮点）。
+                _, cpu_out = _run(["-s", address, "shell", "cat /proc/cpuinfo"], timeout)
+                features, cpu_part, cpu_implementer, has_fpu = _parse_cpuinfo(cpu_out)
         finally:
             _run(["disconnect", address], timeout)
 

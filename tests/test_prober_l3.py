@@ -28,6 +28,7 @@ def _fake_factory(connect_out: str, shell_alive: bool, product: str | None = "es
 
 def test_shell_alive_is_l3_without_product_or_mac(monkeypatch):
     """设备没有 product_name、也没有固定 MAC，只要 shell 能执行就是 L3（esl2 场景）。"""
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _fake_factory("connected to 172.16.20.212:5555", True, product=None),
@@ -40,6 +41,7 @@ def test_shell_alive_is_l3_without_product_or_mac(monkeypatch):
 
 
 def test_shell_alive_with_product_and_mac_is_l3(monkeypatch):
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _fake_factory("already connected to 10.0.0.5:5555", True, product="esl2"),
@@ -51,9 +53,14 @@ def test_shell_alive_with_product_and_mac_is_l3(monkeypatch):
 
 def test_shell_dead_is_l0(monkeypatch):
     """adbd 起来了但 shell 起不来（rootfs 损坏 / exec 失败）仍判 L0。"""
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _fake_factory("connected to 172.16.60.55:5555", False, product=None),
+    )
+    # 交互回退默认开：此处模拟回退也失败，保持「真死 shell → L0」口径
+    monkeypatch.setattr(
+        prober_real, "_run_interactive_shell", lambda *a, **k: (False, [])
     )
     result = prober_real.RealXosProber().probe("172.16.60.55", 5555, 5)
     assert result.level == HealthLevel.L0
@@ -62,6 +69,7 @@ def test_shell_dead_is_l0(monkeypatch):
 
 
 def test_connect_failure_is_l0(monkeypatch):
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _fake_factory("failed to connect to '172.16.60.57:5555': Connection refused", True),
@@ -92,6 +100,7 @@ def _net_fake(eth_out: str, wlan_out: str, connect_out="connected to 172.16.20.2
 
 def test_fe_prefix_mac_is_used_as_identity(monkeypatch):
     """fe: 前缀是 local-admin 位，实测烧录固定，应采信为指纹（v0.28.2 口径）。"""
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _net_fake(
@@ -107,6 +116,7 @@ def test_fe_prefix_mac_is_used_as_identity(monkeypatch):
 
 
 def test_all_zero_mac_is_rejected(monkeypatch):
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _net_fake("00:00:00:00:00:00", "00:00:00:00:00:00"),
@@ -118,6 +128,7 @@ def test_all_zero_mac_is_rejected(monkeypatch):
 
 
 def test_eth0_preferred_over_wlan(monkeypatch):
+    monkeypatch.setattr(prober_real, "tcp_port_open", lambda *a, **k: True)
     monkeypatch.setattr(
         prober_real, "_run",
         _net_fake("0c:c1:19:90:0b:eb", "fe:0f:e2:1e:1c:5f"),
