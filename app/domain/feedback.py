@@ -62,6 +62,21 @@ def review_feedback(db, feedback_id: str, status: str, admin_note: str | None = 
     return serialize(row)
 
 
+def delete_feedback(db, feedback_id: str) -> dict:
+    row = db.get(AgentFeedback, feedback_id)
+    if row is None:
+        raise DomainError("NOT_FOUND", "意见不存在")
+    payload = {
+        "feedback_id": row.feedback_id,
+        "category": row.category,
+        "agent_label": row.agent_label,
+        "status": row.status,
+    }
+    db.delete(row)
+    db.commit()
+    return {"deleted": True, **payload}
+
+
 def serialize(row: AgentFeedback) -> dict:
     return {
         "feedback_id": row.feedback_id,

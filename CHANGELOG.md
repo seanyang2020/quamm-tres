@@ -3,6 +3,15 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.50.0] - 2026-11-24
+
+### 新增：管理员可删除无效 Agent 意见
+- `DELETE /api/feedback/{feedback_id}`，仅 `require_admin` 可调用；删除成功返回
+  `deleted=true` 与反馈基础信息，不存在返回 `NOT_FOUND`。
+- 删除写入审计 `feedback_delete`，记录反馈 ID、类别、Agent、删除前状态；不保存正文。
+- Agent 意见页新增「删除」按钮，二次确认后调用；适用于过期、重复、无效反馈。
+- 测试：新增 `tests/test_feedback_delete.py` 2 项（删除成功、删除不存在返回 NOT_FOUND）。
+
 ## [0.28.2] - 2026-11-09
 
 ### 变更：入池口径改为「ADB 连得上、shell 能执行即 L3」

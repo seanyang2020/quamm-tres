@@ -1294,6 +1294,21 @@ async function reviewFeedback(row, status) {
   } catch (e) { ElMessage.error(e.message) }
 }
 
+async function deleteFeedback(row) {
+  try {
+    await ElMessageBox.confirm(
+      '确认删除这条无效反馈？删除后不可恢复。',
+      '删除 Agent 意见',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+  } catch (e) { return }
+  try {
+    await api('/api/feedback/' + row.feedback_id, { method: 'DELETE' })
+    ElMessage.success('已删除')
+    loadFeedback()
+  } catch (e) { ElMessage.error(e.message) }
+}
+
 // ---------------- COMRes（原 WireLog tab，同 key；节点视图 + 资源池） ----------------
 const wlNodes = ref([])
 const wlDetail = ref(null)
@@ -4281,11 +4296,12 @@ const legendRole = [
                   <el-tag v-else size="small" type="danger">已驳回</el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="200">
+              <el-table-column label="操作" width="240">
                 <template #default="{ row }">
                   <el-button size="small" link type="success" @click="reviewFeedback(row, 'accepted')">采纳</el-button>
                   <el-button size="small" link type="info" @click="reviewFeedback(row, 'deferred')">暂缓</el-button>
                   <el-button size="small" link type="danger" @click="reviewFeedback(row, 'rejected')">驳回</el-button>
+                  <el-button size="small" link type="danger" @click="deleteFeedback(row)">删除</el-button>
                 </template>
               </el-table-column>
             </el-table>

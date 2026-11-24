@@ -31,6 +31,7 @@ from app.constants import (
 )
 from app.db import get_session
 from app.domain import catalog, credentials, feedback, leasing, patrol
+from app.domain import audit as audit_log
 from app import discovery
 from app.domain.queueing import position as queue_position
 from app.domain import build_servers as buildsvc
@@ -637,6 +638,26 @@ def review_feedback(
             status=str(payload.get("status") or ""),
             admin_note=payload.get("admin_note"),
         )
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=400, detail=e.message)
+
+
+@router.delete("/feedback/{feedback_id}")
+def delete_feedback(
+    feedback_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    try:
+        result = feedback.delete_feedback(session, feedback_id)
+        audit_log.record(
+            session,
+            actor=identity.email,
+            action="feedback_delete",
+            detail={k: result.get(k) for k in ("feedback_id", "category", "agent_label", "status")},
+        )
+        session.commit()
+        return result
     except catalog.DomainError as e:
         raise HTTPException(status_code=400, detail=e.message)
 
