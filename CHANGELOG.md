@@ -3,7 +3,19 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.53.2] - 2026-11-25
+
+### 修复：刷机 per-job 工作目录隔离
+- 每个 flash job 使用 `var/flash/jobs/<job_id>/` 作为 dbxostest cwd，隔离
+  `downloads/`、`tmp/`、`test_report/`，避免同机型不同 lease 并发时互删包。
+- job 结束（成功/失败/异常）在 finally 删除该工作目录；`var/flash/logs/<job_id>.log`
+  保留。清理失败只记 warning，不改任务终态。
+- 移除刷机流程中的全局 downloads 快照 + `prune_flash_job_delta`；
+  `flash_cache_prune_after_job` 不再参与刷机清理。
+- 定时清理增加：过期 `jobs/` 目录（默认 6h）、`/tmp/dbxos_*` 残留目录（默认 6h）。
+
 ## [0.53.1] - 2026-11-25
+
 
 ### 修复：退设备自动释放串口绑定
 - `_retire_device` / `device_unregister` 在设备进入 retired 时立即释放其持有的全部

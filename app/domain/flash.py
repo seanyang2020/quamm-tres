@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -31,7 +32,6 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app import cache_prune
 from app.config import settings
 from app.constants import LeaseState
 from app.db import SessionLocal
@@ -244,7 +244,15 @@ def _log_dir() -> Path:
 
 
 def _work_dir() -> Path:
+    """刷机根目录（logs/ 与 jobs/ 的父路径）；单 job 请用 `_job_work_dir`。"""
     path = Path(settings.flash_work_dir).resolve()
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _job_work_dir(job_id: str) -> Path:
+    """每个刷机 job 独立 cwd，隔离 downloads/tmp/test_report，避免并发互删。"""
+    path = Path(settings.flash_work_dir).resolve() / "jobs" / job_id
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -269,8 +277,11 @@ def _build_command(project: str, ip: str, version: str, preserve_data: bool, log
     ]
 
 
-def _execute(cmd: list[str], log_path: str, timeout: int) -> tuple[int, str]:
-    """跑 dbxostest；stdout/stderr 兜底写日志（正常时 dbxostest 自己写 --log）。"""
+def _execute(cmd: list[str], log_path: str, timeout: int, cwd: Path) -> tuple[int, str]:
+    """跑 dbxostest；stdout/stderr 兜底写日志（正常时 dbxostest 自己写 --log）。
+
+    cwd 必须是该 job 的独立工作目录（见 `_job_work_dir`），不可再共用全局 flash_work_dir。
+    """
     try:
         proc = subprocess.run(
             cmd,
@@ -278,7 +289,7 @@ def _execute(cmd: list[str], log_path: str, timeout: int) -> tuple[int, str]:
             text=True,
             timeout=timeout,
             check=False,
-            cwd=str(_work_dir()),
+            cwd=str(cwd),
         )
     except subprocess.TimeoutExpired:
         return 124, f"刷机超时（>{timeout}s）"
@@ -314,15 +325,20 @@ def _read_flashed_version(ip: str, port: int) -> str | None:
 
 
 def _run_job(job_id: str) -> None:
-    """后台线程主流程：QUEUED -> RUNNING -> SUCCEEDED / FAILED。"""
-    # v0.28.3：记录刷机前的下载目录快照，结束后只删本次新增的镜像
-    downloads_before = cache_prune.snapshot_downloads() if settings.flash_cache_prune_after_job else None
+    """后台线程主流程：QUEUED -> RUNNING -> SUCCEEDED / FAILED。
+
+    每个 job 使用独立工作目录（jobs/<job_id>/），结束后整目录删除；
+    日志在 var/flash/logs/<job_id>.log，不随工作目录清理。
+    """
+    job_cwd: Path | None = None
     session = SessionLocal()
     try:
         job = session.get(FlashJob, job_id)
         if job is None:
             logger.error("flash job %s disappeared", job_id)
             return
+
+        job_cwd = _job_work_dir(job_id)
 
         job.status = STATUS_RUNNING
         job.started_at = utcnow()
@@ -347,8 +363,10 @@ def _run_job(job_id: str) -> None:
             job.preserve_data,
             job.log_path or "",
         )
-        logger.info("flash job %s start: %s", job_id, " ".join(cmd))
-        rc, output = _execute(cmd, job.log_path or "", settings.flash_timeout_seconds)
+        logger.info("flash job %s start cwd=%s: %s", job_id, job_cwd, " ".join(cmd))
+        rc, output = _execute(
+            cmd, job.log_path or "", settings.flash_timeout_seconds, cwd=job_cwd
+        )
 
         if rc == 0:
             flashed = _read_flashed_version(device.ip, device.adb_port or 5555)
@@ -369,37 +387,18 @@ def _run_job(job_id: str) -> None:
         _fail_job(session, job_id, f"{type(e).__name__}: {e}")
     finally:
         session.close()
-        if downloads_before is not None:
-            _prune_job_cache(job_id, downloads_before)
+        if job_cwd is not None:
+            _cleanup_job_workdir(job_id, job_cwd)
 
 
-def _prune_job_cache(job_id: str, before: set[str]) -> None:
-    """v0.28.3：刷机结束回收本次下载的镜像。
-
-    只在没有其它 RUNNING job 时执行 —— 并发刷机时 downloads/ 里的新增文件可能属于
-    另一个 job，误删会让对方中断。
-    """
+def _cleanup_job_workdir(job_id: str, job_cwd: Path) -> None:
+    """删除 job 工作目录；失败只记 warning，不影响任务终态。不碰 logs/。"""
     try:
-        session = SessionLocal()
-        try:
-            others = (
-                session.query(FlashJob)
-                .filter(FlashJob.status == STATUS_RUNNING, FlashJob.job_id != job_id)
-                .count()
-            )
-        finally:
-            session.close()
-        if others:
-            logger.info("flash job %s: skip cache prune (%s other job running)", job_id, others)
-            return
-        result = cache_prune.prune_flash_job_delta(before)
-        if result["deleted_count"]:
-            logger.info(
-                "flash job %s: cache pruned %s items, freed %s",
-                job_id, result["deleted_count"], result["freed_human"],
-            )
-    except Exception:  # noqa: BLE001
-        logger.exception("flash job %s: cache prune failed", job_id)
+        if job_cwd.exists():
+            shutil.rmtree(job_cwd)
+            logger.info("flash job %s: removed workdir %s", job_id, job_cwd)
+    except OSError as e:
+        logger.warning("flash job %s: cleanup workdir %s failed: %s", job_id, job_cwd, e)
 
 
 def _fail_job(session: Session, job_id: str, error: str) -> None:

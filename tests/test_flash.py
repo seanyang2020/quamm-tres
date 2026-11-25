@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 from app.constants import DeviceStatus, HealthLevel
 from app.domain import flash
@@ -130,8 +131,9 @@ def test_flash_success_updates_device(db, monkeypatch):
 
     captured = {}
 
-    def fake_execute(cmd, log_path, timeout):
+    def fake_execute(cmd, log_path, timeout, cwd=None):
         captured["cmd"] = cmd
+        captured["cwd"] = cwd
         with open(log_path, "w", encoding="utf-8") as fh:
             fh.write("download ok\nflash ok\n")
         return 0, "ok"
@@ -179,7 +181,7 @@ def test_flash_erase_requires_confirm_and_drops_e_data(db, monkeypatch):
 
     captured = {}
 
-    def fake_execute(cmd, log_path, timeout):
+    def fake_execute(cmd, log_path, timeout, cwd=None):
         captured["cmd"] = cmd
         return 0, ""
 
@@ -212,7 +214,7 @@ def test_flash_failure_marks_failed(db, monkeypatch):
     device_id = _make_device(db)
     lease_id = _grant_lease(db, "user01@corp.com", device_id)
 
-    def fake_execute(cmd, log_path, timeout):
+    def fake_execute(cmd, log_path, timeout, cwd=None):
         return 1, "download failed\nHTTP 500"
 
     monkeypatch.setattr(flash, "_execute", fake_execute)
@@ -235,7 +237,7 @@ def test_flash_in_progress_blocks_duplicate(db, monkeypatch):
     lease_id = _grant_lease(db, "user01@corp.com", device_id)
     gate = threading.Event()
 
-    def blocking_execute(cmd, log_path, timeout):
+    def blocking_execute(cmd, log_path, timeout, cwd=None):
         gate.wait(3)
         return 0, ""
 
@@ -329,3 +331,184 @@ def test_apply_gate_skips_incompatible_and_hints_patch(db):
     r4 = db.call("user02@corp.com", res_apply, product_type="QM102V")
     assert r4["state"] == "GRANTED", r4
     assert r4["lease"]["device_id"] == patch_id
+
+
+# ---------- v0.53.2：per-job 工作目录隔离 ----------
+
+
+def test_job_work_dir_distinct_per_job_id(tmp_path, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "flash_work_dir", str(tmp_path / "flash"))
+    a = flash._job_work_dir("fj_aaa111")
+    b = flash._job_work_dir("fj_bbb222")
+    assert a != b
+    assert a.name == "fj_aaa111"
+    assert b.name == "fj_bbb222"
+    assert a.parent == b.parent == (tmp_path / "flash" / "jobs").resolve()
+    assert a.is_dir() and b.is_dir()
+
+
+def test_execute_uses_passed_cwd(tmp_path):
+    """_execute 必须以传入 cwd 为子进程工作目录（不依赖 dbxostest）。"""
+    work = tmp_path / "job_cwd"
+    work.mkdir()
+    log_path = str(tmp_path / "job.log")
+    cmd = ["python3", "-c", "import os,sys; sys.stdout.write(os.getcwd())"]
+    rc, output = flash._execute(cmd, log_path, timeout=10, cwd=work)
+    assert rc == 0
+    assert Path(output.strip()).resolve() == work.resolve()
+
+
+def test_run_job_removes_workdir_keeps_log(db, tmp_path, monkeypatch):
+    """job 结束后工作目录删除、logs/<job_id>.log 保留（直接跑 _run_job，不依赖机型种子）。"""
+    from app.config import settings
+    from app.models import FlashJob
+
+    flash_root = tmp_path / "flash"
+    log_dir = flash_root / "logs"
+    log_dir.mkdir(parents=True)
+    monkeypatch.setattr(settings, "flash_work_dir", str(flash_root))
+    monkeypatch.setattr(settings, "flash_log_dir", str(log_dir))
+
+    job_id = "fj_iso001"
+    log_path = str(log_dir / f"{job_id}.log")
+    session = db.session()
+    try:
+        session.add(
+            ProductType(
+                type_code="ISO_PT",
+                display_name="iso-test",
+                has_screen=True,
+                has_led=False,
+                serial_count=0,
+                adb_port=5555,
+                enabled=True,
+                db_project_name="esl2",
+                created_at=utcnow(),
+            )
+        )
+        device_id = new_device_id()
+        session.add(
+            Device(
+                device_id=device_id,
+                display_name=device_id,
+                model_class="ISO_PT",
+                owner="owner@corp.com",
+                status=DeviceStatus.AVAILABLE,
+                health_level=HealthLevel.L3,
+                ip="10.1.2.9",
+                adb_port=5555,
+                firmware_version="1.0.0",
+                source="mock",
+                created_at=utcnow(),
+            )
+        )
+        session.add(
+            FlashJob(
+                job_id=job_id,
+                lease_id="L-iso-test",
+                device_id=device_id,
+                product_type="ISO_PT",
+                version="130",
+                preserve_data=True,
+                status=flash.STATUS_QUEUED,
+                log_path=log_path,
+                created_at=utcnow(),
+            )
+        )
+        session.commit()
+    finally:
+        session.close()
+
+    seen = {}
+
+    def fake_execute(cmd, log_path, timeout, cwd=None):
+        seen["cwd"] = Path(cwd) if cwd is not None else None
+        assert cwd is not None
+        cwd_path = Path(cwd)
+        (cwd_path / "downloads").mkdir(parents=True, exist_ok=True)
+        (cwd_path / "downloads" / "CURRENT.tar.gz").write_bytes(b"pkg")
+        (cwd_path / "tmp").mkdir(exist_ok=True)
+        (cwd_path / "test_report").mkdir(exist_ok=True)
+        Path(log_path).write_text("flash ok\n", encoding="utf-8")
+        assert cwd_path.exists()
+        return 0, "ok"
+
+    monkeypatch.setattr(flash, "_execute", fake_execute)
+    monkeypatch.setattr(flash, "_read_flashed_version", lambda ip, port: "V1.00.01.130")
+
+    flash._run_job(job_id)
+
+    job_cwd = flash_root / "jobs" / job_id
+    assert seen["cwd"] is not None
+    assert seen["cwd"].resolve() == job_cwd.resolve()
+    assert not job_cwd.exists(), "job 工作目录应在 finally 中删除"
+    assert Path(log_path).is_file()
+    assert "flash ok" in Path(log_path).read_text(encoding="utf-8")
+
+    session = db.session()
+    try:
+        job = session.get(FlashJob, job_id)
+        assert job is not None
+        assert job.status == flash.STATUS_SUCCEEDED
+    finally:
+        session.close()
+
+
+def test_prune_stale_flash_job_dirs_and_tmp_dbxos(tmp_path, monkeypatch):
+    """定时清理：过期 jobs/ 目录与 /tmp/dbxos_*；不删 logs、不碰非 dbxos_。"""
+    import os
+    import time as _time
+
+    from app import cache_prune
+    from app.config import settings
+
+    flash_root = tmp_path / "flash"
+    jobs = flash_root / "jobs"
+    logs = flash_root / "logs"
+    stale = jobs / "fj_stale"
+    fresh = jobs / "fj_fresh"
+    stale.mkdir(parents=True)
+    fresh.mkdir(parents=True)
+    (stale / "downloads").mkdir()
+    (stale / "downloads" / "x.gz").write_bytes(b"old")
+    (fresh / "downloads").mkdir()
+    (fresh / "downloads" / "y.gz").write_bytes(b"new")
+    logs.mkdir(parents=True)
+    keep_log = logs / "fj_stale.log"
+    keep_log.write_text("keep me\n", encoding="utf-8")
+
+    old = _time.time() - 7 * 3600
+    os.utime(stale, (old, old))
+    os.utime(stale / "downloads", (old, old))
+    os.utime(stale / "downloads" / "x.gz", (old, old))
+
+    tmp_root = tmp_path / "tmp"
+    tmp_root.mkdir()
+    old_dbxos = tmp_root / "dbxos_old"
+    new_dbxos = tmp_root / "dbxos_new"
+    other = tmp_root / "other_stuff"
+    old_dbxos.mkdir()
+    new_dbxos.mkdir()
+    other.mkdir()
+    (old_dbxos / "a").write_text("x")
+    (other / "b").write_text("y")
+    os.utime(old_dbxos, (old, old))
+    os.utime(old_dbxos / "a", (old, old))
+
+    monkeypatch.setattr(settings, "flash_work_dir", str(flash_root))
+    monkeypatch.setattr(settings, "flash_job_keep_hours", 6)
+    monkeypatch.setattr(settings, "tmp_dbxos_keep_hours", 6)
+
+    jr = cache_prune.prune_flash_job_dirs(dry_run=False)
+    assert not stale.exists()
+    assert fresh.exists()
+    assert keep_log.is_file()
+    assert jr["deleted_count"] == 1
+
+    tr = cache_prune.prune_tmp_dbxos(dry_run=False, tmp_root=tmp_root)
+    assert not old_dbxos.exists()
+    assert new_dbxos.exists()
+    assert other.exists()
+    assert tr["deleted_count"] == 1
