@@ -53,11 +53,24 @@ def test_heartbeat_config_nested_interval(session):
     assert (node.config_json or {}).get("heartbeat_interval_s") == 60
 
 
-def test_register_default_interval_3600(session):
+def test_register_default_interval_60(session):
     p = _prov(session, "hb-default")
     r = comres.register(session, p["node_token"], {
         "node_id": p["node_id"], "local_ip": "10.9.1.3",
         "ports": [{"com": "COM1", "endpoint": "tcp://10.9.1.3:9103",
+                   "health_state": "online"}],
+    })
+    assert r["heartbeat_interval_s"] == 60
+    node = session.get(WireLogNode, p["node_id"])
+    assert (node.config_json or {}).get("heartbeat_interval_s") == 60
+
+
+def test_register_explicit_interval_3600(session):
+    p = _prov(session, "hb-explicit-3600")
+    r = comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "10.9.1.5",
+        "heartbeat_interval_s": 3600,
+        "ports": [{"com": "COM1", "endpoint": "tcp://10.9.1.5:9105",
                    "health_state": "online"}],
     })
     assert r["heartbeat_interval_s"] == 3600

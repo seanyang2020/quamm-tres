@@ -126,8 +126,8 @@ class Settings(BaseSettings):
     # COMRes 无效资源清理（t942）：worker 定时 prune；默认 60s（60s 心跳节点约 3min 落 offline）
     comres_prune_enabled: bool = True
     comres_prune_interval_s: int = 60
-    # online 心跳超时 → offline+stale：max(3*node_interval, floor)；无上报时 interval 兜底 3600
-    comres_heartbeat_interval_s: int = 3600
+    # online 心跳超时 → offline+stale：max(3*node_interval, floor)；无上报时 interval 兜底 60
+    comres_heartbeat_interval_s: int = 60
     comres_stale_floor_s: int = 180
     # offline 连续超过此时长 → 端口移出池、节点 dormant
     comres_offline_dormant_s: int = 24 * 3600

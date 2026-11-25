@@ -3,6 +3,14 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.3] - 2026-11-25
+
+### 修复：无配置节点默认 60s 心跳
+- 全局 `comres_heartbeat_interval_s` 默认由 3600 改为 60；新建/未带
+  `heartbeat_interval_s` 的节点 register/heartbeat 返回并持久化 60。
+- `comres_apply` 审批响应中的 `heartbeat_interval_s` 同步为 60。
+- 仍保留 0.54.2 优先级与范围校验；显式上报 3600 合法且照常生效。
+
 ## [0.54.2] - 2026-11-25
 
 ### 修复：COMRes 心跳间隔以节点上报为准

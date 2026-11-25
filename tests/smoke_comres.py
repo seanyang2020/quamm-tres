@@ -80,7 +80,7 @@ for b in rows:
 check("两行互不覆盖", len(rows) == 2, f"count={len(rows)}")
 check("register 回 allocated 字段", "allocated" in r1["ports"][0])
 check("heartbeat_interval 按上报", r1.get("heartbeat_interval_s") == 60)
-check("heartbeat_interval 无上报兜底 3600", r2.get("heartbeat_interval_s") == 3600)
+check("heartbeat_interval 无上报兜底 60", r2.get("heartbeat_interval_s") == 60)
 
 # node1 再加第二端口，供解注册保留对照
 comres.register(s, token1, {
@@ -490,7 +490,7 @@ comres.expire_allocations(s)
 b_m = s.query(WireLogPortBinding).filter_by(node_id=nid_m, slot=1).one()
 check("手工占用 15min 后释放", b_m.allocated_by is None and b_m.allocated_expire is None)
 
-# 节点 stale：超逐节点 stale 阈值无上报 → auto 释放（默认 interval=3600 → 10800s）
+# 节点 stale：超逐节点 stale 阈值无上报 → auto 释放（默认 interval=60 → floor 180s）
 from app.domain.comres_prune import node_stale_timeout_s
 prov_st = wirelog.provision_host(s, display_name="stale-n", operator="t")
 tok_st, nid_st = prov_st["node_token"], prov_st["node_id"]
