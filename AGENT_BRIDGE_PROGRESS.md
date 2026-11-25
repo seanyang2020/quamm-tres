@@ -1,7 +1,9 @@
-# 交互式 adbd 变体探测回退 — 进度
+# t1043 P0 probe source guard — 进度
 
-> 任务：tres-interactive-shell-fallback-20261124  
-> task_id: tres-interactive-shell-fallback-20261124
+> 任务：禁止 mock 静默落库 / source 可审计  
+> task_id: t1043  
+> 工作区：`/home/scm/worktree/tres-probe-source-guard`  
+> 分支：`feat/probe-source-guard`（基于 41ae518）
 
 ## 状态：已完成（停住等审）
 
@@ -9,15 +11,23 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 交互式 shell 回退 | `prober_real.py`：常规 shell 探针失败后 stdin 灌入采集 | ✅ |
-| 开关 | `TRES_INTERACTIVE_SHELL_FALLBACK` 默认开；0/false/off 关 | ✅ |
-| 单测 | fake adb A（忽略参数）/ B（正常）+ 关闭开关 + shell dead | ✅ |
-| 真机 206 | L3 / nxf7e / MAC wlan0；关闭回退 → L0 | ✅ |
-| 对照 198 | fallback on/off 逐字段一致 | ✅ |
-| 提交 | `feat/comres` | ✅ |
+| ProbeSource 常量 | `ALL_SOURCES` / `PRODUCTION_SOURCES` | ✅ |
+| 配置默认 | `probe_backend=real`，`allow_mock_probe=False` | ✅ |
+| 运行时键 | `allow_mock_probe` bool | ✅ |
+| build_prober | 未知值 ValueError，不再回退 mock | ✅ |
+| catalog 闸门 | `_resolve_probe_source`；probe/register 封口 | ✅ |
+| 模型/迁移 | 默认 real；`simulated` 派生；空值→unknown | ✅ |
+| 公开视图/MCP/UI | source+simulated；docstring；去掉 mock 选项 | ✅ |
+| 单测 | `test_probe_source_guard.py` + conftest/patrol 适配 | ✅ |
+| 提交/部署 | 未 commit / 未 push / 未部署 | ✅ |
 
-## 说明
+## 关键设计
 
-- 正常设备路径优先且零行为变化；仅 shell `<cmd>` 拿不到 `__TRES_SHELL_OK__` 时回退
-- `mac_source` 沿用既有 `eth0`/`wlan0`（非新枚举）
-- 未部署 201、未改 DB、未碰 lease/patrol/flash/serial
+- **校验放在 catalog 入口**（`device_probe` / `device_register`），不封死 `get_prober_for("mock")`，故既有 mock 设备巡检仍可用。
+- **mock 仅当 `allow_mock_probe=True`**；生产默认拒绝，错误码 `MOCK_PROBE_DISABLED`。
+
+## 风险 / 未完成
+
+- 已有库 `device.source` 列若早已以 `DEFAULT 'mock'` 建好，SQLite 无法在线改列默认；仅影响「将来 ADD COLUMN」路径与 ORM 默认。
+- 未批量改写既有 `source=mock` 行（按 P0 要求）。
+- 全量 17 个既有失败（flash/registration/products/queue/mcp_http）未在本任务修复。

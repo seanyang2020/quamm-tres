@@ -49,10 +49,12 @@ class Settings(BaseSettings):
     probe_timeout_seconds: int = 5
     # 串口派生票（serialhub 1.1.0）下发/撤销时调日志机 MCP 的超时（秒）
     serial_token_mcp_timeout: int = 6
-    # 探测后端：mock=模拟设备 HTTP /probe（默认，本地演示）；
-    # real=真实 Quamm XOS 设备，adb connect + shell 读文件（无 getprop）。
+    # 探测后端：real=真实 Quamm XOS 设备（生产默认），adb connect + shell 读文件（无 getprop）；
+    # mock=模拟设备 HTTP /probe，仅开发/测试；须同时 allow_mock_probe=True 才可经 device_probe 使用。
     # 决定"按 IP 探测"的全局默认；巡检则按每台 device.source 分流（见 probe.get_prober_for）。
-    probe_backend: str = "mock"          # mock | real
+    probe_backend: str = "real"          # real | mock
+    # 生产必须为 False：禁止新探测/注册静默走 mock；开发测试显式置 True。
+    allow_mock_probe: bool = False
 
     # 可用池口径：suspect（单轮失败、降级未掉线）默认不可被申请，
     # 避免 Agent 拿到一台连不上的设备；需要"降级仍可用"时置 True。

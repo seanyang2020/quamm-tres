@@ -30,9 +30,9 @@ mcp_app = build_mcp_app()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    # 进程启动时按 settings.probe_backend 选定探测后端（默认 mock）。
+    # 进程启动时按 settings.probe_backend 选定探测后端（默认 real）。
     # 注册（MCP）与巡检（worker）共用同一实现。
-    # v0.28：探测后端（mock/real）以运行时设置为准，重启后不会退回默认 mock
+    # v0.28：探测后端（real/mock）以运行时设置为准；mock 还须 allow_mock_probe
     with SessionLocal() as _probe_session:
         setup_prober_from_settings(_probe_session)
     with SessionLocal() as session:

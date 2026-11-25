@@ -11,7 +11,15 @@ from datetime import timedelta
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.constants import DeviceStatus, HealthLevel, LeaseState, QueueState, RegisterChannel, is_claimable
+from app.constants import (
+    DeviceStatus,
+    HealthLevel,
+    LeaseState,
+    ProbeSource,
+    QueueState,
+    RegisterChannel,
+    is_claimable,
+)
 import json
 from app.domain import audit, device_acl
 from app.domain.notices import notify_device_unregistered
@@ -142,6 +150,30 @@ class DomainError(Exception):
         self.message = message
         self.detail = detail or {}
         super().__init__(message)
+
+
+def _resolve_probe_source(source: str | None) -> str:
+    """集中解析/校验探测来源；生产禁止静默 mock。
+
+    - None → settings.probe_backend
+    - strip/lower 后必须属于 ProbeSource.ALL_SOURCES
+    - mock 且 settings.allow_mock_probe=False → DomainError MOCK_PROBE_DISABLED
+    """
+    raw = settings.probe_backend if source is None else source
+    value = str(raw).strip().lower()
+    if value not in ProbeSource.ALL_SOURCES:
+        raise DomainError(
+            "INVALID_PROBE_SOURCE",
+            f"非法探测来源：{value!r}，允许：{', '.join(sorted(ProbeSource.ALL_SOURCES))}",
+            {"source": value},
+        )
+    if value == ProbeSource.MOCK and not settings.allow_mock_probe:
+        raise DomainError(
+            "MOCK_PROBE_DISABLED",
+            "生产禁止 mock；真实设备请使用 real",
+            {"source": value, "allow_mock_probe": False},
+        )
+    return value
 
 
 @dataclass
@@ -330,6 +362,9 @@ def _public_device(
         # 只读派生：设备中心「串口」按钮灰显用；不落库
         "serial_openable": bool(serial_stats[0]),
         "serial_ports": int(serial_stats[1]),
+        # source / simulated：UI 与 AI 识别模拟设备；claimable 口径本 P0 不动
+        "source": d.source,
+        "simulated": bool(d.simulated),
     }
     # v0.31：工程配置指纹与一致性结论（Agent 视图也给精简版，便于申请前自查）
     data["config"] = consistency.check_device(session, d)
@@ -344,7 +379,6 @@ def _public_device(
                 "register_channel": d.register_channel,
                 "register_agent": d.register_agent,
                 "android_version": d.android_version,
-                "source": d.source,
                 "board_dt": d.board_dt,
                 "storage_type": d.storage_type,
                 "has_wifi": d.has_wifi,
@@ -641,13 +675,14 @@ def device_probe(
     agent_info: str | None = None,
     timeout: int | None = None,
 ) -> dict:
-    # source 为空时沿用全局后端；给出时按来源分流（real=真实 XOS ADB）。
+    # 入口闸门：禁止 mock 静默进入 form（生产 allow_mock_probe=False）。
+    resolved_source = _resolve_probe_source(source)
     probe_timeout = timeout or settings.probe_timeout_seconds
-    result = probe_device(ip, port or 5555, timeout=probe_timeout, source=source)
+    result = probe_device(ip, port or 5555, timeout=probe_timeout, source=resolved_source)
     probe = {
         "ip": ip,
         "adb_port": port,
-        "source": source or settings.probe_backend,
+        "source": resolved_source,
         "level": result.level,
         "mac": result.mac,
         "sn": result.sn,
@@ -747,6 +782,7 @@ def device_register(
     owner = " ".join(owner.split())
 
     probe = form.probe
+    form_source = _resolve_probe_source(probe.get("source"))
 
     # 机型字典校验（10 §3.1：不在字典里的 model_class 拒绝，或转 unknown_model）
     final_model = model_class or probe.get("model")
@@ -783,7 +819,9 @@ def device_register(
             .first()
         ) is not None
         if not has_serial:
-            device.source = probe.get("source") or device.source
+            # 空值不覆盖既有真实 source；仅非空时更新
+            if form_source:
+                device.source = form_source
         device.android_version = probe.get("android_version") or device.android_version
         device.position_code = position_code
         device.owner = owner
@@ -792,7 +830,17 @@ def device_register(
             device.model_class = final_model
         matched_as = "existing"
     else:
-        # 新建（10 §4 结果 B）
+        # 新建：生产只落 real/serial；mock 仅 allow_mock_probe=True 的开发/测试可落
+        if form_source == ProbeSource.MOCK:
+            new_source = ProbeSource.MOCK  # 已通过 _resolve_probe_source 闸门
+        elif form_source in ProbeSource.PRODUCTION_SOURCES:
+            new_source = form_source
+        else:
+            raise DomainError(
+                "INVALID_PROBE_SOURCE",
+                f"新建设备 source 只能是 real/serial，拒绝 {form_source!r}",
+                {"source": form_source},
+            )
         device = Device(
             device_id=new_device_id(),
             display_name=note or f"{final_model}-{position_code}",
@@ -807,7 +855,7 @@ def device_register(
             registered_by=actor_email,
             register_channel=RegisterChannel.MCP_AGENT,
             register_agent=agent_info,
-            source=probe.get("source") or "real",
+            source=new_source,
             ip=probe.get("ip"),
             adb_port=probe.get("adb_port", 5555),
             android_version=probe.get("android_version"),
@@ -837,7 +885,14 @@ def device_register(
         actor=actor_email,
         action="register",
         device_id=device.device_id,
-        detail={"matched_as": matched_as, "model_class": final_model, "level": device.health_level, "agent_info": agent_info},
+        detail={
+            "matched_as": matched_as,
+            "model_class": final_model,
+            "level": device.health_level,
+            "agent_info": agent_info,
+            "source": form_source,
+            "simulated": bool(device.simulated),
+        },
     )
     session.commit()
 

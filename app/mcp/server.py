@@ -498,6 +498,8 @@ def res_device_probe(
     """探测设备 IP 并出注册表（两段式第一步）。返回 form_id，30 分钟有效。
 
     agent_info：调用方 Agent 自报身份（如 WorkBuddy/豆包，可带版本），作为备注随表单暂存。
+    source：仅用于开发/测试覆盖探测后端；生产传 mock 会被拒绝（须 allow_mock_probe）。
+    真实设备请使用 real（或不传，默认 real）。
     """
     return _guard_ro(
         catalog.device_probe,

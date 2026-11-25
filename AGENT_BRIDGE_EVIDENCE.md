@@ -1,68 +1,61 @@
 ---
-task_id: tres-interactive-shell-fallback-20261124
+task_id: t1043
 ---
 
-# tres-interactive-shell-fallback-20261124：交互式 adbd 变体探测回退
+# t1043：P0 probe source guard（禁止 mock 静默落库）
 
 ## a. 编译/构建
 
-- 命令：`.venv/bin/python -m py_compile app/domain/prober_real.py`
+- 命令：`timeout 60 /home/scm/github_gitee/quamm-res/.venv/bin/python -m py_compile app/constants.py app/config.py app/runtime_config.py app/domain/probe.py app/domain/catalog.py app/models.py app/migrations.py app/mcp/server.py app/main.py`
 - 退出码：`0`
-- 命令：`timeout 60 .venv/bin/python -m pytest tests/test_prober_l3.py tests/test_prober_interactive_fallback.py -q`
-- 退出码：`0`；结果：`11 passed`
-- 命令：`timeout 90 .venv/bin/python -m pytest tests/test_prober_l3.py tests/test_prober_interactive_fallback.py tests/test_pending_probe.py -q`
-- 退出码：`0`；结果：`17 passed`
-- 全量 pytest（参考）：`201 passed, 17 failed` — 失败均在 flash/apply/registration/mcp_http/queue，与本次 prober 改动无关（改动前同域已红）
+- 关键结果：语法编译通过（无独立前端构建；Web 仅改 `App.vue` 选项文案）
 
 ## b. 改动文件清单
 
-- `app/domain/prober_real.py` — 交互式 shell 回退（标记切分、超时/杀进程、字段映射）
-- `tests/fake_adb_interactive.py` — fake adb（interactive / normal 两种 adbd）
-- `tests/test_prober_interactive_fallback.py` — 新单测
-- `tests/test_prober_l3.py` — tcp 预检 mock + shell_dead 时 mock 交互回退失败
-- `AGENT_BRIDGE_EVIDENCE.md` / `AGENT_BRIDGE_PROGRESS.md` — 本任务证据
+- `app/constants.py` — 新增 `ProbeSource`（real/serial/mock/unknown + PRODUCTION/ALL）
+- `app/config.py` — `probe_backend` 默认 `real`；新增 `allow_mock_probe=False`
+- `app/runtime_config.py` — 运行时键 `allow_mock_probe`；保留 probe_backend real/mock
+- `app/domain/probe.py` — `build_prober` 未知值抛 `ValueError`，不再回退 mock
+- `app/domain/catalog.py` — `_resolve_probe_source`；probe/register 闸门；audit/source；`_public_device` 输出 `source`/`simulated`
+- `app/models.py` — `Device.source` 默认 real；只读属性 `simulated`
+- `app/migrations.py` — 新列默认 real；空值标 unknown；删除刷 mock 逻辑
+- `app/mcp/server.py` — `res_device_probe` docstring 标明 mock 仅开发/测试
+- `app/main.py` — 启动注释对齐默认 real
+- `web/src/App.vue` — 去掉全局 mock 探测选项；注明生产只允许 real
+- `tests/conftest.py` — 测试显式 `allow_mock_probe=True` + `probe_backend=mock`
+- `tests/test_patrol_cycle.py` — 适配 build_prober 默认 real / 未知抛错
+- `tests/test_probe_source_guard.py` — P0 闸门单测（新建）
 
 ## c. 版本/提交证据
 
-- 分支：`feat/comres`
-- 主提交：`8fd9078 feat(0.50.0): real 探测器兼容忽略 shell 参数的交互式 adbd 变体`
-- `git rev-parse`（主提交）：`8fd9078127a9100bc9c35d42076aa8a438ebace6`
-- `git show --stat 8fd9078`：6 files, +622/-125
+- 分支：`feat/probe-source-guard`
+- `git log -1 --oneline`：`41ae518 chore(release): v0.51.0；real 探测器兼容交互式 adbd 变体`
+- `git status --short`：12 modified + 1 untracked（见上清单）；**未 commit、未 push**
+- `git diff --stat`：`12 files changed, 126 insertions(+), 37 deletions(-)`（不含未跟踪测试文件行数）
 - Gerrit change：不适用
-- 说明：本文件若另有「证据 hash 回填」小提交，以 `git log -1` 为准；功能改动在 `8fd9078`
+- 部署：未部署 201；未写生产 DB
 
 ## d. 验证/自测
 
-### d1. 真机 172.16.60.206（变体 adbd）
+### d1. 目标测试
 
 ```
-206 fallback OFF: level= L0 shell_ok= False product= None mac= None
-206 fallback ON:  level= L3 shell_ok= True product= nxf7e mac= dc:0d:30:07:01:00 src= wlan0 board= arm,molchip,xc01 arm,molchip
+timeout 90 …/python -m pytest tests/test_probe_source_guard.py tests/test_patrol_cycle.py tests/test_pending_probe.py -q
 ```
 
-退出码：`0`
+- 退出码：`0`
+- 结果：`18 passed`
 
-验收：health 非 L0（L3）；product_name=nxf7e；MAC 有值；mac_source=wlan0（与既有枚举一致）
-
-### d2. 对照正常设备 172.16.60.198（fallback on vs off）
+### d2. 全量测试
 
 ```
-DIFFS= NONE
-OFF/ON 均为 L3 framex mac=a0:ac:78:a0:d7:50 mac_source=wlan0 firmware=V1.00.00.944 ...
+timeout 600 …/python -m pytest -q --tb=no
 ```
 
-### d3. 单测
-
-- 变体 A（interactive）→ L3 + nxf7e + wlan0 MAC
-- 变体 B（normal）→ L3 + eth0 优先
-- 关闭回退 + interactive → L0（与改动前一致）
-- shell dead + 交互失败 → L0
-
-### 验收结论
-
-| 标准 | 结论 |
-|---|---|
-| 206 非 L0 + nxf7e + MAC/wlan | ✅ L3 / nxf7e / dc:0d:30:07:01:00 / wlan0 |
-| 正常设备 on/off 字段一致 | ✅ 198 DIFFS=NONE |
-| 单测 A/B + pytest 无新增失败 | ✅ 11/11 prober 相关通过 |
-| 关闭回退 = 改动前（206→L0） | ✅ |
+- 结果：`210 passed, 17 failed, 37 warnings`
+- 失败清单与归属（相对 base `41ae518` 对照，同域已红，**非本次引入**）：
+  - `tests/test_apply_flow.py`：`test_list_products_and_whoami`、`test_product_metadata_completeness_and_stats`（products 夹具/口径，base 已失败）
+  - `tests/test_flash.py`：10 个 AttributeError（flash 夹具，base 已失败）
+  - `tests/test_mcp_http.py`：`test_mcp_http_full_flow`、`test_mcp_http_list_products_never_empty`
+  - `tests/test_queue.py`：`test_apply_by_product_type_queues_in_model_queue`
+  - `tests/test_registration.py`：`test_register_20_devices`、`test_probe_unreachable_registers_pending`（base 已失败：available=0 / apply 无 state）

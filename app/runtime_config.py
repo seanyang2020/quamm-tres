@@ -17,8 +17,9 @@ RUNTIME_SPECS: dict[str, dict[str, Any]] = {
     "patrol_interval_minutes": {"type": "int", "min": 1, "max": 1440},
     # v0.28：pending 设备专项巡检间隔（待检设备频繁探测，尽快转正）
     "pending_patrol_interval_minutes": {"type": "int", "min": 1, "max": 1440},
-    # v0.28：探测后端可在线切换（mock/real）
-    "probe_backend": {"type": "str", "min_length": 4, "max_length": 8, "choices": ["mock", "real"]},
+    # v0.28：探测后端可在线切换（real/mock）；mock 仅当 allow_mock_probe=True 时可供 device_probe
+    "probe_backend": {"type": "str", "min_length": 4, "max_length": 8, "choices": ["real", "mock"]},
+    "allow_mock_probe": {"type": "bool"},
     "patrol_fail_threshold": {"type": "int", "min": 1, "max": 100},
     "holder_concurrency_limit": {"type": "int", "min": 1, "max": 20},
     "allow_apply_when_suspect": {"type": "bool"},

@@ -135,7 +135,10 @@ def test_suspect_not_claimable_unless_configured(db, monkeypatch):
 
 
 def test_prober_backend_selection_and_no_stub():
+    import pytest
+
     assert isinstance(build_prober("mock"), MockProber)
     assert isinstance(build_prober("real"), AdbProber)
-    assert isinstance(build_prober(None), MockProber)
-    assert isinstance(build_prober("unknown"), MockProber)
+    assert isinstance(build_prober(None), AdbProber)  # 默认 real，不再回退 mock
+    with pytest.raises(ValueError, match="illegal probe_backend"):
+        build_prober("unknown")

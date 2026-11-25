@@ -102,6 +102,18 @@ class RegisterChannel:
     COMRES_TCP = "comres_tcp"
 
 
+class ProbeSource:
+    """设备/探测来源。生产只允许 real/serial；mock 仅开发测试显式放行。"""
+
+    REAL = "real"
+    SERIAL = "serial"
+    MOCK = "mock"
+    UNKNOWN = "unknown"
+
+    PRODUCTION_SOURCES = frozenset({REAL, SERIAL})
+    ALL_SOURCES = frozenset({REAL, SERIAL, MOCK, UNKNOWN})
+
+
 # 可申请状态（available 且在池内、L3）
 def is_claimable(status: str, health: str, allow_suspect: bool = False) -> bool:
     """设备是否可被申请。

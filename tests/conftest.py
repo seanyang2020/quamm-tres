@@ -87,7 +87,11 @@ def register_device(db: Db, email: str, dev, position_code: str, owner: str) -> 
 
 
 @pytest.fixture(autouse=True)
-def mock_prober():
-    """测试统一用模拟设备 HTTP 探测。"""
+def mock_prober(monkeypatch):
+    """测试统一用模拟设备 HTTP 探测，并显式放行 mock（生产默认关闭）。"""
+    from app.config import settings
+
     set_prober(MockProber())
+    monkeypatch.setattr(settings, "probe_backend", "mock")
+    monkeypatch.setattr(settings, "allow_mock_probe", True)
     yield

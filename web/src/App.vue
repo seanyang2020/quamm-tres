@@ -4095,9 +4095,8 @@ const legendRole = [
               <el-form-item label="探测后端">
                 <el-select v-model="settingsForm.probe_backend" style="width: 160px">
                   <el-option label="real（真实 ADB 探测）" value="real" />
-                  <el-option label="mock（模拟设备，仅测试）" value="mock" />
                 </el-select>
-                <span style="margin-left: 8px; color: #909399">mock 只用于模拟设备；真实设备用 mock 会一直判 L0</span>
+                <span style="margin-left: 8px; color: #909399">生产只允许 real；mock 仅开发/测试（须 allow_mock_probe）</span>
               </el-form-item>
               <el-form-item label="巡检间隔（分钟）">
                 <el-input-number v-model="settingsForm.patrol_interval_minutes" :min="1" :max="1440" />

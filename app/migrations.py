@@ -5,7 +5,8 @@
 不删除任何已有记录。
 
 接入真实 XOS 设备时：device 表补 project_name / board_dt / storage_type /
-has_wifi / source 五列，并把既有行（全部是 mock 设备）统一标 source='mock'。
+has_wifi / source 五列。source 新增列默认 real；不批量改写既有行的 source
+（既有 mock 设备保留，由业务层 simulated 标记；空值不再刷成 mock）。
 
 0.11.0 引入：credential 表补 role / note 两列（凭据自带权限档位），并把
 admin@corp.com 的既有凭据回填为 role='admin'，保证「已有管理员」不被首次引导误判。
@@ -38,7 +39,7 @@ _DEVICE_COLUMNS = {
     "board_dt": "VARCHAR(256)",
     "storage_type": "VARCHAR(16)",
     "has_wifi": "BOOLEAN",
-    "source": "VARCHAR(16) NOT NULL DEFAULT 'mock'",
+    "source": "VARCHAR(16) NOT NULL DEFAULT 'real'",
     "firmware_version": "VARCHAR(64)",
     "register_agent": "VARCHAR(128)",
     # v0.31 工程配置指纹（JSON）
@@ -467,9 +468,12 @@ def _ensure_device_columns(session: Session) -> None:
             added.append(name)
     if added:
         session.commit()
-    # 既有 22 台 mock 设备：source 为空 / NULL 一律补成 mock
+    # 空/NULL source 标 unknown，便于业务拒绝；不把既有 mock 改成 real，也不刷成 mock
     session.execute(
-        text("UPDATE device SET source = 'mock' WHERE source IS NULL OR source = ''")
+        text(
+            "UPDATE device SET source = 'unknown' "
+            "WHERE source IS NULL OR source = ''"
+        )
     )
     session.commit()
 

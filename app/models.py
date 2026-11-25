@@ -26,6 +26,7 @@ from app.constants import (
     LeaseState,
     NoticeStatus,
     NoticeType,
+    ProbeSource,
     QueueState,
     RegisterChannel,
 )
@@ -131,7 +132,7 @@ class Device(Base):
     # v0.31：工程配置高精度指纹（JSON 文本）：build-info + config.gz 关键项
     eng_config: Mapped[str | None] = mapped_column(Text, nullable=True)
     source: Mapped[str] = mapped_column(
-        String(16), default="mock", server_default="mock", nullable=False
+        String(16), default=ProbeSource.REAL, server_default=ProbeSource.REAL, nullable=False
     )
 
     consecutive_failures: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -147,6 +148,11 @@ class Device(Base):
         if not self.ip:
             return None
         return f"{self.ip}:{self.adb_port}"
+
+    @property
+    def simulated(self) -> bool:
+        """只读派生：source=mock 的演示/测试设备；不落库。"""
+        return self.source == ProbeSource.MOCK
 
     __table_args__ = (
         Index("uq_device_mac", "mac", unique=True),

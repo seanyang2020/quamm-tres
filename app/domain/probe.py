@@ -4,14 +4,15 @@
 （patrol.run_patrol_round）共用探测，避免两条路径判定不一致。
 
 按 device.source 分流（巡检 / 明确指定来源的探测）：
-- ``mock``（默认）：GET http://<host>:<port>/probe，解析模拟设备返回的
-  model / mac / serial(sn) / asset_tag 等字段。
-- ``real``：真实 Quamm XOS 设备的 ADB 文件探测（app.domain.prober_real.RealXosProber）。
+- ``real``（生产默认）：真实 Quamm XOS 设备的 ADB 文件探测（app.domain.prober_real.RealXosProber）。
   XOS 不是标准 Android、无 getprop，靠 cat /etc/product_name 等读文件采集，绝不调用 getprop。
+- ``mock``：GET http://<host>:<port>/probe，解析模拟设备返回的
+  model / mac / serial(sn) / asset_tag 等字段；仅开发/测试，且须 allow_mock_probe。
 
 settings.probe_backend 决定"按 IP 探测"（device_probe，尚无 device 记录时）的
-全局默认后端：mock / real。巡检则强制按每台设备的 source 分流，保证 22 台
+全局默认后端：real / mock。巡检则强制按每台设备的 source 分流，保证既有
 mock 设备永远走 HTTP /probe，不会被全局 real 后端误伤。
+未知 backend 不再静默回退 mock，由 build_prober 抛 ValueError。
 
 地址约定：device 表已有 ip / adb_port（即探测地址）就直接用；
 没有端口时统一按 ip:5555 组装。调用方只传 host/port，不需要感知后端。
@@ -128,13 +129,13 @@ _prober: Prober | None = None
 
 
 def build_prober(backend: str | None) -> Prober:
-    """按配置构造探测后端；未知值回退 mock 并告警。"""
-    value = (backend or "mock").strip().lower()
+    """按配置构造探测后端；未知值抛 ValueError（不再静默回退 mock）。"""
+    value = (backend or "real").strip().lower()
     if value in ("real", "adb"):
         return RealXosProber()
-    if value not in ("mock", "http"):
-        logger.warning("unknown probe_backend=%r, fallback to mock", backend)
-    return MockProber()
+    if value in ("mock", "http"):
+        return MockProber()
+    raise ValueError(f"illegal probe_backend={backend!r}; expected real|mock")
 
 
 def set_prober(prober: Prober | None) -> None:
@@ -143,7 +144,7 @@ def set_prober(prober: Prober | None) -> None:
 
 
 def get_prober() -> Prober:
-    """取当前全局探测后端；未显式初始化时按配置懒加载（默认 mock）。"""
+    """取当前全局探测后端；未显式初始化时按配置懒加载（默认 real）。"""
     global _prober
     if _prober is None:
         from app.config import settings

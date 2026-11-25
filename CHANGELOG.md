@@ -3,6 +3,19 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.52.0] - 2026-11-25
+
+### 修复：禁止新增 mock 设备与静默回退
+- `Device.source` 默认由 `mock` 改为 `real`；新增设备只允许 `real` / `serial`。
+- `probe_backend` 默认改为 `real`；新增 `allow_mock_probe=False`，mock 仅开发/测试显式放行。
+- `device_probe` / `device_register` 统一校验 source；生产传 `mock` 返回
+  `MOCK_PROBE_DISABLED`，不再静默落库。
+- `build_prober` 对未知后端抛 `ValueError`，不再回退 mock。
+- 注册审计新增 `source` / `simulated`；设备公开视图新增 `source` / `simulated`。
+- 既有 `source=mock` 设备保留并标记 `simulated=true`，仍可按原逻辑巡检。
+- Web 设置页移除 mock 探测后端选项，明确生产只允许 real。
+- 测试：新增 `tests/test_probe_source_guard.py` 9 项；目标组合 18 项通过。
+
 ## [0.50.0] - 2026-11-24
 
 ### 新增：管理员可删除无效 Agent 意见
