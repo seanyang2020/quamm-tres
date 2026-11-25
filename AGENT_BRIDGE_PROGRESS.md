@@ -18,7 +18,7 @@
 | UI | 最近心跳年龄 + 超时标签；详情间隔/年龄 | ✅ |
 | 测试 | test_comres_heartbeat 8；comres+wirelog 65 passed | ✅ |
 | VERSION | 0.54.2 + CHANGELOG | ✅ |
-| 提交 | `a3c1010` fix(comres): honor node heartbeat interval (0.54.2) | ✅ |
+| 提交 | `5677478` fix(comres): honor node heartbeat interval (0.54.2) | ✅ |
 | 部署/push | 未部署 / 未 push | ✅ |
 
 ## 已知限制

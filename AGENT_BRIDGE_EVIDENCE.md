@@ -46,7 +46,7 @@ task_id: t1060
 | tests/test_comres_heartbeat.py | 32fdc9b9ed94e55bd16d313bab1f4b9aab4bf877c7f2e5a717590651268500a7 | 2026-11-25T15:12:26Z |
 | tests/smoke_comres.py | 817ad7923692a093431baecc5be8ae254d58c771481735a43938a05d63f58a33 | 2026-11-25T15:12:01Z |
 
-- 提交：`a3c10100a506abfe14d1e7c1611e82d827828570` — `fix(comres): honor node heartbeat interval (0.54.2)`
+- 提交：`5677478707b5d0555bbcff8d8f09942749c0815d` — `fix(comres): honor node heartbeat interval (0.54.2)`
 - 分支：`fix/comres-heartbeat`（基线 `4fb12e2` / 0.54.1）
 - 未 push / 未部署
 - 禁止项：未做基线快照存储、自动回滚、git init
