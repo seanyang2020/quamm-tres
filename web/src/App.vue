@@ -2233,6 +2233,10 @@ function jumpToDevice(deviceId) {
   loadDevices()
 }
 
+function isBoundDeviceRetired(row) {
+  return !!(row && row.bound_device && row.bound_device.status === 'retired')
+}
+
 function jumpToWlNode(nodeId) {
   active.value = 'wirelog'
   comresTab.value = 'nodes'
@@ -3509,13 +3513,19 @@ const legendRole = [
             <el-table-column label="接入设备" min-width="230">
               <template #default="{ row }">
                 <template v-if="row.bound_device_id">
-                  <el-button size="small" link type="primary"
-                             @click="jumpToDevice(row.bound_device_id)">
-                    {{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}
-                  </el-button>
-                  <el-tag v-if="row.bound_device && row.bound_device.status" size="small"
-                          :type="row.bound_device.status === 'online' ? 'success' : 'info'"
-                          style="margin-left:4px">{{ row.bound_device.status }}</el-tag>
+                  <template v-if="isBoundDeviceRetired(row)">
+                    <span>{{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}</span>
+                    <el-tag type="info" size="small" style="margin-left:4px">已退役</el-tag>
+                  </template>
+                  <template v-else>
+                    <el-button size="small" link type="primary"
+                               @click="jumpToDevice(row.bound_device_id)">
+                      {{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}
+                    </el-button>
+                    <el-tag v-if="row.bound_device && row.bound_device.status" size="small"
+                            :type="row.bound_device.status === 'online' ? 'success' : 'info'"
+                            style="margin-left:4px">{{ row.bound_device.status }}</el-tag>
+                  </template>
                   <div class="wl-com-sub">
                     <span v-if="row.bound_device && row.bound_device.model">
                       {{ row.bound_device.model }}{{ row.bound_device.project ? ' / ' + row.bound_device.project : '' }} ·
@@ -3672,10 +3682,16 @@ const legendRole = [
             </el-table-column>
             <el-table-column label="接入设备" min-width="210">
               <template #default="{ row }">
-                <el-button v-if="row.bound_device_id || row.device_id" size="small" link type="primary"
-                           @click="jumpToDevice(row.bound_device_id || row.device_id)">
-                  {{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}
-                </el-button>
+                <template v-if="row.bound_device_id || row.device_id">
+                  <template v-if="isBoundDeviceRetired(row)">
+                    <span>{{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}</span>
+                    <el-tag type="info" size="small" style="margin-left:4px">已退役</el-tag>
+                  </template>
+                  <el-button v-else size="small" link type="primary"
+                             @click="jumpToDevice(row.bound_device_id || row.device_id)">
+                    {{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}
+                  </el-button>
+                </template>
                 <el-tag v-else size="small" type="info">未绑定</el-tag>
                 <div class="wl-com-sub">{{ row.mac || '无 MAC' }}</div>
               </template>

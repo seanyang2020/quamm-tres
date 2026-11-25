@@ -997,6 +997,80 @@ def device_unregister(session: Session, device_id: str, actor_email: str, is_adm
     return {"device_id": device_id, "status": DeviceStatus.RETIRED}
 
 
+def _release_serial_bindings_for_device(session: Session, device_id: str) -> list[dict]:
+    """释放某设备持有的全部串口绑定（不清 binding 行 / 不删设备）。
+
+    返回 released_bindings 明细，供 unregister / 存量清理审计复用。
+    """
+    rows = (
+        session.query(WireLogPortBinding)
+        .filter(WireLogPortBinding.bound_device_id == device_id)
+        .all()
+    )
+    released: list[dict] = []
+    for b in rows:
+        released.append({
+            "binding_id": b.id,
+            "node_id": b.node_id,
+            "slot": b.slot,
+            "com_name": b.com_name,
+            "endpoint": b.endpoint,
+            "previous_device_id": b.bound_device_id,
+        })
+        b.bound_device_id = None
+        b.allocated_by = None
+        b.allocated_at = None
+        b.allocated_expire = None
+    return released
+
+
+def release_bindings_of_retired_devices(
+    session: Session, actor_email: str = "admin@corp.com"
+) -> dict:
+    """一次性清理：释放已 retired 但仍占串口绑定的设备。
+
+    运维脚本显式调用；不在生产启动时自动跑。幂等：无残留绑定时 released=0。
+    """
+    retired_ids = [
+        r[0]
+        for r in (
+            session.query(Device.device_id)
+            .filter(Device.status == DeviceStatus.RETIRED)
+            .all()
+        )
+    ]
+    if not retired_ids:
+        return {"released": 0, "devices": []}
+
+    bound_ids = {
+        r[0]
+        for r in (
+            session.query(WireLogPortBinding.bound_device_id)
+            .filter(WireLogPortBinding.bound_device_id.in_(retired_ids))
+            .distinct()
+            .all()
+        )
+        if r[0]
+    }
+    devices_out: list[dict] = []
+    total = 0
+    for device_id in sorted(bound_ids):
+        released = _release_serial_bindings_for_device(session, device_id)
+        if not released:
+            continue
+        total += len(released)
+        audit.record(
+            session,
+            actor=actor_email,
+            action="retired_bindings_released",
+            device_id=device_id,
+            detail={"released_bindings": released},
+        )
+        devices_out.append({"device_id": device_id, "released": len(released)})
+    session.commit()
+    return {"released": total, "devices": devices_out}
+
+
 def _retire_device(session: Session, d: Device, actor_email: str) -> None:
     # 通知排队等这台设备的人
     from app.models import QueueEntry
@@ -1025,12 +1099,21 @@ def _retire_device(session: Session, d: Device, actor_email: str) -> None:
     # 同位置允许放多台设备，因此这里只是业务上的“空出”，不是唯一索引约束。
     released_position = d.position_code
     d.position_code = None
+    # retired 立即释放串口绑定，避免资源页长期显示「已绑定未分配」。
+    released_bindings = _release_serial_bindings_for_device(session, d.device_id)
+    detail: dict | None = None
+    if released_position or released_bindings:
+        detail = {}
+        if released_position:
+            detail["released_position"] = released_position
+        if released_bindings:
+            detail["released_bindings"] = released_bindings
     audit.record(
         session,
         actor=actor_email,
         action="unregister",
         device_id=d.device_id,
-        detail={"released_position": released_position} if released_position else None,
+        detail=detail,
     )
 
 

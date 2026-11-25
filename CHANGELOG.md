@@ -3,6 +3,22 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.53.1] - 2026-11-25
+
+### 修复：退设备自动释放串口绑定
+- `_retire_device` / `device_unregister` 在设备进入 retired 时立即释放其持有的全部
+  `WireLogPortBinding`（清空 `bound_device_id` 与 `allocated_*`），串口回到资源池，
+  避免长期显示「已绑定未分配」。
+- 释放明细写入 `unregister` 审计 `released_bindings`（保留原 binding_id / node_id /
+  slot / com_name / endpoint / previous_device_id）；若同时释放位置则与
+  `released_position` 合并到同一 detail。
+- 新增一次性清理函数 `release_bindings_of_retired_devices`（运维脚本显式调用，
+  不自动启动）：扫描已 retired 仍占绑定的设备，写审计
+  `retired_bindings_released`；幂等。
+- 前端串口资源页 / 节点端口表：`bound_device.status === 'retired'` 时不再跳转设备页，
+  显示「已退役」标签（防历史/竞态残留）。
+- 测试：新增 `tests/test_retired_unbind.py`。
+
 ## [0.53.0] - 2026-11-25
 
 ### 新增：设备统一能力描述符 Phase 1
