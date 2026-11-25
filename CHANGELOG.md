@@ -3,6 +3,25 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.0] - 2026-11-25
+
+### 新增：刷机镜像来源 local / build_server
+- `res_flash` 新增可选参数：`source`（`db`|`local`|`build_server`）、`build_server_id`、
+  `image_mode`（`script`|`partition`）、`script_ini` / `partition` / `file_path`、
+  `image_name` / `image_sha256`；默认 `source=db` 保持原行为。
+- `source=local`：创建 `WAITING_AGENT` 任务（`executor=agent`），返回 `command_argv` /
+  `command` / `report_hint`，由 Agent 本机执行 `xosadb2update`；TRES 不校验本地路径。
+- 新增 `res_flash_report`：Agent 上报 `RUNNING`/`SUCCEEDED`/`FAILED`；终态重复幂等，
+  冲突返回 `JOB_ALREADY_FINISHED`；非租约持有人 `FORBIDDEN`。
+- `source=build_server`：经已登记 `BuildServer` SSH 在编译机执行，镜像不经 201；
+  预检 `xosadb2update`（缺则 `RUNNER_TOOL_MISSING`）、绝对路径且 realpath 落在
+  `~/work_root`（否则 `IMAGE_PATH_OUTSIDE_WORK_ROOT` / `IMAGE_NOT_FOUND`）。
+- `FlashJob` 增列：`executor` / `image_meta` / `runner_id` / `progress` / `reported_at`
+  （幂等 ALTER）；`_ACTIVE_JOB_STATES` 含 `WAITING_AGENT`。
+- 配置 `flash_agent_timeout_seconds`（默认 1800）：local 超时未上报则标 FAILED。
+- `res_flash_status` 补充 `mode` / `executor` / `runner_id` / `image` / `progress` /
+  `reported_at`。返回值与日志不包含 SSH secret。
+
 ## [0.53.2] - 2026-11-25
 
 ### 修复：刷机 per-job 工作目录隔离

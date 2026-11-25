@@ -1,9 +1,9 @@
-# t1043 P0 probe source guard — 进度
+# t1058 flash image sources — 进度
 
-> 任务：禁止 mock 静默落库 / source 可审计  
-> task_id: t1043  
-> 工作区：`/home/scm/worktree/tres-probe-source-guard`  
-> 分支：`feat/probe-source-guard`（基于 41ae518）
+> 任务：res_flash 增加 local / build_server 镜像来源 + res_flash_report  
+> task_id: t1058  
+> 工作区：`/home/scm/worktree/tres-flash-sources`  
+> 分支：`feat/flash-image-sources`（基线 0.53.2 / 44fc7cf）
 
 ## 状态：已完成（停住等审）
 
@@ -11,23 +11,21 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| ProbeSource 常量 | `ALL_SOURCES` / `PRODUCTION_SOURCES` | ✅ |
-| 配置默认 | `probe_backend=real`，`allow_mock_probe=False` | ✅ |
-| 运行时键 | `allow_mock_probe` bool | ✅ |
-| build_prober | 未知值 ValueError，不再回退 mock | ✅ |
-| catalog 闸门 | `_resolve_probe_source`；probe/register 封口 | ✅ |
-| 模型/迁移 | 默认 real；`simulated` 派生；空值→unknown | ✅ |
-| 公开视图/MCP/UI | source+simulated；docstring；去掉 mock 选项 | ✅ |
-| 单测 | `test_probe_source_guard.py` + conftest/patrol 适配 | ✅ |
-| 提交/部署 | 未 commit / 未 push / 未部署 | ✅ |
+| FlashJob 列 | executor / image_meta / runner_id / progress / reported_at | ✅ |
+| 迁移 | 幂等 ALTER flash_job（inspect 判表） | ✅ |
+| 配置 | flash_agent_timeout_seconds=1800 + agent watchdog | ✅ |
+| source=db | 兼容 + mode/executor 字段 | ✅ |
+| source=local | WAITING_AGENT + command_argv + report_hint | ✅ |
+| res_flash_report | RUNNING/SUCCEEDED/FAILED；幂等/冲突/FORBIDDEN | ✅ |
+| source=build_server | 预检 + SSH 执行；无 secret 回显 | ✅ |
+| MCP | res_flash 扩参；新增 res_flash_report | ✅ |
+| 测试 | test_flash.py 24 passed（含 fixture 补机型） | ✅ |
+| VERSION | 0.54.0 + CHANGELOG | ✅ |
+| 提交 | feat(flash): support local/build-server image sources (0.54.0) | ✅ |
+| 部署/push | 未部署 / 未 push | ✅ |
 
-## 关键设计
+## 已知限制
 
-- **校验放在 catalog 入口**（`device_probe` / `device_register`），不封死 `get_prober_for("mock")`，故既有 mock 设备巡检仍可用。
-- **mock 仅当 `allow_mock_probe=True`**；生产默认拒绝，错误码 `MOCK_PROBE_DISABLED`。
-
-## 风险 / 未完成
-
-- 已有库 `device.source` 列若早已以 `DEFAULT 'mock'` 建好，SQLite 无法在线改列默认；仅影响「将来 ADD COLUMN」路径与 ORM 默认。
-- 未批量改写既有 `source=mock` 行（按 P0 要求）。
-- 全量 17 个既有失败（flash/registration/products/queue/mcp_http）未在本任务修复。
+- BuildServer 仍一账号一台（未改 principal_id unique）
+- 193 未装 xosadb2update → RUNNER_TOOL_MISSING（不自动安装）
+- source=local 不校验 Agent 侧路径是否存在

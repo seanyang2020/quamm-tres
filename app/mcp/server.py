@@ -1,4 +1,4 @@
-"""MCP Server：quamm-tres（31 个工具，streamable HTTP，单实例）。
+"""MCP Server：quamm-tres（32 个工具，streamable HTTP，单实例）。
 
 鉴权由 McpAuthMiddleware 完成；工具内 require_auth() 取当前身份。
 res_admin 仅管理员可用（运行时校验），普通 token 调用返回 FORBIDDEN。
@@ -644,12 +644,24 @@ def res_flash(
     version: str | None = None,
     preserve_data: bool = True,
     confirm_erase_data: bool = False,
+    source: str = "db",
+    build_server_id: str | None = None,
+    image_mode: str | None = None,
+    script_ini: str | None = None,
+    partition: str | None = None,
+    file_path: str | None = None,
+    image_name: str | None = None,
+    image_sha256: str | None = None,
 ) -> dict:
-    """异步刷机（5-15 分钟）：立即返回 job_id，用 res_flash_status 轮询。
+    """异步刷机：默认 source=db 从 201 拉包；也可 local / build_server 直刷本地或编译机镜像。
 
     - 仅 GRANTED 租约、仅租约持有人（或管理员）
-    - preserve_data=True（默认）保留 data 分区用户数据；False 必须同时 confirm_erase_data=True
-    - version 为空则刷该机型最新版本；同一租约已有任务 -> FLASH_IN_PROGRESS
+    - preserve_data=True（默认）保留 data 分区；False 必须同时 confirm_erase_data=True
+    - source=db：version 为空取最新；返回 mode=server_db
+    - source=local：不启服务端线程，返回 WAITING_AGENT + command_argv，Agent 刷完调 res_flash_report
+    - source=build_server：SSH 到已登记编译机执行 xosadb2update（镜像不经 201）；缺工具 -> RUNNER_TOOL_MISSING
+    - image_mode=script 需 script_ini；partition 需 partition+file_path
+    - 同一租约已有 QUEUED/RUNNING/WAITING_AGENT 任务 -> FLASH_IN_PROGRESS
     """
     return _guard(
         flash.start_flash,
@@ -657,13 +669,43 @@ def res_flash(
         version=version,
         preserve_data=preserve_data,
         confirm_erase_data=confirm_erase_data,
+        source=source,
+        build_server_id=build_server_id,
+        image_mode=image_mode,
+        script_ini=script_ini,
+        partition=partition,
+        file_path=file_path,
+        image_name=image_name,
+        image_sha256=image_sha256,
     )
 
 
 @mcp.tool()
 def res_flash_status(job_id: str) -> dict:
-    """查询刷机任务：QUEUED / RUNNING / SUCCEEDED / FAILED + 日志最后 50 行。"""
+    """查询刷机任务：QUEUED/RUNNING/WAITING_AGENT/SUCCEEDED/FAILED + 日志尾 + mode/executor/image。"""
     return _guard(flash.flash_status, job_id)
+
+
+@mcp.tool()
+def res_flash_report(
+    job_id: str,
+    status: str,
+    progress: int | None = None,
+    log_tail: str | None = None,
+    error: str | None = None,
+) -> dict:
+    """Agent 上报 source=local 刷机进度（RUNNING/SUCCEEDED/FAILED）。
+
+    仅租约持有人可报；重复终态幂等；已终态再报不同终态 -> JOB_ALREADY_FINISHED。
+    """
+    return _guard(
+        flash.flash_report,
+        job_id,
+        status,
+        progress=progress,
+        log_tail=log_tail,
+        error=error,
+    )
 
 
 @mcp.tool()

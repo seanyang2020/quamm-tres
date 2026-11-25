@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     flash_log_dir: str = "./var/flash/logs"              # 每个 job 一份日志（不随 job 目录删除）
     flash_http_timeout: int = 8                          # 版本目录列表 HTTP 超时
     flash_timeout_seconds: int = 1800                    # 单次刷机子进程上限（5-15 分钟）
+    # source=local：Agent 须在此时间内 res_flash_report，否则 job 标 FAILED
+    flash_agent_timeout_seconds: int = 1800
 
     # 缓存回收（v0.28.3）：DB 源包/解压缓存与刷机缓存都必须回收，否则无限膨胀
     db_source_keep_days: int = 1          # var/db_source 下超过 N 天未改动即删
