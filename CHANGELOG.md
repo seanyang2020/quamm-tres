@@ -3,6 +3,17 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.52.1] - 2026-11-25
+
+### 修复：real probe 二进制 stdout 解码崩溃
+- `prober_real._run()` 改为以 bytes 接收子进程输出，再按 UTF-8 `errors="replace"`
+  解码；`/proc/device-tree/compatible` 等二进制内容不再触发 `UnicodeDecodeError`。
+- 根因：部分 Quamm 设备该文件为全 `0xff` 字节，旧实现 `text=True` 按 UTF-8 硬解
+  导致整次 probe 异常退出；ADB 已连通且 shell 可用，却无法返回 L3、被误判为 L0。
+- 修复放在 `_run()` 公共出口，避免其他二进制文件读取再次同类崩溃。
+- 测试：新增 `tests/test_prober_real_binary.py`（`_run` 二进制不抛、device-tree
+  二进制仍 L3、subprocess 端到端）。
+
 ## [0.52.0] - 2026-11-25
 
 ### 修复：禁止新增 mock 设备与静默回退

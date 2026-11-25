@@ -118,13 +118,17 @@ def _run(cmd: list[str], timeout: int = ADB_TIMEOUT) -> tuple[int, str]:
 
     返回 (returncode, stdout.strip())。stderr 单独丢弃：cat 失败的错误文本
     不带干净 token / MAC，不会被下面的解析误当成有效值。
+
+    v0.52.1：以 bytes 接 stdout，UTF-8 ``errors="replace"`` 解码，避免
+    ``/proc/device-tree/compatible`` 等二进制输出触发 ``UnicodeDecodeError``
+    把整次 probe 打崩（ADB 已通却误判 L0）。
     """
     full = ["timeout", str(timeout), ADB_BIN, *cmd]
     try:
         proc = subprocess.run(
             full,
             capture_output=True,
-            text=True,
+            text=False,
             timeout=timeout + 1,
             check=False,
         )
@@ -132,7 +136,9 @@ def _run(cmd: list[str], timeout: int = ADB_TIMEOUT) -> tuple[int, str]:
         return 124, ""
     except (FileNotFoundError, OSError):
         return 127, ""
-    return proc.returncode, (proc.stdout or "").strip()
+    raw = proc.stdout or b""
+    out = raw.decode("utf-8", errors="replace")
+    return proc.returncode, out.strip()
 
 
 def _first_token(out: str) -> str | None:
