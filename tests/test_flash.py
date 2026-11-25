@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from app.constants import DeviceStatus, HealthLevel
@@ -741,6 +742,92 @@ def test_flash_report_forbidden_for_other_user(db, monkeypatch):
         status="SUCCEEDED",
     )
     assert r["error"] == "FORBIDDEN"
+
+
+def test_agent_watchdog_fails_stale_running(db, monkeypatch):
+    """RUNNING 后失联：回拨 reported_at，watchdog 标 FAILED（周期/超时调小）。"""
+    monkeypatch.setattr(
+        "app.domain.flash.settings.flash_agent_timeout_seconds", 3600
+    )
+    monkeypatch.setattr("app.domain.flash._AGENT_WATCHDOG_POLL_SECONDS", 1)
+    device_id = _make_device(db)
+    lease_id = _grant_lease(db, "user01@corp.com", device_id)
+    created = db.call(
+        "user01@corp.com",
+        res_flash,
+        lease_id=lease_id,
+        source="local",
+        image_mode="script",
+        script_ini="/tmp/script.ini",
+    )
+    job_id = created["job_id"]
+    running = db.call(
+        "user01@corp.com",
+        res_flash_report,
+        job_id=job_id,
+        status="RUNNING",
+        progress=30,
+    )
+    assert running["status"] == "RUNNING"
+
+    session = db.session()
+    try:
+        job = session.get(FlashJob, job_id)
+        assert job is not None
+        job.reported_at = utcnow() - timedelta(seconds=10)
+        session.commit()
+    finally:
+        session.close()
+
+    flash._agent_watchdog(job_id, timeout=2)
+
+    st = db.call("user01@corp.com", res_flash_status, job_id=job_id)
+    assert st["status"] == "FAILED"
+    assert "Agent 超过" in (st.get("error") or "")
+    assert st["finished_at"]
+
+    # 终态保护：超时后不能再改回 RUNNING
+    blocked = db.call(
+        "user01@corp.com",
+        res_flash_report,
+        job_id=job_id,
+        status="RUNNING",
+        progress=50,
+    )
+    assert blocked["error"] == "JOB_ALREADY_FINISHED"
+
+
+def test_agent_watchdog_leaves_succeeded_alone(db, monkeypatch):
+    """正常 SUCCEEDED 后 watchdog 不改状态。"""
+    monkeypatch.setattr(
+        "app.domain.flash.settings.flash_agent_timeout_seconds", 3600
+    )
+    monkeypatch.setattr("app.domain.flash._AGENT_WATCHDOG_POLL_SECONDS", 1)
+    device_id = _make_device(db)
+    lease_id = _grant_lease(db, "user01@corp.com", device_id)
+    created = db.call(
+        "user01@corp.com",
+        res_flash,
+        lease_id=lease_id,
+        source="local",
+        image_mode="script",
+        script_ini="/tmp/script.ini",
+    )
+    job_id = created["job_id"]
+    ok = db.call(
+        "user01@corp.com",
+        res_flash_report,
+        job_id=job_id,
+        status="SUCCEEDED",
+        progress=100,
+    )
+    assert ok["status"] == "SUCCEEDED"
+
+    flash._agent_watchdog(job_id, timeout=2)
+
+    st = db.call("user01@corp.com", res_flash_status, job_id=job_id)
+    assert st["status"] == "SUCCEEDED"
+    assert not st.get("error")
 
 
 def test_flash_build_server_success(db, monkeypatch):

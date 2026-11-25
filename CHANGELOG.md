@@ -3,6 +3,15 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.1] - 2026-11-25
+
+### 修复：Agent watchdog 覆盖 RUNNING 失联
+- `_agent_watchdog` 改为周期性检查（约 45s 一轮）：仅 `executor=agent`；
+  终态立即退出；对 `WAITING_AGENT`/`RUNNING` 取 `reported_at`/`started_at`/
+  `created_at` 最新为 last_activity，超时标 FAILED（`Agent 超过 N 秒未上报`）。
+- 避免 Agent 上报 RUNNING 后失联导致 job 永久占用租约；查询异常只记日志。
+- 测试：stale RUNNING → FAILED；SUCCEEDED 后 watchdog 不改状态。
+
 ## [0.54.0] - 2026-11-25
 
 ### 新增：刷机镜像来源 local / build_server

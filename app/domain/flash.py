@@ -650,23 +650,57 @@ def _append_log(log_path: str | None, text: str) -> None:
         logger.warning("append flash log failed: %s", log_path)
 
 
+# Agent watchdog 轮询间隔（秒）；测试可 monkeypatch 调小，避免真等 timeout。
+_AGENT_WATCHDOG_POLL_SECONDS = 45
+
+
+def _agent_last_activity(job: FlashJob) -> datetime | None:
+    """reported_at / started_at / created_at 中最新非空时间。"""
+    stamps = [t for t in (job.reported_at, job.started_at, job.created_at) if t is not None]
+    return max(stamps) if stamps else None
+
+
 def _agent_watchdog(job_id: str, timeout: int) -> None:
-    """source=local：超时仍 WAITING_AGENT 则标 FAILED；Agent 已上报则不改状态。"""
-    time.sleep(max(1, int(timeout)))
-    session = SessionLocal()
-    try:
-        job = session.get(FlashJob, job_id)
-        if job is None or job.status != STATUS_WAITING_AGENT:
-            return
-        job.status = STATUS_FAILED
-        job.error = f"Agent 未在 {timeout} 秒内上报"
-        job.finished_at = utcnow()
-        session.commit()
-        logger.info("flash job %s agent timeout (%ss)", job_id, timeout)
-    except Exception:  # noqa: BLE001
-        logger.exception("flash agent watchdog failed for %s", job_id)
-    finally:
-        session.close()
+    """source=local：周期性检查 WAITING_AGENT/RUNNING；无活动超过 timeout 则标 FAILED。
+
+    仅处理 executor=agent；已终态立即退出；查询异常只记日志不中断轮询。
+    """
+    timeout = max(1, int(timeout))
+    poll = max(1, min(int(_AGENT_WATCHDOG_POLL_SECONDS), timeout))
+    while True:
+        time.sleep(poll)
+        session = SessionLocal()
+        try:
+            job = session.get(FlashJob, job_id)
+            if job is None:
+                return
+            if (job.executor or EXECUTOR_SERVER) != EXECUTOR_AGENT:
+                return
+            if job.status in _TERMINAL_STATUSES:
+                return
+            if job.status not in (STATUS_WAITING_AGENT, STATUS_RUNNING):
+                return
+            last = _agent_last_activity(job)
+            if last is None:
+                continue
+            now = utcnow()
+            idle = (now - last).total_seconds()
+            if idle > timeout:
+                job.status = STATUS_FAILED
+                job.error = f"Agent 超过 {timeout} 秒未上报"
+                job.finished_at = now
+                session.commit()
+                logger.info(
+                    "flash job %s agent stale timeout (%ss, idle=%.0fs)",
+                    job_id,
+                    timeout,
+                    idle,
+                )
+                return
+        except Exception:  # noqa: BLE001
+            logger.exception("flash agent watchdog failed for %s", job_id)
+        finally:
+            session.close()
 
 
 def _run_build_server_job(job_id: str) -> None:
