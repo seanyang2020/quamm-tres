@@ -401,7 +401,7 @@ def caps(session: Session, device_id: str) -> dict:
         if p["health"]["state"] in ("fail", "suspect")
     ]
 
-    return {
+    result = {
         "device_id": device_id,
         "ports": ports,
         "log": (
@@ -432,6 +432,35 @@ def caps(session: Session, device_id: str) -> dict:
             for k, v in shared.items()
         },
     }
+
+    # Phase 1：统一能力发现增强（失败不阻断旧 caps）
+    try:
+        from app.domain import capabilities as cap_svc
+
+        if cap_svc.is_enabled(session):
+            snap = cap_svc.build_snapshot(session, device_id)
+            ctx = cap_svc._load_context(session, [device_id])
+            result["capability_revision"] = snap["revision"]
+            result["observed_channels"] = [
+                cap_svc._observed_channel_dict(b, ctx["nodes"].get(b.node_id))
+                for b in ctx["bindings"].get(device_id, [])
+            ]
+            result["serial_capabilities"] = [
+                i for i in snap["items"] if i.get("kind") in cap_svc.SERIAL_KINDS
+            ]
+            result["ports"] = [
+                cap_svc.enrich_declared_port(
+                    p,
+                    items=snap["items"],
+                    bindings=ctx["bindings"].get(device_id, []),
+                    nodes=ctx["nodes"],
+                    shared_keys=ctx["shared_keys"],
+                )
+                for p in result["ports"]
+            ]
+    except Exception:  # noqa: BLE001 - 附加字段，不阻断旧契约
+        pass
+    return result
 
 
 def serial_summary(session: Session, device_id: str) -> dict:

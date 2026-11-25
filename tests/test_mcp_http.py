@@ -133,3 +133,61 @@ def test_mcp_http_list_products_never_empty(db):
     with TestClient(app) as client:
         products = _call_tool(client, token, "res_list_products")
         assert len(products) == 5
+
+
+def test_mcp_http_capabilities_fields(db):
+    """res_device_info / res_list_devices / res_serial_caps 新字段存在，旧字段不变。"""
+    from app.constants import DeviceStatus, HealthLevel
+    from app.domain import wirelog
+    from app.migrations import migrate
+    from app.models import Device, WireLogPortBinding
+    from app.utils import utcnow
+
+    s = db.session()
+    try:
+        migrate(s)
+        now = utcnow()
+        did = "dev_mcp_cap"
+        s.add(Device(
+            device_id=did, display_name=did, status=DeviceStatus.AVAILABLE,
+            health_level=HealthLevel.L3, owner="t", source="mock",
+            ip="10.9.9.1", adb_port=5555, created_at=now, last_seen_at=now,
+        ))
+        prov = wirelog.provision_host(s, display_name="mcp-cap-n", operator="t")
+        s.add(WireLogPortBinding(
+            node_id=prov["node_id"], slot=1, bound_device_id=did,
+            endpoint="tcp://10.9.9.2:9200", health_state="online",
+            reach_ok=True, baud=115200, com_name="COM1",
+            com_key="10.9.9.2:9200", tcp_port=9200,
+        ))
+        s.commit()
+    finally:
+        s.close()
+
+    token = db.token("user02@corp.com")
+    with TestClient(app) as client:
+        info = _call_tool(client, token, "res_device_info", {"device_id": did})
+        assert "capabilities" in info
+        assert info["capability_revision"] == info["capabilities"]["revision"]
+        assert info["capabilities"]["summary"]["serial"] == "available"
+        assert info["capabilities"]["summary"]["power"] == "unavailable"
+        # 旧字段
+        assert "serial_openable" in info
+        assert "serial" in info
+        assert info["serial"]["available"] is False
+
+        devices = _call_tool(
+            client, token, "res_list_devices", {"claimable_only": False}
+        )
+        row = next(d for d in devices if d["device_id"] == did)
+        assert "capabilities_summary" in row
+        assert "actions" not in row["capabilities_summary"]
+        assert row["capabilities_summary"]["serial"] == "available"
+        assert "serial_openable" in row
+
+        caps = _call_tool(client, token, "res_serial_caps", {"device_id": did})
+        assert "capability_revision" in caps
+        assert caps["ports"] == [] or all("slot" in p for p in caps["ports"])
+        assert isinstance(caps.get("observed_channels"), list)
+        assert len(caps["observed_channels"]) >= 1
+        assert "serial_capabilities" in caps

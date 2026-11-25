@@ -1123,6 +1123,20 @@ def _serial_list_devices(
         r["serial"] = flags.get(
             r.get("device_id"), {"log": False, "power": False, "mode": False, "slots": 0}
         )
+    # Phase 1：批量能力摘要（禁止逐设备 build_snapshot）
+    try:
+        from app.domain import capabilities as cap_svc
+
+        if cap_svc.is_enabled(session) and rows:
+            summaries = cap_svc.build_summaries(
+                session, [r.get("device_id") for r in rows if r.get("device_id")]
+            )
+            for r in rows:
+                s = summaries.get(r.get("device_id"))
+                if s is not None:
+                    r["capabilities_summary"] = s
+    except Exception:  # noqa: BLE001 - 附加字段，不阻断列表
+        pass
     return rows
 
 
@@ -1145,6 +1159,19 @@ def _serial_device_info(session, device_id):
         }
     except Exception:  # noqa: BLE001 - 附加信息，不阻断 device_info
         info["serial_channels"] = []
+    # Phase 1：统一能力目录（失败不阻断旧字段）
+    try:
+        from app.domain import capabilities as cap_svc
+
+        if cap_svc.is_enabled(session):
+            snap = cap_svc.build_snapshot(session, device_id)
+            info["capabilities"] = snap
+            info["capability_revision"] = snap["revision"]
+    except Exception as exc:  # noqa: BLE001
+        info["capabilities_error"] = {
+            "error": type(exc).__name__,
+            "message": str(exc)[:200],
+        }
     return info
 
 

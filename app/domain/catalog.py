@@ -331,10 +331,12 @@ def _public_device(
     for_agent: bool = True,
     holder_email: str | None = None,
     serial_stats: tuple[bool, int] | None = None,
+    capabilities_summary: dict | None = None,
 ) -> dict:
     """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。
 
     serial_stats: 可选预计算 (serial_openable, serial_ports)，列表接口批量传入避免 N+1。
+    capabilities_summary: 可选预计算能力摘要（由 build_summaries 批量生成）。
     """
     allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     from app.domain import consistency
@@ -366,6 +368,8 @@ def _public_device(
         "source": d.source,
         "simulated": bool(d.simulated),
     }
+    if capabilities_summary is not None:
+        data["capabilities_summary"] = capabilities_summary
     # v0.31：工程配置指纹与一致性结论（Agent 视图也给精简版，便于申请前自查）
     data["config"] = consistency.check_device(session, d)
     if not for_agent:

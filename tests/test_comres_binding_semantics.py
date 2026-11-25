@@ -131,3 +131,35 @@ def test_stale_placeholder_cleared_when_usb_serial_declared(session):
     assert b.bound_device_id is None
     dev = session.query(Device).filter(Device.device_id == first_id).first()
     assert dev is not None and dev.status == "retired"
+
+
+def test_capability_revision_changes_after_rebind(session):
+    """绑定目标设备变化后，capability_revision 必须变化。"""
+    from app.domain import capabilities as cap_svc
+
+    p = _prov(session, "rev-bind")
+    dut = _seed(session, mac="a0:ac:78:a0:d7:60", name="DUT-rev")
+    r1 = comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "172.16.20.180",
+        "ports": [{
+            "com": "ttyUSB0", "slot": 1,
+            "endpoint": "tcp://172.16.20.180:9200",
+            "health_state": "listen_ok",
+            "mac": "a0:ac:78:a0:d7:60", "shell_ip": "172.16.60.200",
+        }],
+    })
+    assert r1["ports"][0]["bound_device_id"] == dut.device_id
+    rev1 = cap_svc.build_snapshot(session, dut.device_id)["revision"]
+
+    # 改 endpoint → revision 变
+    comres.register(session, p["node_token"], {
+        "node_id": p["node_id"], "local_ip": "172.16.20.180",
+        "ports": [{
+            "com": "ttyUSB0", "slot": 1,
+            "endpoint": "tcp://172.16.20.180:9201",
+            "health_state": "listen_ok",
+            "mac": "a0:ac:78:a0:d7:60", "shell_ip": "172.16.60.200",
+        }],
+    })
+    rev2 = cap_svc.build_snapshot(session, dut.device_id)["revision"]
+    assert rev2 != rev1

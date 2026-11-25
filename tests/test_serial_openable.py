@@ -198,3 +198,26 @@ def test_api_devices_includes_serial_fields(client, db, admin_cookie, session):
     assert row["serial_ports"] == 1
     # 既有字段仍在
     assert "device_id" in row and "status" in row
+
+
+def test_binding_only_openable_vs_serial_available(session):
+    """binding-only：serial_openable 与 capabilities.summary.serial 一致；
+    serial.available 仍表示 declared DeviceSerialPort（保持 false）。"""
+    from app.domain import capabilities as cap_svc
+    from app.domain import serial as serial_svc
+
+    _add_device(session, "dev_bo_av")
+    p = _add_node(session, "bo-av-n")
+    _add_binding(session, node_id=p["node_id"], device_id="dev_bo_av",
+                 health_state="online", reach_ok=True)
+    session.commit()
+
+    rows = catalog.list_devices(session, for_agent=False)
+    row = next(r for r in rows if r["device_id"] == "dev_bo_av")
+    assert row["serial_openable"] is True
+
+    snap = cap_svc.build_snapshot(session, "dev_bo_av")
+    assert snap["summary"]["serial"] == "available"
+
+    summary = serial_svc.serial_summary(session, "dev_bo_av")
+    assert summary["available"] is False
