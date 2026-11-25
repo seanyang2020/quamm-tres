@@ -25,9 +25,9 @@ task_id: t1058
 ## c. 版本/提交证据
 
 - 分支：`feat/flash-image-sources`
-- `git log -1 --oneline`：（提交后填写）
-- `git status --short`：（提交后应干净或仅证据文件）
-- `git diff --stat`：（相对基线）
+- `git log -1 --oneline`：`7b922d1 feat(flash): support local/build-server image sources (0.54.0)`
+- `git status --short`：干净（提交后无未提交改动）
+- `git diff --stat 44fc7cf..HEAD`：`10 files changed, 1300 insertions(+), 122 deletions(-)`
 - Gerrit change：不适用
 - 部署：未部署；未 push
 
