@@ -19,6 +19,7 @@ from datetime import timedelta
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.constants import DeviceStatus, HealthLevel, RegisterChannel
 from app.domain.catalog import DomainError
 from app.domain import wirelog
@@ -26,13 +27,15 @@ from app.models import Device, WireLogNode, WireLogPortBinding
 from app.serial_tcp import SerialConfigError, parse_endpoint
 from app.utils import new_device_id, utcnow
 
-# 未分配资源：节点侧默认心跳间隔（契约 §2.7）
+# 未分配资源：节点侧默认心跳间隔（契约 §2.7；无上报时兜底）
 HEARTBEAT_INTERVAL_S = 3600
+_HB_INTERVAL_MIN_S = 10
+_HB_INTERVAL_MAX_S = 3600
 # 已分配资源：占用方续约缺省 TTL（契约 §2.7；Q4 待拍板，先按 15 分钟）
 ALLOCATED_TTL_S = 15 * 60
 # auto:<basis> 占用：≥ 2 倍心跳，覆盖一次漏报仍保持专属口
 AUTO_ALLOCATED_TTL_S = 2 * HEARTBEAT_INTERVAL_S
-# 节点超 2 倍心跳无上报 → 释放该节点全部 auto 占用（与 prune 的 offline/stale 并存）
+# 兼容旧引用：全局兜底 stale（逐节点请用 comres_prune.node_stale_timeout_s）
 NODE_STALE_S = 2 * HEARTBEAT_INTERVAL_S
 
 # 不进可分配池、资源池视图灰显
@@ -43,6 +46,45 @@ _ENDPOINT_RE = re.compile(r"^tcp://.+", re.IGNORECASE)
 
 def _audit(session, node_id, action, actor=None, result="ok", detail=None):
     wirelog._audit(session, node_id, action, actor=actor, result=result, detail=detail)
+
+
+def _coerce_heartbeat_interval_s(raw) -> int:
+    """校验心跳间隔；非法抛 COMRES_BAD_HEARTBEAT_INTERVAL（不静默改写）。"""
+    try:
+        val = int(raw)
+    except (TypeError, ValueError) as e:
+        raise DomainError(
+            "COMRES_BAD_HEARTBEAT_INTERVAL",
+            f"heartbeat_interval_s 非法: {raw!r}（合法范围 {_HB_INTERVAL_MIN_S}–{_HB_INTERVAL_MAX_S}）",
+        ) from e
+    if val < _HB_INTERVAL_MIN_S or val > _HB_INTERVAL_MAX_S:
+        raise DomainError(
+            "COMRES_BAD_HEARTBEAT_INTERVAL",
+            f"heartbeat_interval_s={val} 超出合法范围 "
+            f"{_HB_INTERVAL_MIN_S}–{_HB_INTERVAL_MAX_S}",
+        )
+    return val
+
+
+def resolve_heartbeat_interval_s(payload: dict | None, node: WireLogNode | None) -> int:
+    """优先级：payload 顶层 > payload.config > node.config_json > 全局 settings。"""
+    payload = payload or {}
+    if payload.get("heartbeat_interval_s") is not None:
+        return _coerce_heartbeat_interval_s(payload.get("heartbeat_interval_s"))
+    cfg_in = payload.get("config")
+    if isinstance(cfg_in, dict) and cfg_in.get("heartbeat_interval_s") is not None:
+        return _coerce_heartbeat_interval_s(cfg_in.get("heartbeat_interval_s"))
+    existing = getattr(node, "config_json", None) if node is not None else None
+    if isinstance(existing, dict) and existing.get("heartbeat_interval_s") is not None:
+        return _coerce_heartbeat_interval_s(existing.get("heartbeat_interval_s"))
+    return int(getattr(settings, "comres_heartbeat_interval_s", HEARTBEAT_INTERVAL_S)
+               or HEARTBEAT_INTERVAL_S)
+
+
+def _persist_heartbeat_interval(node: WireLogNode, interval_s: int) -> None:
+    cfg = dict(node.config_json or {}) if isinstance(node.config_json, dict) else {}
+    cfg["heartbeat_interval_s"] = int(interval_s)
+    node.config_json = cfg
 
 
 def _validate_endpoint(endpoint: str | None) -> str | None:
@@ -182,18 +224,14 @@ def expire_allocations(session: Session) -> list[dict]:
                result="ok", detail=detail)
         released.append({"node_id": b.node_id, "com_key": b.com_key, **detail})
 
-    # 节点失联：曾上报且超 2 倍心跳无再报 → 释放仍有效的 auto:* 占用
-    stale_before = now - timedelta(seconds=NODE_STALE_S)
-    stale_nodes = (
-        session.query(WireLogNode)
-        .filter(WireLogNode.last_heartbeat_at.isnot(None))
-        .filter(WireLogNode.last_heartbeat_at <= stale_before)
-        .all()
-    )
-    for node in stale_nodes:
-        if (node.status or "") == "online":
-            # online 但心跳已超时：仍可清 auto（与 prune 转 offline 互补）
-            pass
+    # 节点失联：曾上报且超逐节点 stale 阈值 → 释放仍有效的 auto:* 占用
+    from app.domain.comres_prune import node_stale_timeout_s
+
+    for node in session.query(WireLogNode).filter(
+            WireLogNode.last_heartbeat_at.isnot(None)).all():
+        age = (now - node.last_heartbeat_at).total_seconds()
+        if age <= node_stale_timeout_s(node):
+            continue
         autos = (
             session.query(WireLogPortBinding)
             .filter_by(node_id=node.node_id)
@@ -207,6 +245,7 @@ def expire_allocations(session: Session) -> list[dict]:
                 continue
             detail = _clear_allocation(b)
             detail["reason"] = "node_stale"
+            detail["stale_timeout_s"] = node_stale_timeout_s(node)
             detail["last_heartbeat_at"] = (
                 node.last_heartbeat_at.isoformat() if node.last_heartbeat_at else None
             )
@@ -1084,6 +1123,7 @@ def register(session: Session, token: str, payload: dict) -> dict:
     """
     expire_allocations(session)
     node = _auth_and_resolve_node(session, token, payload.get("node_id"))
+    interval_s = resolve_heartbeat_interval_s(payload, node)
     now = utcnow()
     local_ip = payload.get("local_ip") or payload.get("ip")
     if local_ip:
@@ -1094,6 +1134,7 @@ def register(session: Session, token: str, payload: dict) -> dict:
         node.caps_json = payload["caps"]
     if isinstance(payload.get("config"), dict):
         node.config_json = {**(node.config_json or {}), **payload["config"]}
+    _persist_heartbeat_interval(node, interval_s)
     node.last_heartbeat_at = now
     node.status = "online"
 
@@ -1118,12 +1159,13 @@ def register(session: Session, token: str, payload: dict) -> dict:
         _mark_absent_ports_offline(session, node.node_id, real_bindings)
 
     _audit(session, node.node_id, "comres_register", actor=node.ip,
-           detail={"ports": len(real_bindings), "matches": matches})
+           detail={"ports": len(real_bindings), "matches": matches,
+                   "heartbeat_interval_s": interval_s})
     session.commit()
     return {
         "ok": True,
         "node_id": node.node_id,
-        "heartbeat_interval_s": HEARTBEAT_INTERVAL_S,
+        "heartbeat_interval_s": interval_s,
         "ports": _ports_response(touched),
     }
 
@@ -1136,12 +1178,14 @@ def heartbeat(session: Session, token: str, payload: dict) -> dict:
     """
     expire_allocations(session)
     node = _auth_and_resolve_node(session, token, payload.get("node_id"))
+    interval_s = resolve_heartbeat_interval_s(payload, node)
     now = utcnow()
     local_ip = payload.get("local_ip") or payload.get("ip")
     if local_ip:
         node.ip = str(local_ip).strip()
     if isinstance(payload.get("config"), dict):
         node.config_json = {**(node.config_json or {}), **payload["config"]}
+    _persist_heartbeat_interval(node, interval_s)
     node.last_heartbeat_at = now
     node.status = "online"
 
@@ -1168,6 +1212,7 @@ def heartbeat(session: Session, token: str, payload: dict) -> dict:
     return {
         "ok": True,
         "node_id": node.node_id,
+        "heartbeat_interval_s": interval_s,
         "ports": _ports_response(touched),
     }
 
@@ -1406,10 +1451,14 @@ def probe_reach(session: Session, node_id: str | None = None,
                 slot: int | None = None, timeout: float = 1.5) -> dict:
     """TRES→endpoint TCP 可达性探测，写 wl_port_binding.reach_*。
 
-    - 未限定 node_id/slot：只扫 status=online 节点上有 endpoint 的端口
-    - 限定 node_id/slot：按条件扫（打开串口前预检）
+    - 未限定 node_id/slot：只扫「有效 online」（心跳未超时）节点上有 endpoint 的端口
+    - 限定 node_id/slot：按条件扫，但心跳已超时的节点跳过（避免把端口当在线刷新）
     返回 ``{checked, ok, failed:[{node_id,slot,com,endpoint,error}]}``。
     """
+    from app.domain.comres_prune import node_effectively_online
+
+    now = utcnow()
+    nodes = {n.node_id: n for n in session.query(WireLogNode).all()}
     q = session.query(WireLogPortBinding)
     if node_id:
         q = q.filter(WireLogPortBinding.node_id == str(node_id))
@@ -1417,8 +1466,8 @@ def probe_reach(session: Session, node_id: str | None = None,
         q = q.filter(WireLogPortBinding.slot == int(slot))
     if not node_id and slot is None:
         online_ids = [
-            n.node_id for n in session.query(WireLogNode)
-            .filter(WireLogNode.status == "online").all()
+            nid for nid, n in nodes.items()
+            if node_effectively_online(n, now=now)
         ]
         if not online_ids:
             return {"checked": 0, "ok": 0, "failed": []}
@@ -1427,11 +1476,13 @@ def probe_reach(session: Session, node_id: str | None = None,
     rows = [b for b in q.order_by(
         WireLogPortBinding.node_id, WireLogPortBinding.slot).all()
         if (b.endpoint or "").strip()]
-    now = utcnow()
     checked = 0
     ok_n = 0
     failed: list[dict] = []
     for b in rows:
+        node = nodes.get(b.node_id)
+        if not node_effectively_online(node, now=now):
+            continue
         ep = (b.endpoint or "").strip()
         ok, err = _tcp_probe(ep, timeout)
         b.reach_ok = bool(ok)

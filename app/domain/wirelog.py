@@ -710,23 +710,42 @@ def public_caps(node) -> dict:
 
 
 def _node_brief(session, node, auth_map=None, apply_rows=None):
-    """节点摘要；auth_status/auth_source 统一口径（apply / token / none）。"""
+    """节点摘要；auth_status/auth_source 统一口径（apply / token / none）。
+
+    status 为 online/stale 时按心跳年龄只读覆盖为 stale（不写库）。
+    """
     from app.domain import comres_apply
+    from app.domain import comres_prune
+
     apply_row = apply_rows.get(node.node_id) if apply_rows is not None else None
     auth_status, auth_source = comres_apply.resolve_node_auth(node, apply_row)
     # 兼容旧调用：仅传 auth_map（status 字符串）时按 apply 覆盖
     if apply_row is None and auth_map is not None and node.node_id in auth_map:
         auth_status = auth_map[node.node_id] or "none"
         auth_source = "apply" if auth_status != "none" else "none"
+
+    now = utcnow()
+    hb_interval = comres_prune.node_heartbeat_interval_s(node)
+    hb_timeout = comres_prune.node_stale_timeout_s(node)
+    hb_age = None
+    status = node.status
+    if node.last_heartbeat_at is not None:
+        hb_age = int((now - node.last_heartbeat_at).total_seconds())
+        if (status or "") in ("online", "stale") and hb_age > hb_timeout:
+            status = "stale"
+
     return {
         "node_id": node.node_id, "display_name": node.display_name,
-        "model_class": node.model_class, "status": node.status,
+        "model_class": node.model_class, "status": status,
         "ip": node.ip, "sw_version": node.sw_version,
         "token_prefix": node.token_prefix,
         "auth_status": auth_status,
         "auth_source": auth_source,
         "last_heartbeat_at": node.last_heartbeat_at.isoformat()
         if node.last_heartbeat_at else None,
+        "heartbeat_age_s": hb_age,
+        "heartbeat_interval_s": hb_interval,
+        "heartbeat_timeout_s": hb_timeout,
     }
 
 

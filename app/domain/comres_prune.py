@@ -21,11 +21,49 @@ from app.utils import utcnow
 
 INACTIVE_HEALTH = frozenset({"stale", "superseded", "offline"})
 
+_HB_MIN_S = 10
+_HB_MAX_S = 3600
+
 
 def stale_timeout_s() -> int:
+    """全局 stale 窗口（占用方 last_checked / 端点冲突等旧口径）。
+
+    节点心跳超时请用 ``node_stale_timeout_s(node)``。
+    """
     hb = int(getattr(settings, "comres_heartbeat_interval_s", 3600) or 3600)
-    floor = int(getattr(settings, "comres_stale_floor_s", 1800) or 1800)
+    floor = int(getattr(settings, "comres_stale_floor_s", 180) or 180)
     return max(3 * hb, floor)
+
+
+def node_heartbeat_interval_s(node) -> int:
+    """节点生效心跳间隔：config_json 合法值优先，否则全局兜底。"""
+    cfg = getattr(node, "config_json", None)
+    if isinstance(cfg, dict) and cfg.get("heartbeat_interval_s") is not None:
+        try:
+            val = int(cfg["heartbeat_interval_s"])
+            if _HB_MIN_S <= val <= _HB_MAX_S:
+                return val
+        except (TypeError, ValueError):
+            pass
+    return int(getattr(settings, "comres_heartbeat_interval_s", 3600) or 3600)
+
+
+def node_stale_timeout_s(node) -> int:
+    """节点心跳超时阈值：max(3 * interval, comres_stale_floor_s)。"""
+    floor = int(getattr(settings, "comres_stale_floor_s", 180) or 180)
+    return max(3 * node_heartbeat_interval_s(node), floor)
+
+
+def node_effectively_online(node, *, now=None) -> bool:
+    """DB status=online 且心跳年龄未超 node_stale_timeout_s。"""
+    if node is None or (getattr(node, "status", None) or "") != "online":
+        return False
+    hb_at = getattr(node, "last_heartbeat_at", None)
+    if hb_at is None:
+        return False
+    now = now or utcnow()
+    age = (now - hb_at).total_seconds()
+    return age <= node_stale_timeout_s(node)
 
 
 def offline_dormant_s() -> int:
@@ -116,7 +154,6 @@ def find_duplicates(session: Session) -> list[dict]:
 def audit_maintenance(session: Session) -> dict:
     """dry-run：返回 duplicates / stale / orphan_nodes / allocated_zombie 与预计影响条数。"""
     now = utcnow()
-    stale_before = now - timedelta(seconds=stale_timeout_s())
     dormant_before = now - timedelta(seconds=offline_dormant_s())
     enroll_before = now - timedelta(seconds=enrolled_retire_s())
 
@@ -129,12 +166,17 @@ def audit_maintenance(session: Session) -> dict:
     for n in nodes.values():
         if (n.status or "") != "online":
             continue
-        if not n.last_heartbeat_at or n.last_heartbeat_at > stale_before:
+        if not n.last_heartbeat_at:
+            continue
+        age = (now - n.last_heartbeat_at).total_seconds()
+        if age <= node_stale_timeout_s(n):
             continue
         ports = [b for b in bindings if b.node_id == n.node_id]
         stale.append({
             **_node_brief(n),
             "action": "mark_offline_stale",
+            "heartbeat_interval_s": node_heartbeat_interval_s(n),
+            "stale_timeout_s": node_stale_timeout_s(n),
             "ports": len(ports),
             "samples": [_binding_brief(b) for b in ports[:3]],
         })

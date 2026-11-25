@@ -3,6 +3,18 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.2] - 2026-11-25
+
+### 修复：COMRes 心跳间隔以节点上报为准
+- `register` / `heartbeat` 按节点上报的 `heartbeat_interval_s`（或
+  `config.heartbeat_interval_s`）生效并持久化到 `config_json`，响应返回生效值；
+  不再固定回写 3600；非法值返回 `COMRES_BAD_HEARTBEAT_INTERVAL`。
+- stale 判定改为逐节点 `max(3*interval, comres_stale_floor_s)`（floor 默认 180）；
+  `expire_allocations` 释放 auto 占用同步按节点超时；prune 默认周期 60s。
+- `list_nodes` / `get_node` 按心跳年龄只读返回 `stale`，并附带
+  `heartbeat_age_s` / `heartbeat_interval_s` / `heartbeat_timeout_s`；
+  `probe_reach` 跳过心跳已超时节点。页面「最近心跳」展示年龄与超时标记。
+
 ## [0.54.1] - 2026-11-25
 
 ### 修复：Agent watchdog 覆盖 RUNNING 失联

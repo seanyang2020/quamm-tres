@@ -943,6 +943,28 @@ function formatRelative(iso) {
   if (sec < 86400 * 30) return `${Math.floor(sec / 86400)} 天前`
   return formatLocal(iso)
 }
+/** COMRes 心跳年龄：38 秒前 / 4 分钟前 / 1 小时前 */
+function formatHeartbeatAge(row) {
+  let sec = row && row.heartbeat_age_s
+  if (sec == null && row && row.last_heartbeat_at) {
+    const d = parseUtcDate(row.last_heartbeat_at)
+    if (d) sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000))
+  }
+  if (sec == null || Number.isNaN(sec)) return '—'
+  sec = Math.max(0, Math.floor(sec))
+  if (sec < 60) return `${sec} 秒前`
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`
+  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`
+  return `${Math.floor(sec / 86400)} 天前`
+}
+function wlHeartbeatTimedOut(row) {
+  if (!row) return false
+  if (row.status === 'stale' || row.status === 'offline') return true
+  if (row.heartbeat_age_s != null && row.heartbeat_timeout_s != null) {
+    return Number(row.heartbeat_age_s) > Number(row.heartbeat_timeout_s)
+  }
+  return false
+}
 function deviceProbeAt(row) {
   return (row && row.last_probe_at) || null
 }
@@ -3433,7 +3455,15 @@ const legendRole = [
             </el-table-column>
             <el-table-column prop="model_class" label="机型" width="110" />
             <el-table-column prop="sw_version" label="版本" width="90" />
-            <el-table-column label="最近心跳" min-width="190"><template #default="{ row }">{{ formatLocal(row.last_heartbeat_at) }}</template></el-table-column>
+            <el-table-column label="最近心跳" min-width="260">
+              <template #default="{ row }">
+                <span :style="wlHeartbeatTimedOut(row) ? 'color:var(--el-color-danger)' : ''">
+                  {{ formatLocal(row.last_heartbeat_at) }}
+                  <span v-if="row.last_heartbeat_at" class="comres-muted">（{{ formatHeartbeatAge(row) }}）</span>
+                </span>
+                <el-tag v-if="wlHeartbeatTimedOut(row)" size="small" type="danger" style="margin-left:6px">超时</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="row.status !== 'retired'" size="small"
@@ -3471,7 +3501,17 @@ const legendRole = [
                          :disabled="!wlDetail.node_token"
                          @click="copyNodeToken">复制</el-button>
             </el-descriptions-item>
-            <el-descriptions-item label="最近心跳">{{ wlDetail.last_heartbeat_at }}</el-descriptions-item>
+            <el-descriptions-item label="最近心跳">
+              <span :style="wlHeartbeatTimedOut(wlDetail) ? 'color:var(--el-color-danger)' : ''">
+                {{ wlDetail.last_heartbeat_at || '—' }}
+                <span v-if="wlDetail.last_heartbeat_at" class="comres-muted">（{{ formatHeartbeatAge(wlDetail) }}）</span>
+              </span>
+              <el-tag v-if="wlHeartbeatTimedOut(wlDetail)" size="small" type="danger" style="margin-left:6px">超时</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="心跳间隔">
+              {{ wlDetail.heartbeat_interval_s != null ? wlDetail.heartbeat_interval_s + ' 秒' : '—' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="心跳年龄">{{ formatHeartbeatAge(wlDetail) }}</el-descriptions-item>
             <el-descriptions-item label="在线端口数">{{ wlOnlinePortCount(wlDetail.node_id) }}</el-descriptions-item>
           </el-descriptions>
           <el-alert type="info" :closable="false" show-icon style="margin:12px 0 0"

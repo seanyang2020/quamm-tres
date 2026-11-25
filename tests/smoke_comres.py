@@ -63,6 +63,7 @@ token2, id2 = n2["node_token"], n2["node_id"]
 ep = "tcp://10.0.0.5:9200"
 r1 = comres.register(s, token1, {
     "node_id": id1, "local_ip": "10.0.0.5", "sw_version": "elsb-test",
+    "heartbeat_interval_s": 60,
     "ports": [{"slot": 1, "com": "COM11", "endpoint": ep,
                "health_state": "online", "baud": 115200}],
 })
@@ -78,7 +79,8 @@ for b in rows:
     print(f"  node={b.node_id} com_key={b.com_key} endpoint={b.endpoint} slot={b.slot}")
 check("两行互不覆盖", len(rows) == 2, f"count={len(rows)}")
 check("register 回 allocated 字段", "allocated" in r1["ports"][0])
-check("heartbeat_interval 3600", r1.get("heartbeat_interval_s") == 3600)
+check("heartbeat_interval 按上报", r1.get("heartbeat_interval_s") == 60)
+check("heartbeat_interval 无上报兜底 3600", r2.get("heartbeat_interval_s") == 3600)
 
 # node1 再加第二端口，供解注册保留对照
 comres.register(s, token1, {
@@ -488,7 +490,8 @@ comres.expire_allocations(s)
 b_m = s.query(WireLogPortBinding).filter_by(node_id=nid_m, slot=1).one()
 check("手工占用 15min 后释放", b_m.allocated_by is None and b_m.allocated_expire is None)
 
-# 节点 stale：超 2 倍心跳无上报 → auto 释放
+# 节点 stale：超逐节点 stale 阈值无上报 → auto 释放（默认 interval=3600 → 10800s）
+from app.domain.comres_prune import node_stale_timeout_s
 prov_st = wirelog.provision_host(s, display_name="stale-n", operator="t")
 tok_st, nid_st = prov_st["node_token"], prov_st["node_id"]
 comres.register(s, tok_st, {
@@ -498,7 +501,8 @@ comres.register(s, tok_st, {
 })
 from app.models import WireLogNode
 node_st = s.get(WireLogNode, nid_st)
-node_st.last_heartbeat_at = utcnow() - timedelta(seconds=7201)
+stale_after = node_stale_timeout_s(node_st) + 1
+node_st.last_heartbeat_at = utcnow() - timedelta(seconds=stale_after)
 # 把 auto expire 推到未来，确保走 node_stale 路径而非 expire 路径
 b_st = s.query(WireLogPortBinding).filter_by(node_id=nid_st, slot=1).one()
 kept_st_dev = b_st.bound_device_id
