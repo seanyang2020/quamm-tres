@@ -3,6 +3,23 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.53.0] - 2026-11-25
+
+### 新增：设备统一能力描述符 Phase 1
+- `res_device_info` 新增 `capabilities`：按设备动态生成 `revision`、能力条目
+  `items` 和能力摘要 `summary`；能力从当前绑定、端口、动作模型、节点健康度实时派生。
+- `res_list_devices` 新增轻量 `capabilities_summary`，只给 adb / serial / power / mode
+  状态与计数，不返回 `steps`，避免列表逐设备展开。
+- `res_serial_caps` 新增 `capability_revision`、`serial_capabilities`、
+  `observed_channels`，并在 `ports[]` 上补充 `capability_id`、`source`、`binding`、
+  `constraints`；旧字段保持不变。
+- 支持同一 endpoint / com_key 绑定到多台设备时标记 `SHARED_ENDPOINT`，并给出
+  `shared_peers`，避免 Agent 误判独占可用。
+- 能力开关 `capabilities_v1` 默认开启；显式写 Setting 为 false 可关闭增强字段。
+- 本阶段只做 discovery，不新增通用执行入口；执行仍走现有专用工具与权限/租约约束。
+- 测试：新增 `tests/test_capabilities.py`，并在 MCP HTTP、serial、comres 绑定语义测试中
+  覆盖新字段与 revision 变化。
+
 ## [0.52.1] - 2026-11-25
 
 ### 修复：real probe 二进制 stdout 解码崩溃
