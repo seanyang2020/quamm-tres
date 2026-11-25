@@ -1,9 +1,9 @@
-# t1058 flash image sources — 进度
+# t1059 flash agent watchdog — 进度
 
-> 任务：res_flash 增加 local / build_server 镜像来源 + res_flash_report  
-> task_id: t1058  
-> 工作区：`/home/scm/worktree/tres-flash-sources`  
-> 分支：`feat/flash-image-sources`（基线 0.53.2 / 44fc7cf）
+> 任务：Agent 上报 RUNNING 后失联时，watchdog 标 FAILED 释放租约  
+> task_id: t1059  
+> 工作区：`/home/scm/worktree/tres-flash-watchdog`  
+> 分支：`fix/flash-agent-watchdog`（基线 0.54.0 / 5b22c5c）
 
 ## 状态：已完成（停住等审）
 
@@ -11,21 +11,14 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| FlashJob 列 | executor / image_meta / runner_id / progress / reported_at | ✅ |
-| 迁移 | 幂等 ALTER flash_job（inspect 判表） | ✅ |
-| 配置 | flash_agent_timeout_seconds=1800 + agent watchdog | ✅ |
-| source=db | 兼容 + mode/executor 字段 | ✅ |
-| source=local | WAITING_AGENT + command_argv + report_hint | ✅ |
-| res_flash_report | RUNNING/SUCCEEDED/FAILED；幂等/冲突/FORBIDDEN | ✅ |
-| source=build_server | 预检 + SSH 执行；无 secret 回显 | ✅ |
-| MCP | res_flash 扩参；新增 res_flash_report | ✅ |
-| 测试 | test_flash.py 24 passed（含 fixture 补机型） | ✅ |
-| VERSION | 0.54.0 + CHANGELOG | ✅ |
-| 提交 | feat(flash): support local/build-server image sources (0.54.0) | ✅ |
+| watchdog | 周期检查（45s）；WAITING_AGENT/RUNNING + last_activity 超时 → FAILED | ✅ |
+| 终态保护 | flash_report 已有 JOB_ALREADY_FINISHED，确认保留 | ✅ |
+| 测试 | stale RUNNING → FAILED；SUCCEEDED 不改；26 flash passed | ✅ |
+| VERSION | 0.54.1 + CHANGELOG | ✅ |
+| 提交 | `2c684ec` fix(flash): watchdog stale agent running jobs (0.54.1) | ✅ |
 | 部署/push | 未部署 / 未 push | ✅ |
 
 ## 已知限制
 
-- BuildServer 仍一账号一台（未改 principal_id unique）
-- 193 未装 xosadb2update → RUNNER_TOOL_MISSING（不自动安装）
-- source=local 不校验 Agent 侧路径是否存在
+- BuildServer 仍一账号一台（未改）
+- 未改 `res_flash` / `res_flash_report` 对外契约
