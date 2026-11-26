@@ -318,7 +318,27 @@ def devices(
     limit: int = 500,
     session: Session = Depends(get_session),
 ):
-    return catalog.list_devices(session, model_class=model_class, status=status, limit=limit, for_agent=False)
+    rows = catalog.list_devices(
+        session, model_class=model_class, status=status, limit=limit, for_agent=False
+    )
+    # 轻量串口能力标记（含 power_n/log_n）；失败不阻断列表
+    try:
+        from app.domain import serial as serial_svc
+
+        flags = serial_svc.serial_flags(session)
+        empty = {
+            "log": False,
+            "power": False,
+            "mode": False,
+            "slots": 0,
+            "power_n": 0,
+            "log_n": 0,
+        }
+        for r in rows:
+            r["serial"] = flags.get(r.get("device_id"), empty)
+    except Exception:  # noqa: BLE001 - 附加字段，不阻断列表
+        pass
+    return rows
 
 
 @router.get("/config-audit")
@@ -333,6 +353,24 @@ def config_audit(session: Session = Depends(get_session)):
 def device_detail(device_id: str, session: Session = Depends(get_session)):
     try:
         return catalog.device_info(session, device_id, for_agent=False)
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+
+
+@router.get("/devices/{device_id}/capabilities")
+def device_capabilities(
+    device_id: str,
+    session: Session = Depends(get_session),
+    _id=Depends(web_auth.require_login),
+):
+    """设备能力快照（只读）；开关关闭时返回 enabled=false 空列表。"""
+    from app.domain import capabilities as cap_svc
+
+    try:
+        if not cap_svc.is_enabled(session):
+            catalog.device_info(session, device_id, for_agent=False)
+            return {"enabled": False, "items": [], "revision": 0}
+        return cap_svc.build_snapshot(session, device_id)
     except catalog.DomainError as e:
         raise HTTPException(status_code=404, detail=e.message)
 
@@ -753,6 +791,52 @@ def list_credentials(
         }
         for c in rows
     ]
+
+
+@router.post("/credentials/{credential_id}/role")
+def set_credential_role(
+    credential_id: int,
+    body: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """调整凭据 role（admin ↔ user）。
+
+    ``credential.role`` 在每次鉴权时读取（见本文件 login 路径 ``auth.credential.role`` 与
+    ``web_auth.optional_identity``），因此改完立即生效，无需重新登录、无需重新发 token。
+
+    自降级保护：禁止把当前登录会话对应的凭据降为 user，避免把自己锁死；
+    自升级或改别人的凭据不受此限。
+    """
+    role = (body or {}).get("role")
+    if (
+        credential_id == identity.credential_id
+        and str(role or "").strip().lower() == "user"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "SELF_DEMOTE_FORBIDDEN",
+                "message": "不能降级当前登录凭据，请改用另一个管理员凭据操作",
+            },
+        )
+    try:
+        return credentials.set_credential_role(
+            session, credential_id, role, actor=identity.email
+        )
+    except catalog.DomainError as e:
+        if e.code == "BAD_ROLE":
+            status = 400
+        elif e.code == "NOT_FOUND":
+            status = 404
+        elif e.code == "CREDENTIAL_REVOKED":
+            status = 409
+        else:
+            status = 400
+        raise HTTPException(
+            status_code=status,
+            detail={"code": e.code, "message": e.message, "detail": e.detail},
+        )
 
 
 @router.post("/credentials/{credential_id}/revoke")
@@ -2028,7 +2112,7 @@ def send_credentials(
 # ---- v0.25：编译服务器（账号级私有，一账号一台，自助配置 + 自动探测）----
 def _domain_http(exc: DomainError) -> HTTPException:
     code = getattr(exc, "code", "")
-    if code in ("FORBIDDEN", "ACCESS_DENIED"):
+    if code in ("FORBIDDEN", "ACCESS_DENIED", "ADB_NOT_ALLOWED"):
         status = 403
     elif code == "NOT_FOUND":
         status = 404
@@ -2037,6 +2121,7 @@ def _domain_http(exc: DomainError) -> HTTPException:
         "BUILD_SERVER_IN_USE",
         "BUILD_SERVER_ALREADY_EXISTS",
         "HAS_ACTIVE_LEASE",
+        "ADB_CONFIRM_REQUIRED",
     ):
         status = 409
     else:
@@ -2235,7 +2320,8 @@ def post_serial_action(
     if not action_key:
         raise HTTPException(status_code=400, detail="action_key 必填")
     try:
-        _require_serial_lease(session, identity, device_id, action_key, bool(payload.get("confirm")))
+        confirm = bool(payload.get("confirm"))
+        _require_serial_lease(session, identity, device_id, action_key, confirm)
         return serial_svc.run_action(
             session,
             device_id,
@@ -2245,6 +2331,33 @@ def post_serial_action(
             hold_ms=payload.get("hold_ms"),
             wait_ms=payload.get("wait_ms"),
             dry_run=bool(payload.get("dry_run")),
+            confirm=confirm,
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/adb/exec")
+def post_adb_exec(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """人工调试：adb connect + adb shell <command>（破坏性命令需 confirm=true）。"""
+    from app.domain import adb_exec as adb_exec_svc
+
+    command = str(payload.get("command") or "")
+    try:
+        return adb_exec_svc.exec_shell(
+            session,
+            device_id,
+            command=command,
+            timeout_ms=payload.get("timeout_ms"),
+            confirm=bool(payload.get("confirm")),
+            by=f"web:{identity.email}",
+            email=identity.email,
+            is_admin=(identity.role == "admin"),
         )
     except DomainError as e:
         raise _domain_http(e)

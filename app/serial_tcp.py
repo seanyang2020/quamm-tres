@@ -12,11 +12,14 @@ expect_mode: none（只发不等）| contains | regex | exact
 """
 from __future__ import annotations
 
+import logging
 import re
 import socket
 import threading
 import time
 from dataclasses import dataclass
+
+_log = logging.getLogger(__name__)
 
 DEFAULT_CONNECT_TIMEOUT_S = 3.0
 DEFAULT_HARD_TIMEOUT_S = 5.0
@@ -318,13 +321,35 @@ def normalize_steps(steps) -> list[dict]:
     for i, raw in enumerate(steps):
         if not isinstance(raw, dict):
             raise SerialConfigError(f"第 {i + 1} 步不是对象")
+        # 读兼容：旧 {"hex": "..."} → data + encoding=hex；与 data 并存时以 data 为准
         data = raw.get("data")
+        enc = str(raw.get("encoding") or "").lower() or None
+        legacy_hex = raw.get("hex")
+        if (data is None or str(data) == "") and legacy_hex is not None and str(legacy_hex) != "":
+            data = legacy_hex
+            if not enc:
+                enc = "hex"
+            _log.debug(
+                "normalize_steps: step %s hit hex→data compat path (hex=%r)",
+                i + 1,
+                legacy_hex,
+            )
+        elif (
+            data is not None
+            and str(data) != ""
+            and legacy_hex is not None
+            and str(legacy_hex) != ""
+        ):
+            _log.debug(
+                "normalize_steps: step %s has both data and hex; preferring data=%r",
+                i + 1,
+                data,
+            )
         if data is None or str(data) == "":
             raise SerialConfigError(f"第 {i + 1} 步缺少 data")
         mode = str(raw.get("expect_mode") or "none").lower()
         if mode not in VALID_EXPECT_MODES:
             raise SerialConfigError(f"第 {i + 1} 步 expect_mode 非法: {mode}")
-        enc = str(raw.get("encoding") or "").lower() or None
         if enc and enc not in VALID_ENCODINGS:
             raise SerialConfigError(f"第 {i + 1} 步 encoding 非法: {enc}")
         out.append(

@@ -3,6 +3,30 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.5] - 2026-11-26
+
+### 合并：0.54.4 功能合入 0.54.3 热修基线
+- 以 `fix/comres-heartbeat` @ `5defef0`（0.54.3）为基线，仅合入 quamm-res
+  `feat/capabilities` 工作树相对 `62cce60` 的功能增量；保留 0.54.1–0.54.3
+  已上线热修（COMRes 心跳、刷机 isolation/sources/watchdog、retired unbind），
+  不回退 `flash.py` / `comres.py`。
+
+### 新增：凭据 role 升降级
+- `POST /api/credentials/{id}/role`（仅 admin）：user ↔ admin 即时生效；
+  禁止自降级当前登录凭据（`SELF_DEMOTE_FORBIDDEN`）；写审计 `set_credential_role`。
+
+### 新增：浏览器内 ADB 命令执行
+- `POST /api/devices/{id}/adb/exec`：admin 或租约持有者可执行 adb shell；
+  危险命令需 confirm；输出截断；写审计。
+
+### 新增：PowerRes 资源域与通道动作
+- PowerRes inventory / binding / overview；`POST /api/powerres/action` 通道开/关/重启/查询；
+  `restart_hold_ms` 跟随端侧；`enabled=false` 拒绝电源动作；幂等建表/补列。
+
+### 变更：设备页信息架构整合
+- 能力区 ADB / 串口 / 电源三卡一排；电源配置默认折叠（admin）；
+  串口卡内控制台入口；能力模型修正（power/mode 不再伪装串口）。
+
 ## [0.54.3] - 2026-11-25
 
 ### 修复：无配置节点默认 60s 心跳

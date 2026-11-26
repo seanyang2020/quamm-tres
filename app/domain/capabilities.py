@@ -18,6 +18,7 @@ from app.constants import DeviceStatus
 from app.models import (
     Device,
     DeviceSerialPort,
+    PowerResBinding,
     SerialAction,
     SerialState,
     Setting,
@@ -54,6 +55,13 @@ KIND_POWER = "power"
 KIND_MODE = "mode"
 
 SERIAL_KINDS = frozenset({KIND_SERIAL_IO, KIND_POWER, KIND_MODE})
+
+# power/mode 物化端口只产对应能力项，不冒充 serial.io（PT9 P1）
+NON_SERIAL_IO_ROLES = frozenset({"power", "mode"})
+
+
+def _norm_role(role: str | None) -> str:
+    return (role or "").strip().lower()
 
 POWER_KEYS = ("power_on", "power_off", "power_cycle")
 MODE_KEYS = ("mode_normal", "mode_fastboot", "mode_edl")
@@ -163,7 +171,7 @@ def enrich_declared_port(
 ) -> dict:
     """给 caps().ports[] 里的 declared port 补 capability_id/source/binding/constraints。"""
     slot = port.get("slot")
-    role = port.get("role") or "spare"
+    role = _norm_role(port.get("role") or "spare")
     if role == "power":
         cap_id = f"power:slot{slot}"
     elif role == "mode":
@@ -186,7 +194,7 @@ def enrich_declared_port(
     )
     constraints = (
         item.get("constraints") if item
-        else _default_constraints(read_only=(role in ("log", "spare")), shared=False)
+        else _default_constraints(read_only=(role == "log"), shared=False)
     )
     out = dict(port)
     out["capability_id"] = cap_id
@@ -250,7 +258,22 @@ def _load_context(session: Session, device_ids: list[str]) -> dict[str, Any]:
     )
     shared_keys, shared_peers = _binding_shared_index(all_bound)
 
-    node_ids = {b.node_id for b in bindings_rows} | {b.node_id for b in all_bound}
+    # PowerRes：按 device_id 加载，供 power item 按 endpoint 匹配（不改 COMRes 语义）
+    powerres_rows = (
+        session.query(PowerResBinding)
+        .filter(PowerResBinding.device_id.in_(device_ids))
+        .filter(PowerResBinding.enabled.is_(True))
+        .all()
+    )
+    powerres: dict[str, list[PowerResBinding]] = {did: [] for did in device_ids}
+    for pr in powerres_rows:
+        powerres.setdefault(pr.device_id, []).append(pr)
+
+    node_ids = (
+        {b.node_id for b in bindings_rows}
+        | {b.node_id for b in all_bound}
+        | {pr.node_id for pr in powerres_rows}
+    )
     nodes = {}
     if node_ids:
         nodes = {
@@ -268,6 +291,7 @@ def _load_context(session: Session, device_ids: list[str]) -> dict[str, Any]:
         "shared_keys": shared_keys,
         "shared_peers": shared_peers,
         "all_bound": all_bound,
+        "powerres": powerres,
     }
 
 
@@ -324,6 +348,7 @@ def _items_for_device(ctx: dict, device: Device) -> list[dict]:
             nodes=ctx["nodes"],
             shared_keys=ctx["shared_keys"],
             shared_peers=ctx["shared_peers"],
+            powerres=ctx.get("powerres", {}).get(device.device_id, []),
         )
     )
     return items
@@ -345,10 +370,12 @@ def _collect_adb(device: Device) -> list[dict]:
 
     actions = []
     if status in (STATUS_AVAILABLE, STATUS_DEGRADED):
+        # action_key 保留 adb_shell 兼容旧前端；exec_mode 标明走 POST …/adb/exec
         actions = [{
             "action_key": "adb_shell",
             "kind": "adb",
             "enabled": True,
+            "exec_mode": "adb_exec",
             "inter_step_ms": 0,
             "steps": [],
             "steps_sha256": _steps_sha([]),
@@ -396,11 +423,13 @@ def _serial_items(
     nodes: dict[str, WireLogNode],
     shared_keys: set[str],
     shared_peers: dict[str, list[dict]],
+    powerres: list[PowerResBinding] | None = None,
 ) -> list[dict]:
     items: list[dict] = []
     matched_bindings: set[int] = set()
+    powerres_rows = powerres or []
 
-    # 1) declared ports → serial.io (+ power/mode)
+    # 1) declared ports → serial.io（跳过 power/mode）+ power/mode
     for port in ports:
         binding = _match_binding_to_declared(
             {
@@ -412,18 +441,21 @@ def _serial_items(
         )
         if binding is not None:
             matched_bindings.add(binding.id)
-        items.append(
-            _build_serial_io_item(
-                device,
-                port=port,
-                binding=binding,
-                nodes=nodes,
-                shared_keys=shared_keys,
-                shared_peers=shared_peers,
-                source="declared",
+        pr_binding = _match_powerres_to_declared(port, powerres_rows)
+        role = _norm_role(port.role)
+        if role not in NON_SERIAL_IO_ROLES:
+            items.append(
+                _build_serial_io_item(
+                    device,
+                    port=port,
+                    binding=binding,
+                    nodes=nodes,
+                    shared_keys=shared_keys,
+                    shared_peers=shared_peers,
+                    source="declared",
+                )
             )
-        )
-        if port.role == "power" and port.enabled:
+        if role == "power" and port.enabled:
             items.append(
                 _build_power_or_mode_item(
                     device,
@@ -434,9 +466,10 @@ def _serial_items(
                     nodes=nodes,
                     shared_keys=shared_keys,
                     shared_peers=shared_peers,
+                    powerres_binding=pr_binding,
                 )
             )
-        elif port.role == "mode" and port.enabled:
+        elif role == "mode" and port.enabled:
             items.append(
                 _build_power_or_mode_item(
                     device,
@@ -490,7 +523,17 @@ def _build_serial_io_item(
 
     reasons: list[str] = []
     status = STATUS_AVAILABLE
-    read_only = source == "observed" or (port is not None and port.role in ("log", "spare"))
+    # read_only 仅真实写约束：tres-logs 独占 log 口；observed/spare 不是只读
+    read_only = bool(port is not None and _norm_role(port.role) == "log")
+    for obj in (port, binding):
+        if obj is None:
+            continue
+        for attr in ("read_only", "ro"):
+            if hasattr(obj, attr):
+                val = getattr(obj, attr)
+                if val is not None:
+                    read_only = bool(val)
+                    break
     actions: list[dict] = []
 
     if port is not None and not port.enabled:
@@ -581,6 +624,7 @@ def _build_power_or_mode_item(
     nodes: dict[str, WireLogNode],
     shared_keys: set[str],
     shared_peers: dict[str, list[dict]],
+    powerres_binding: PowerResBinding | None = None,
 ) -> dict:
     cap_id = f"{kind}:slot{port.slot}"
     label = port.label or f"{kind} slot {port.slot}"
@@ -594,21 +638,27 @@ def _build_power_or_mode_item(
         or (kind == KIND_MODE and (a.action_key in MODE_KEYS or a.kind == "mode"))
     ]
 
+    # PowerResBinding 按 endpoint 亦可满足 power 的 binding 条件（不改 mode/其他 role）
+    has_binding = binding is not None or (
+        kind == KIND_POWER and powerres_binding is not None
+    )
+
     if not port.enabled:
         status = STATUS_UNAVAILABLE
         reasons.append(REASON_DISABLED)
     elif not relevant:
         status = STATUS_UNAVAILABLE
         reasons.append(REASON_NO_ACTION_MODEL)
-    elif binding is None:
+    elif not has_binding:
         status = STATUS_UNAVAILABLE
         reasons.append(REASON_NO_BINDING)
-    else:
+    elif binding is not None:
         st, rs = _binding_status(binding)
         status = _merge_status(status, st)
         for r in rs:
             if r not in reasons:
                 reasons.append(r)
+    # else: 仅 PowerResBinding → 视为已绑定（无 COMRes health，保持 available）
 
     status, reasons = _apply_device_status(device, status, reasons)
 
@@ -651,7 +701,12 @@ def _build_power_or_mode_item(
                 },
             })
 
-    node = nodes.get(binding.node_id) if binding else None
+    node = nodes.get(binding.node_id) if binding else (
+        nodes.get(powerres_binding.node_id) if powerres_binding else None
+    )
+    binding_view = _binding_view(binding, node, shared_keys, shared_with=shared_with)
+    if binding_view is None and powerres_binding is not None:
+        binding_view = _powerres_binding_view(powerres_binding, node)
     return {
         "id": cap_id,
         "kind": kind,
@@ -660,7 +715,7 @@ def _build_power_or_mode_item(
         "status": status,
         "status_reasons": reasons,
         "transport": _transport_from(port, binding),
-        "binding": _binding_view(binding, node, shared_keys, shared_with=shared_with),
+        "binding": binding_view,
         "actions": action_dicts,
         "health": _health_from(port, binding),
         "constraints": _default_constraints(read_only=False, shared=shared),
@@ -669,7 +724,10 @@ def _build_power_or_mode_item(
         "detail_args": {"device_id": device.device_id},
         "observed_at": (
             binding.last_checked_at.isoformat()
-            if binding and binding.last_checked_at else None
+            if binding and binding.last_checked_at else (
+                powerres_binding.updated_at.isoformat()
+                if powerres_binding and powerres_binding.updated_at else None
+            )
         ),
     }
 
@@ -781,6 +839,50 @@ def _match_binding_to_declared(
             if (b.com_key or "").strip().lower() == pn:
                 return b
     return None
+
+
+def _match_powerres_to_declared(
+    port: dict | DeviceSerialPort, rows: list[PowerResBinding]
+) -> PowerResBinding | None:
+    """按 endpoint（或 node 无关的 slot 回退）匹配 PowerResBinding。"""
+    if isinstance(port, DeviceSerialPort):
+        endpoint = port.endpoint
+        slot = port.slot
+    else:
+        endpoint = port.get("endpoint")
+        slot = port.get("slot")
+    ep = _norm_endpoint(endpoint)
+    if ep:
+        for b in rows:
+            if _norm_endpoint(b.endpoint) == ep:
+                return b
+    if slot is not None:
+        try:
+            slot_i = int(slot)
+        except (TypeError, ValueError):
+            return None
+        for b in rows:
+            if b.slot == slot_i:
+                return b
+    return None
+
+
+def _powerres_binding_view(
+    binding: PowerResBinding, node: WireLogNode | None
+) -> dict:
+    return {
+        "node_id": binding.node_id,
+        "node_ip": node.ip if node else None,
+        "slot": binding.slot,
+        "com": binding.com,
+        "com_key": None,
+        "endpoint": binding.endpoint,
+        "bound_device_id": binding.device_id,
+        "match_basis": None,
+        "source": "powerres",
+        "power_dev": binding.power_dev,
+        "channel": binding.channel,
+    }
 
 
 def _norm_endpoint(endpoint: str | None) -> str | None:

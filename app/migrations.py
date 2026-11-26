@@ -203,6 +203,16 @@ def migrate(session: Session) -> None:
     _ensure_wl_package_table(session)
     if "flash_job" in inspect(session.get_bind()).get_table_names():
         _ensure_columns(session, "flash_job", _FLASH_JOB_SOURCE_COLUMNS)
+    _ensure_powerres_tables(session)
+    _ensure_columns(session, "power_res_inventory", _POWERRES_INV_COLUMNS)
+
+
+# PT5a / PT8-tres：电源 inventory 补充列（幂等 ADD COLUMN）
+_POWERRES_INV_COLUMNS = {
+    "location": "VARCHAR(64)",
+    "driver": "VARCHAR(32)",
+    "restart_hold_ms": "INTEGER",
+}
 
 
 def _ensure_device_position_index(session: Session) -> None:
@@ -257,6 +267,18 @@ def _ensure_wl_package_table(session: Session) -> None:
     if "wl_package" in inspect(engine).get_table_names():
         return
     Base.metadata.tables["wl_package"].create(bind=engine, checkfirst=True)
+
+
+def _ensure_powerres_tables(session: Session) -> None:
+    """PV6a：PowerRes 独立资源表；create_all 建，inspect 缺表则补建（幂等）。"""
+    from app import models  # noqa: F401
+    from app.db import Base
+
+    engine = session.get_bind()
+    names = set(inspect(engine).get_table_names())
+    for table in ("power_res_binding", "power_res_inventory"):
+        if table not in names and table in Base.metadata.tables:
+            Base.metadata.tables[table].create(bind=engine, checkfirst=True)
 
 
 def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> None:
@@ -544,4 +566,68 @@ def _rebuild_build_server_for_principal(session: Session) -> None:
                  "ON build_server(principal_id)")
         )
         session.commit()
+
+
+def migrate_serial_action_hex_steps(session: Session) -> dict:
+    """幂等：把 SerialAction.steps 里旧 ``{"hex":...}`` 改写为 ``{"data":...,"encoding":"hex"}``。
+
+    **不在** ``migrate()`` 自动执行——PT3a 仅供单测/运维手工调用。
+
+    手工执行（生产库）示例::
+
+        from app.db import SessionLocal
+        from app.migrations import migrate_serial_action_hex_steps
+        with SessionLocal() as s:
+            print(migrate_serial_action_hex_steps(s))
+
+    规则：
+    - 仅有 ``hex``、无 ``data`` → 改为 data + encoding=hex，去掉 hex
+    - ``data`` 与 ``hex`` 并存 → 以 data 为准，去掉 hex；缺 encoding 时补 hex
+    - 已是 data/encoding → 不动
+    """
+    from app.models import SerialAction
+
+    rows = session.query(SerialAction).all()
+    scanned = 0
+    rewritten = 0
+    unchanged = 0
+    for act in rows:
+        scanned += 1
+        steps = act.steps
+        if not isinstance(steps, list) or not steps:
+            unchanged += 1
+            continue
+        new_steps: list = []
+        changed = False
+        for raw in steps:
+            if not isinstance(raw, dict):
+                new_steps.append(raw)
+                continue
+            step = dict(raw)
+            has_data = step.get("data") is not None and str(step.get("data")) != ""
+            has_hex = step.get("hex") is not None and str(step.get("hex")) != ""
+            if has_hex and not has_data:
+                step["data"] = step.pop("hex")
+                if not step.get("encoding"):
+                    step["encoding"] = "hex"
+                changed = True
+            elif has_hex and has_data:
+                step.pop("hex", None)
+                if not step.get("encoding"):
+                    step["encoding"] = "hex"
+                changed = True
+            new_steps.append(step)
+        if changed:
+            act.steps = new_steps
+            rewritten += 1
+        else:
+            unchanged += 1
+    if rewritten:
+        session.commit()
+    return {
+        "ok": True,
+        "scanned": scanned,
+        "rewritten": rewritten,
+        "unchanged": unchanged,
+    }
 

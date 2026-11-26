@@ -771,3 +771,68 @@ class WlPackage(Base):
         Index("uq_wl_package_name_ver_plat", "name", "version", "platform", unique=True),
         Index("ix_wl_package_channel_uploaded", "channel", "uploaded_at"),
     )
+
+
+# ============================================================
+# PowerRes 电源资源域（独立于 WireLogPortBinding / COMRes）
+# ============================================================
+
+class PowerResBinding(Base):
+    """节点某电源设备某通道 → 被测设备 power 串口的绑定。
+
+    唯一键 (node_id, power_dev, channel)。slot 对应 DeviceSerialPort.slot。
+    device_id 指向被测设备（挂 power 角色端口的目标）。
+    """
+
+    __tablename__ = "power_res_binding"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("wl_node.node_id"), nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("device.device_id"), nullable=False
+    )
+    slot: Mapped[int] = mapped_column(Integer, nullable=False)  # DeviceSerialPort.slot 1..16
+    power_dev: Mapped[str] = mapped_column(String(64), nullable=False)
+    channel: Mapped[int] = mapped_column(Integer, nullable=False)
+    endpoint: Mapped[str] = mapped_column(String(128), nullable=False)  # tcp://host:port
+    com: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+
+    __table_args__ = (
+        Index("uq_power_res_binding", "node_id", "power_dev", "channel", unique=True),
+        Index("ix_power_res_binding_device", "device_id"),
+    )
+
+
+class PowerResInventory(Base):
+    """节点侧上报的可用电源资源缓存（未绑定也可见）。"""
+
+    __tablename__ = "power_res_inventory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    node_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("wl_node.node_id"), nullable=False
+    )
+    power_dev: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    com: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    channel: Mapped[int] = mapped_column(Integer, nullable=False)
+    endpoint: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # PT5a：设备级补充信息（hub 上报或手工登记）
+    location: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    driver: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # PT8-tres：hub 注册的重启间隔；NULL = 手工通道（非注册）
+    restart_hold_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+
+    __table_args__ = (
+        Index("uq_power_res_inventory", "node_id", "power_dev", "channel", unique=True),
+    )

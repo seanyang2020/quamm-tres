@@ -187,6 +187,52 @@ def credential_expiry_scan(session: Session, warn_days: int = 7) -> dict:
     return {"warn_days": warn_days, "notified": notified, "skipped": skipped, "checked": len(creds)}
 
 
+def set_credential_role(
+    session: Session, credential_id: int, role: str, *, actor: str
+) -> dict:
+    """调整凭据 role（仅 admin/user）。不改 principal.is_admin；鉴权每次读 credential.role，即时生效。"""
+    target_role = str(role or "").strip().lower()
+    if target_role not in ("admin", "user"):
+        raise DomainError(
+            "BAD_ROLE",
+            f"非法角色：{role!r}，仅允许 admin / user",
+            {"role": role},
+        )
+    cred = session.get(Credential, credential_id)
+    if cred is None:
+        raise DomainError("NOT_FOUND", f"credential {credential_id} not found")
+    if cred.revoked_at is not None:
+        raise DomainError(
+            "CREDENTIAL_REVOKED",
+            "已吊销凭据不能改权限",
+            {"credential_id": credential_id},
+        )
+    if cred.role == target_role:
+        return {"id": credential_id, "role": target_role, "idempotent": True}
+    from_role = cred.role
+    cred.role = target_role
+    target = cred.principal.email if cred.principal else None
+    audit.record(
+        session,
+        actor=actor,
+        action="set_credential_role",
+        detail={
+            "credential_id": credential_id,
+            "target": target,
+            "from": from_role,
+            "to": target_role,
+        },
+    )
+    session.commit()
+    return {
+        "id": credential_id,
+        "role": target_role,
+        "updated": True,
+        "from": from_role,
+        "to": target_role,
+    }
+
+
 def revoke_credential(session: Session, credential_id: int, actor: str, reason: str = "管理员吊销") -> dict:
     """吊销凭据并级联强制回收其名下活跃租约（含物理锁清理）。已吊销则幂等返回。"""
     from app.domain import leasing
