@@ -28,6 +28,7 @@ _LOCK = threading.Lock()
 _STOP = threading.Event()
 _STATE: dict = {}
 _THREAD: threading.Thread | None = None
+_START_MONO = 0.0
 
 
 def _new_session():
@@ -56,7 +57,10 @@ def _empty_status() -> dict:
 
 def _snapshot() -> dict:
     with _LOCK:
-        return dict(_STATE) if _STATE else _empty_status()
+        snap = dict(_STATE) if _STATE else _empty_status()
+    if snap.get("running"):
+        snap["elapsed_s"] = int(time.monotonic() - _START_MONO)
+    return snap
 
 
 def status() -> dict:
@@ -218,7 +222,7 @@ def start(
     confirm: bool = False,
 ) -> dict:
     """启动重启测试；校验失败抛 DomainError（BAD_PARAM/NEED_CONFIRM/TOO_LONG/FLOW_BUSY）。"""
-    global _THREAD
+    global _THREAD, _START_MONO
 
     node_id = str(node_id or "").strip()
     if not node_id:
@@ -259,6 +263,7 @@ def start(
                 {"status": dict(_STATE)},
             )
         _STOP.clear()
+        _START_MONO = time.monotonic()
         _STATE.clear()
         _STATE.update({
             "kind": KIND,
@@ -295,8 +300,7 @@ def stop() -> dict:
         if _STATE.get("running"):
             _STOP.set()
             _STATE["cancelled"] = True
-        snap = dict(_STATE) if _STATE else _empty_status()
-    return {"ok": True, **snap}
+    return {"ok": True, **_snapshot()}
 
 
 def _reset_for_tests() -> None:
