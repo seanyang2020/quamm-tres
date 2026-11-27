@@ -158,7 +158,8 @@ def test_binding_only_serial(session):
     assert len(io) == 1
     assert io[0]["source"] == "observed"
     assert io[0]["actions"] == []
-    assert io[0]["constraints"]["read_only"] is True
+    # observed 是端口目录来源，不是写约束（PT9 P2）
+    assert io[0]["constraints"]["read_only"] is False
 
     caps = serial_svc.caps(session, "dev_bo")
     assert caps["ports"] == []
@@ -197,17 +198,38 @@ def test_declared_power_binding_offline(session):
 
 
 def test_declared_port_no_binding(session):
+    """power 口无 WireLog 绑定时只产 power item，不再冒充 serial.io（PT9 P1）。"""
     _add_device(session, "dev_nb")
     _add_power_port(session, "dev_nb", endpoint="tcp://127.0.0.1:9303")
     session.commit()
 
     snap = cap_svc.build_snapshot(session, "dev_nb")
-    io = next(i for i in snap["items"] if i["kind"] == "serial.io")
-    assert io["status"] == "unavailable"
-    assert "NO_BINDING" in io["status_reasons"]
+    io_items = [i for i in snap["items"] if i["kind"] == "serial.io"]
+    assert io_items == []
     power = next(i for i in snap["items"] if i["kind"] == "power")
     assert power["status"] == "unavailable"
     assert "NO_BINDING" in power["status_reasons"]
+    # power 口不得污染 summary.serial
+    assert snap["summary"]["serial"] == "unavailable"
+    assert snap["summary"]["power"] == "unavailable"
+
+
+def test_power_role_does_not_pollute_serial_summary(session):
+    """仅有 role=power 物化端口时 summary.serial 保持 unavailable。"""
+    _add_device(session, "dev_pwr_only")
+    p = _add_node(session, "pwr-only-n")
+    ep = "tcp://127.0.0.1:9310"
+    # PowerRes 场景：常无 WireLog binding；这里补 healthy binding 让 power available
+    _add_binding(session, node_id=p["node_id"], device_id="dev_pwr_only", endpoint=ep)
+    _add_power_port(session, "dev_pwr_only", endpoint=ep)
+    session.commit()
+
+    snap = cap_svc.build_snapshot(session, "dev_pwr_only")
+    assert [i for i in snap["items"] if i["kind"] == "serial.io"] == []
+    assert snap["summary"]["power"] == "available"
+    assert snap["summary"]["serial"] == "unavailable"
+    adb = next(i for i in snap["items"] if i["kind"] == "adb")
+    assert adb["actions"] and adb["actions"][0].get("exec_mode") == "adb_exec"
 
 
 def test_device_offline_marks_serial(session):

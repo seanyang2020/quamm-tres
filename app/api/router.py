@@ -58,10 +58,24 @@ from app.runtime_config import (
     set_runtime_value,
     validate_runtime_value,
 )
-from app.security import AuthError, resolve_token
+from app.security import AuthContext, AuthError, resolve_token
 from app.utils import hash_token, new_id, new_token, token_prefix, utcnow
 
 router = APIRouter(prefix="/api")
+
+
+def _web_auth_context(session: Session, identity: web_auth.WebIdentity) -> AuthContext:
+    """用 Web 会话身份构造领域层 AuthContext（不伪造 Agent）。"""
+    cred = session.get(Credential, identity.credential_id)
+    principal = session.get(Principal, identity.principal_id)
+    if cred is None or principal is None or principal.status != "active":
+        raise HTTPException(status_code=401, detail="未登录")
+    return AuthContext(
+        principal=principal,
+        credential=cred,
+        email=principal.email,
+        is_admin=(identity.role == "admin"),
+    )
 
 
 def _iso(dt) -> str | None:
@@ -318,7 +332,27 @@ def devices(
     limit: int = 500,
     session: Session = Depends(get_session),
 ):
-    return catalog.list_devices(session, model_class=model_class, status=status, limit=limit, for_agent=False)
+    rows = catalog.list_devices(
+        session, model_class=model_class, status=status, limit=limit, for_agent=False
+    )
+    # 轻量串口能力标记（含 power_n/log_n）；失败不阻断列表
+    try:
+        from app.domain import serial as serial_svc
+
+        flags = serial_svc.serial_flags(session)
+        empty = {
+            "log": False,
+            "power": False,
+            "mode": False,
+            "slots": 0,
+            "power_n": 0,
+            "log_n": 0,
+        }
+        for r in rows:
+            r["serial"] = flags.get(r.get("device_id"), empty)
+    except Exception:  # noqa: BLE001 - 附加字段，不阻断列表
+        pass
+    return rows
 
 
 @router.get("/config-audit")
@@ -333,6 +367,24 @@ def config_audit(session: Session = Depends(get_session)):
 def device_detail(device_id: str, session: Session = Depends(get_session)):
     try:
         return catalog.device_info(session, device_id, for_agent=False)
+    except catalog.DomainError as e:
+        raise HTTPException(status_code=404, detail=e.message)
+
+
+@router.get("/devices/{device_id}/capabilities")
+def device_capabilities(
+    device_id: str,
+    session: Session = Depends(get_session),
+    _id=Depends(web_auth.require_login),
+):
+    """设备能力快照（只读）；开关关闭时返回 enabled=false 空列表。"""
+    from app.domain import capabilities as cap_svc
+
+    try:
+        if not cap_svc.is_enabled(session):
+            catalog.device_info(session, device_id, for_agent=False)
+            return {"enabled": False, "items": [], "revision": 0}
+        return cap_svc.build_snapshot(session, device_id)
     except catalog.DomainError as e:
         raise HTTPException(status_code=404, detail=e.message)
 
@@ -377,10 +429,13 @@ def delete_device_route(
 @router.post("/devices/probe")
 def web_device_probe(
     payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
-    """Web 手工添加设备第一步：按 IP/端口探测，返回 form_id 与探测结果。"""
+    """Web 手工添加设备第一步：按 IP/端口探测，返回 form_id 与探测结果。
+
+    v0.54.5：普通用户也可添加设备（探测/注册/发现），机型字典仍由管理员维护。
+    """
     ip = str(payload.get("ip") or "").strip()
     if not ip:
         raise HTTPException(status_code=400, detail="ip 必填")
@@ -444,10 +499,13 @@ def web_device_probe_batch(
 @router.post("/devices/register")
 def web_device_register(
     payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
-    """Web 手工添加设备第二步：确认位置/负责人/机型后入库。"""
+    """Web 手工添加设备第二步：确认位置/负责人/机型后入库。
+
+    v0.54.5：普通用户也可添加设备（探测/注册/发现），机型字典仍由管理员维护。
+    """
     form_id = str(payload.get("form_id") or "").strip()
     if not form_id:
         raise HTTPException(status_code=400, detail="form_id 必填")
@@ -472,10 +530,13 @@ def web_device_register(
 @router.post("/devices/discover")
 def web_device_discover(
     payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
-    """设备发现模式：扫描网段（可指定 networks，缺省自动探测本机 /24），返回可注册设备。"""
+    """设备发现模式：扫描网段（可指定 networks，缺省自动探测本机 /24），返回可注册设备。
+
+    v0.54.5：普通用户也可添加设备（探测/注册/发现），机型字典仍由管理员维护。
+    """
     raw = payload.get("networks")
     if isinstance(raw, str):
         networks = [raw] if raw.strip() else None
@@ -696,6 +757,81 @@ def leases(
     ]
 
 
+@router.post("/leases/apply")
+def web_lease_apply(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """Web 人工申请设备：形成正常 lease，Agent 无法抢走已占用设备。"""
+    device_id = str(payload.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id 必填")
+    purpose_raw = payload.get("purpose")
+    purpose = (
+        str(purpose_raw).strip()
+        if purpose_raw is not None and str(purpose_raw).strip()
+        else "人工测试"
+    )
+    raw_mins = payload.get("expected_minutes", 120)
+    try:
+        expected_minutes = int(120 if raw_mins is None else raw_mins)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="expected_minutes 必须为整数")
+    if expected_minutes < 1 or expected_minutes > 1440:
+        raise HTTPException(status_code=400, detail="expected_minutes 需在 1~1440 之间")
+
+    auth = _web_auth_context(session, identity)
+    agent_info = f"WebUI/{identity.name or identity.email}"
+    try:
+        return leasing.apply(
+            session,
+            auth,
+            device_id=device_id,
+            purpose=purpose,
+            expected_minutes=expected_minutes,
+            agent_info=agent_info,
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/leases/{lease_id}/release")
+def web_lease_release(
+    lease_id: str,
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """Web 释放自己的租约（admin 也可代释）。"""
+    auth = _web_auth_context(session, identity)
+    try:
+        return leasing.release(session, auth, lease_id)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/leases/{lease_id}/renew")
+def web_lease_renew(
+    lease_id: str,
+    payload: dict | None = Body(None),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """Web 续租自己的租约。"""
+    raw = (payload or {}).get("extra_minutes", 30)
+    try:
+        extra_minutes = int(30 if raw is None else raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="extra_minutes 必须为整数")
+    if extra_minutes < 1 or extra_minutes > 1440:
+        raise HTTPException(status_code=400, detail="extra_minutes 需在 1~1440 之间")
+    auth = _web_auth_context(session, identity)
+    try:
+        return leasing.renew(session, auth, lease_id, extra_minutes=extra_minutes)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
 @router.post("/leases/{lease_id}/force-release")
 def force_release(
     lease_id: str,
@@ -703,8 +839,6 @@ def force_release(
     identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
     session: Session = Depends(get_session),
 ):
-    from app.security import AuthContext
-
     admin_principal = (
         session.query(Principal).filter(Principal.is_admin.is_(True)).first()
     )
@@ -753,6 +887,52 @@ def list_credentials(
         }
         for c in rows
     ]
+
+
+@router.post("/credentials/{credential_id}/role")
+def set_credential_role(
+    credential_id: int,
+    body: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    session: Session = Depends(get_session),
+):
+    """调整凭据 role（admin ↔ user）。
+
+    ``credential.role`` 在每次鉴权时读取（见本文件 login 路径 ``auth.credential.role`` 与
+    ``web_auth.optional_identity``），因此改完立即生效，无需重新登录、无需重新发 token。
+
+    自降级保护：禁止把当前登录会话对应的凭据降为 user，避免把自己锁死；
+    自升级或改别人的凭据不受此限。
+    """
+    role = (body or {}).get("role")
+    if (
+        credential_id == identity.credential_id
+        and str(role or "").strip().lower() == "user"
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "SELF_DEMOTE_FORBIDDEN",
+                "message": "不能降级当前登录凭据，请改用另一个管理员凭据操作",
+            },
+        )
+    try:
+        return credentials.set_credential_role(
+            session, credential_id, role, actor=identity.email
+        )
+    except catalog.DomainError as e:
+        if e.code == "BAD_ROLE":
+            status = 400
+        elif e.code == "NOT_FOUND":
+            status = 404
+        elif e.code == "CREDENTIAL_REVOKED":
+            status = 409
+        else:
+            status = 400
+        raise HTTPException(
+            status_code=status,
+            detail={"code": e.code, "message": e.message, "detail": e.detail},
+        )
 
 
 @router.post("/credentials/{credential_id}/revoke")
@@ -2028,7 +2208,7 @@ def send_credentials(
 # ---- v0.25：编译服务器（账号级私有，一账号一台，自助配置 + 自动探测）----
 def _domain_http(exc: DomainError) -> HTTPException:
     code = getattr(exc, "code", "")
-    if code in ("FORBIDDEN", "ACCESS_DENIED"):
+    if code in ("FORBIDDEN", "ACCESS_DENIED", "ADB_NOT_ALLOWED"):
         status = 403
     elif code == "NOT_FOUND":
         status = 404
@@ -2037,6 +2217,7 @@ def _domain_http(exc: DomainError) -> HTTPException:
         "BUILD_SERVER_IN_USE",
         "BUILD_SERVER_ALREADY_EXISTS",
         "HAS_ACTIVE_LEASE",
+        "ADB_CONFIRM_REQUIRED",
     ):
         status = 409
     else:
@@ -2235,7 +2416,8 @@ def post_serial_action(
     if not action_key:
         raise HTTPException(status_code=400, detail="action_key 必填")
     try:
-        _require_serial_lease(session, identity, device_id, action_key, bool(payload.get("confirm")))
+        confirm = bool(payload.get("confirm"))
+        _require_serial_lease(session, identity, device_id, action_key, confirm)
         return serial_svc.run_action(
             session,
             device_id,
@@ -2245,6 +2427,33 @@ def post_serial_action(
             hold_ms=payload.get("hold_ms"),
             wait_ms=payload.get("wait_ms"),
             dry_run=bool(payload.get("dry_run")),
+            confirm=confirm,
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/devices/{device_id}/adb/exec")
+def post_adb_exec(
+    device_id: str,
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """人工调试：adb connect + adb shell <command>（破坏性命令需 confirm=true）。"""
+    from app.domain import adb_exec as adb_exec_svc
+
+    command = str(payload.get("command") or "")
+    try:
+        return adb_exec_svc.exec_shell(
+            session,
+            device_id,
+            command=command,
+            timeout_ms=payload.get("timeout_ms"),
+            confirm=bool(payload.get("confirm")),
+            by=f"web:{identity.email}",
+            email=identity.email,
+            is_admin=(identity.role == "admin"),
         )
     except DomainError as e:
         raise _domain_http(e)

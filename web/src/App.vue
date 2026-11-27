@@ -1,19 +1,65 @@
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ref, reactive, computed, watch, onMounted, h } from 'vue'
+import { ElMessage, ElMessageBox, ElInput, ElSelect, ElOption } from 'element-plus'
+import {
+  SLOT_MAX as PR_SLOT_MAX,
+  collectModelClasses,
+  aggregatePowerBoundCounts,
+  filterBindTargets,
+} from './powerresBindTargets.js'
 
 const pages = [
   { key: 'devices', label: '设备中心' },
   { key: 'scheduling', label: '资源调度' },
   { key: 'onboarding', label: '接入申请', admin: true },
   { key: 'credentials', label: '凭据' },
-  { key: 'wirelog', label: 'COMRes' },
+  { key: 'ctrlres', label: 'CtrlRes' },
   { key: 'settings', label: '设置' },
 ]
 const active = ref('devices')
 const LEGACY_BOARD_KEYS = new Set(['dashboard', 'board', '看板'])
+/** PT3b：设备独立详情页 #/device/{id} */
+const devicePageId = ref('')
+const devicePage = ref(null)          // GET /api/devices/{id}
+const devicePageLoading = ref(false)
+const devicePageError = ref('')       // 404 / 网络等
+const deviceCaps = ref({ enabled: true, items: [], revision: 0 })
+const deviceCapsLoading = ref(false)
+const deviceSerial = ref(null)        // GET /api/devices/{id}/serial
+const deviceSerialLoading = ref(false)
+const devicePowerBindings = ref([])   // 本设备电源绑定行
+const devicePowerLoading = ref(false)
+const devicePowerAlert = ref('')      // 解绑成功等提示
+/** PT4a：详情页节点归属 / 可绑定通道 */
+const devicePowerNodeId = ref('')           // 推断或手选的 node_id
+const devicePowerNodeSource = ref('')       // serial | binding | manual | ''
+const devicePowerNodePicking = ref(false)   // 显示节点下拉（强制选 / 重新选择）
+const devicePowerInventory = ref([])        // 当前节点 inventory
+const devicePowerInvLoading = ref(false)
+const devicePowerBindBusy = ref('')         // 绑定中行键 power_dev::channel
+const devicePowerCandOpen = ref(['candidates']) // 可绑定区块默认展开
+const devicePowerConfigOpen = ref([]) // 电源配置默认折叠（仅 admin）
+const deviceActionBusy = reactive({}) // actionKey|bindingKey → bool
+const deviceActionFail = reactive({}) // key → { phase, code, message }
+const deviceHoldMs = ref(3000)
+/** PT10a：ADB 卡内调试区（切设备清空） */
+const adbPanelOpen = ref(false)
+const adbCmd = ref('')
+const adbOut = ref(null) // { result, rc, stdout, stderr, duration_ms, truncated }
+const adbBusy = ref(false)
+const adbErr = ref('')
+const ADB_QUICK_CMDS = [
+  { label: 'id', cmd: 'id' },
+  { label: 'model', cmd: 'getprop ro.product.model' },
+  { label: 'battery', cmd: 'dumpsys battery' },
+]
+/** PT6a：设备中心列表「电源」popover 缓存（按设备只拉一次 capabilities） */
+const listPowerCapsCache = reactive({})   // device_id → { items, loading, error, loaded }
+const listPowerHoldMs = ref(3000)
 const settingsTab = ref('system')
 const schedulingTab = ref('leases')
+/** CtrlRes 卡片：comres | powerres；默认 COMRes */
+const ctrlresCard = ref('comres')
 /** COMRes 子页签：nodes | pool | settings；默认节点视图 */
 const comresTab = ref('nodes')
 const COMRES_TABS = [
@@ -876,7 +922,7 @@ function apiErrorDetail(j, status) {
   if (d == null) return String(status)
   if (typeof d === 'string') return d
   if (typeof d === 'object') {
-    if (d.message) return d.message
+    if (d.message) return d.code ? (d.code + ': ' + d.message) : d.message
     if (d.detail && typeof d.detail === 'string') return d.detail
     try { return JSON.stringify(d) } catch (e) { return String(status) }
   }
@@ -887,14 +933,22 @@ async function api(path, opts) {
   const r = await fetch(apiUrl(path), { credentials: 'include', ...opts })
   if (!r.ok) {
     let detail = String(r.status)
+    let body = null
     try {
       const j = await r.json()
+      body = j
       detail = apiErrorDetail(j, r.status)
     } catch (e) { /* ignore */ }
     if (r.status === 401 && me.value && !path.startsWith('/api/auth/')) me.value = null
     const err = new Error(detail)
     err.status = r.status
     err.path = path
+    const d = body && body.detail
+    if (d && typeof d === 'object') {
+      err.code = d.code || null
+      err.detail = d.detail || null
+      err.apiMessage = d.message || null
+    }
     throw err
   }
   return r.json()
@@ -1126,19 +1180,92 @@ async function triggerPatrolNow() {
     await Promise.all([loadDashboard(), loadDevices()])
   } catch (e) { ElMessage.error(e.message) } finally { patrolBusy.value = false }
 }
+function syncCtrlresHash() {
+  if (active.value !== 'ctrlres') return
+  const want = ctrlresCard.value === 'powerres' ? '#/ctrlres?card=powerres' : '#/ctrlres'
+  if (String(window.location.hash || '') !== want) {
+    history.replaceState(null, '', window.location.pathname + window.location.search + want)
+  }
+}
+
+function loadComresForCurrentTab() {
+  if (comresTab.value === 'settings') {
+    loadPackages()
+    loadComresAuthSummary()
+  } else if (comresTab.value === 'pool') {
+    loadComresResources()
+  } else if (comresTab.value === 'bundles') {
+    loadComresBundles()
+  } else {
+    loadWlNodes()
+    loadComresResources()
+  }
+}
+
+function enterComRes() {
+  ctrlresCard.value = 'comres'
+  loadComresForCurrentTab()
+  syncCtrlresHash()
+}
+
+function onCtrlresCardChange(name) {
+  const card = name === 'powerres' ? 'powerres' : 'comres'
+  ctrlresCard.value = card
+  syncCtrlresHash()
+  if (card === 'powerres') enterPowerRes()
+  else enterComRes()
+}
+
+/** 解析 hash：board 遗留 → 设备中心；wirelog/powerres/ctrlres → CtrlRes 卡片；device/{id} → 详情 */
 function resolveLegacyRoute() {
   try {
-    const hash = String(window.location.hash || '').replace(/^#\/?/, '').split('?')[0]
+    const hashRaw = String(window.location.hash || '')
+    const withoutHash = hashRaw.replace(/^#\/?/, '')
+    const qIdx = withoutHash.indexOf('?')
+    const pathPart = qIdx >= 0 ? withoutHash.slice(0, qIdx) : withoutHash
+    const hashPath = pathPart.toLowerCase()
+    const qs = new URLSearchParams(qIdx >= 0 ? withoutHash.slice(qIdx + 1) : '')
     const path = String(window.location.pathname || '').replace(/^\//, '').split('/')[0]
-    const key = (hash || path || '').toLowerCase()
-    if (LEGACY_BOARD_KEYS.has(key) || LEGACY_BOARD_KEYS.has(hash) || LEGACY_BOARD_KEYS.has(path)) {
+    const key = (hashPath || path || '').toLowerCase()
+
+    // PT3b：#/device/{id}（保留原始大小写）
+    const deviceMatch = pathPart.match(/^device\/(.+)$/i)
+    if (deviceMatch) {
+      let id = deviceMatch[1] || ''
+      try { id = decodeURIComponent(id) } catch (e) { /* keep raw */ }
+      id = String(id || '').trim()
+      if (id) {
+        enterDevicePage(id)
+        return true
+      }
+    }
+
+    if (LEGACY_BOARD_KEYS.has(key) || LEGACY_BOARD_KEYS.has(hashPath) || LEGACY_BOARD_KEYS.has(path)) {
       if (window.location.hash && /board|dashboard/i.test(window.location.hash)) {
         history.replaceState(null, '', window.location.pathname + window.location.search)
       }
+      devicePageId.value = ''
       if (active.value !== 'devices') {
         switchPage('devices')
       } else {
         active.value = 'devices'
+      }
+      return true
+    }
+
+    // CtrlRes 深链 + 旧 hash 兼容：#/wirelog → COMRes；#/powerres → PowerRes；#/ctrlres?card=
+    if (hashPath === 'wirelog' || hashPath === 'powerres' || hashPath === 'ctrlres') {
+      let card = 'comres'
+      if (hashPath === 'powerres') card = 'powerres'
+      else if (hashPath === 'ctrlres' && qs.get('card') === 'powerres') card = 'powerres'
+      ctrlresCard.value = card
+      devicePageId.value = ''
+      if (active.value !== 'ctrlres') {
+        switchPage('ctrlres')
+      } else {
+        syncCtrlresHash()
+        if (card === 'powerres') enterPowerRes()
+        else enterComRes()
       }
       return true
     }
@@ -2151,6 +2278,1714 @@ async function openWlDetail(nodeId) {
 
 function closeWlDetail() { wlDetail.value = null; wlDetailId.value = null; wlDetailError.value = '' }
 
+// ---------------- PowerRes（电源通道绑定到被测设备） ----------------
+const prNodeId = ref('')
+const prNodes = ref([]) // overview：仅有 power 资源或绑定的节点
+const prItems = ref([])
+const prLoading = ref(false)
+const prError = ref('')
+const prUnsupported = ref(false) // 旧 TRES 无路由：404/405 降级
+const PR_UNSUPPORTED_HINT = '当前 TRES 版本不支持 PowerRes（需 0.54+），请升级后再使用'
+const PR_NO_NODES_HINT = '该 TRES 没有节点上报电源资源'
+const prBindDlg = reactive({
+  visible: false,
+  busy: false,
+  power_dev: '',
+  name: '',
+  com: '',
+  channel: null,
+  endpoint: '',
+  device_id: '',
+  label: '',
+  slot: '',
+  modelFilter: '',
+  keyword: '',
+  bindingsLoading: false,
+  location: '',
+  driver: '',
+})
+/** 当前节点 powerres bindings 按 device_id 聚合的已绑数 */
+const prBindPowerCounts = ref({})
+const prAddDlg = reactive({
+  visible: false,
+  busy: false,
+  node_id: '',
+  power_dev: '',
+  name: '',
+  com: '',
+  channel: '',
+  endpoint: '',
+  location: '',
+  driver: '',
+})
+
+const prBindModelOptions = computed(() => collectModelClasses(devices.value || []))
+
+const prDeviceOptions = computed(() => {
+  const list = devices.value || []
+  const slotUsed = Object.create(null)
+  for (const d of list) {
+    if (!d || !d.device_id) continue
+    const n = Number(d.serial_ports)
+    slotUsed[d.device_id] = Number.isFinite(n) && n >= 0 ? n : 0
+  }
+  return filterBindTargets(list, {
+    model: prBindDlg.modelFilter,
+    keyword: prBindDlg.keyword,
+    slotUsed,
+    powerBound: prBindPowerCounts.value,
+    slotMax: PR_SLOT_MAX,
+  })
+})
+
+const prStats = computed(() => {
+  const items = prItems.value || []
+  const devs = new Set()
+  let bound = 0
+  for (const it of items) {
+    if (it && it.power_dev) devs.add(it.power_dev)
+    if (prRowBound(it)) bound += 1
+  }
+  return { devices: devs.size, channels: items.length, bound }
+})
+
+function prIsUnsupportedStatus(status) {
+  return status === 404 || status === 405
+}
+
+function prNormalizeInventory(raw) {
+  // 后端 list_inventory 直接返回数组；兼容 {items|inventory: [...]} 兜底
+  if (Array.isArray(raw)) return raw
+  if (raw && Array.isArray(raw.items)) return raw.items
+  if (raw && Array.isArray(raw.inventory)) return raw.inventory
+  return []
+}
+
+function prRowBound(row) {
+  if (!row) return false
+  if (row.bound && typeof row.bound === 'object') return true
+  if (row.bound === true) return true
+  return !!(row.bound_device_id || (row.bound && row.bound.device_id))
+}
+
+function prBoundDeviceId(row) {
+  if (!row) return ''
+  if (row.bound && typeof row.bound === 'object') return row.bound.device_id || ''
+  return row.bound_device_id || ''
+}
+
+function prBoundSlot(row) {
+  if (!row) return null
+  if (row.bound && typeof row.bound === 'object') {
+    return row.bound.slot != null ? row.bound.slot : null
+  }
+  return row.bound_slot != null ? row.bound_slot : null
+}
+
+function prDeviceName(deviceId) {
+  if (!deviceId) return ''
+  const d = (devices.value || []).find((x) => x && x.device_id === deviceId)
+  return (d && (d.display_name || d.device_id)) || deviceId
+}
+
+function prBoundTargetText(row) {
+  if (!prRowBound(row)) return '-'
+  const did = prBoundDeviceId(row)
+  const slot = prBoundSlot(row)
+  const name = prDeviceName(did) || did || '?'
+  return slot != null ? (name + '(' + slot + ')') : name
+}
+
+// ---- PT5a：权限收紧 + location/driver 展示 -------------------------------
+
+function prIsAdmin() {
+  return !!(me.value && me.value.role === 'admin')
+}
+
+/** 绑定目标设备的占用者 email（对照 me.email） */
+function prBoundDeviceHolder(row) {
+  const did = prBoundDeviceId(row)
+  if (!did) return ''
+  const d = (devices.value || []).find((x) => x && x.device_id === did)
+  return (d && (d.holder_email || d.owner)) || ''
+}
+
+/** 非 admin 且绑定目标设备不归自己 → 电源动作按钮禁用（后端 check_access 兜底） */
+function prActionLeaseBlocked(row) {
+  if (!prRowBound(row)) return false
+  if (prIsAdmin()) return false
+  return prBoundDeviceHolder(row) !== (me.value && me.value.email)
+}
+
+/** 来源：driver + com 组合，如 bull-gn315 · COM29 */
+function prSourceText(row) {
+  if (!row) return ''
+  const parts = []
+  if (row.driver) parts.push(String(row.driver))
+  if (row.com) parts.push(String(row.com))
+  return parts.join(' · ')
+}
+
+function prLocationText(row) {
+  return (row && row.location) || '—'
+}
+
+/** 设备详情页电源卡：非 admin 且当前设备不归自己 → 电源动作禁用 */
+function devicePowerLeaseBlocked() {
+  if (prIsAdmin()) return false
+  const d = devicePage.value
+  const holder = (d && (d.holder_email || d.owner)) || ''
+  return holder !== (me.value && me.value.email)
+}
+
+/** 设备中心列表电源 popover：非 admin 且该行设备不归自己 → 动作禁用 */
+function listPowerLeaseBlocked(row) {
+  if (prIsAdmin()) return false
+  const holder = (row && (row.holder_email || row.owner)) || ''
+  return holder !== (me.value && me.value.email)
+}
+
+function listPowerN(row) {
+  const s = row && row.serial
+  if (!s || typeof s !== 'object') return null
+  const n = s.power_n
+  return (typeof n === 'number' && !Number.isNaN(n)) ? n : 0
+}
+
+function listPowerCache(deviceId) {
+  const id = String(deviceId || '')
+  if (!id) return { items: [], loading: false, error: '', loaded: false }
+  if (!listPowerCapsCache[id]) {
+    listPowerCapsCache[id] = { items: [], loading: false, error: '', loaded: false }
+  }
+  return listPowerCapsCache[id]
+}
+
+async function ensureListPowerCaps(deviceId) {
+  const id = String(deviceId || '').trim()
+  if (!id) return
+  const c = listPowerCache(id)
+  if (c.loaded || c.loading) return
+  c.loading = true
+  c.error = ''
+  try {
+    const raw = await api('/api/devices/' + encodeURIComponent(id) + '/capabilities')
+    const items = (raw && Array.isArray(raw.items))
+      ? raw.items.filter((it) => it && it.kind === 'power')
+      : []
+    c.items = items
+    c.loaded = true
+  } catch (e) {
+    c.error = String((e && e.message) || e)
+    c.items = []
+    c.loaded = true
+  } finally {
+    c.loading = false
+  }
+}
+
+function onListPowerPopoverShow(row) {
+  if (!row || !row.device_id) return
+  const n = listPowerN(row)
+  if (n == null || n === 0) return
+  ensureListPowerCaps(row.device_id)
+}
+
+function listPowerItemTitle(it) {
+  const name = (it && (it.display_name || it.label || it.name)) || '—'
+  let slot = null
+  if (it && it.binding && it.binding.slot != null) slot = it.binding.slot
+  else {
+    const m = String((it && it.id) || '').match(/slot(\d+)/i)
+    if (m) slot = m[1]
+  }
+  const ep = capEndpointText(it) || '—'
+  return name + ' · slot' + (slot != null ? slot : '?') + ' · ' + ep
+}
+
+async function doListCapPower(row, item, actionKey) {
+  const id = row && row.device_id
+  if (!id) return
+  const scope = 'list:' + id + ':' + ((item && item.id) || 'cap')
+  if (actionKey === 'power_cycle') {
+    try {
+      await ElMessageBox.confirm(
+        `确定对 ${id} 执行定时重启？\n断电保持间隔：${listPowerHoldMs.value || 3000} ms`,
+        '重启确认',
+        { type: 'warning', confirmButtonText: '重启', cancelButtonText: '取消' },
+      )
+    } catch (e) { return }
+  }
+  await runDeviceSerialAction(id, actionKey, { scope, hold_ms: listPowerHoldMs.value })
+}
+
+/** 行键：power_dev + channel（动作 loading / hold_ms / 失败相位） */
+function prRowKey(row) {
+  if (!row) return ''
+  return String(row.power_dev || '') + '::' + String(row.channel)
+}
+
+const prHoldMs = reactive({})       // rowKey → number
+const prActionBusy = reactive({})   // rowKey → bool
+const prActionFail = reactive({})   // rowKey → { phase, code, message } | null
+
+function prHoldFollowsHub(row) {
+  if (!row) return false
+  const v = row.restart_hold_ms
+  return v != null && v !== '' && Number.isFinite(Number(v))
+}
+
+function prGetHoldMs(row) {
+  // 已注册通道：跟随 hub 的 restart_hold_ms
+  if (prHoldFollowsHub(row)) return Number(row.restart_hold_ms)
+  const k = prRowKey(row)
+  const v = prHoldMs[k]
+  return (typeof v === 'number' && !Number.isNaN(v)) ? v : 3000
+}
+
+function prSetHoldMs(row, val) {
+  if (prHoldFollowsHub(row)) return
+  const k = prRowKey(row)
+  let n = Number(val)
+  if (!Number.isFinite(n)) n = 3000
+  if (n < 500) n = 500
+  if (n > 30000) n = 30000
+  prHoldMs[k] = n
+}
+
+/** 开关绑定值：仅 on/off 可切换；未知态返回 false 且禁用 */
+function prSwitchOn(row) {
+  return String((row && row.state) || '').toLowerCase() === 'on'
+}
+
+function prSwitchKnown(row) {
+  const st = String((row && row.state) || '').toLowerCase()
+  return st === 'on' || st === 'off'
+}
+
+function prIsActionBusy(row) {
+  return !!prActionBusy[prRowKey(row)]
+}
+
+function prFailPhase(row) {
+  const f = prActionFail[prRowKey(row)]
+  return f && f.phase ? f.phase : ''
+}
+
+function openPrDevicePage(deviceId) {
+  if (!deviceId) return
+  const want = '#/device/' + encodeURIComponent(deviceId)
+  if (String(window.location.hash || '') !== want) {
+    window.location.hash = want
+  } else {
+    enterDevicePage(deviceId)
+  }
+}
+/** @deprecated 兼容旧名；请用 openPrDevicePage */
+function openPrDevicePlaceholder(deviceId) {
+  openPrDevicePage(deviceId)
+}
+
+function syncDeviceHash(deviceId) {
+  const want = deviceId ? ('#/device/' + encodeURIComponent(deviceId)) : ''
+  if (!want) return
+  if (String(window.location.hash || '') !== want) {
+    history.replaceState(null, '', window.location.pathname + window.location.search + want)
+  }
+}
+
+function backToDeviceCenter() {
+  devicePageId.value = ''
+  devicePage.value = null
+  devicePageError.value = ''
+  const want = '#/dashboard'
+  if (String(window.location.hash || '') !== want) {
+    window.location.hash = want
+  } else {
+    switchPage('devices')
+  }
+}
+
+function goBindPowerRes() {
+  ctrlresCard.value = 'powerres'
+  const want = '#/ctrlres?card=powerres'
+  if (String(window.location.hash || '') !== want) {
+    window.location.hash = want
+  } else {
+    switchPage('ctrlres')
+  }
+}
+
+function resetAdbDebugState() {
+  adbPanelOpen.value = false
+  adbCmd.value = ''
+  adbOut.value = null
+  adbBusy.value = false
+  adbErr.value = ''
+}
+
+async function enterDevicePage(deviceId) {
+  const id = String(deviceId || '').trim()
+  if (!id) return
+  active.value = 'device'
+  devicePageId.value = id
+  resetAdbDebugState()
+  syncDeviceHash(id)
+  await refreshDevicePage()
+}
+
+async function refreshDevicePage() {
+  const id = devicePageId.value
+  if (!id) return
+  devicePageLoading.value = true
+  devicePageError.value = ''
+  devicePowerAlert.value = ''
+  try {
+    devicePage.value = await api('/api/devices/' + encodeURIComponent(id))
+  } catch (e) {
+    devicePage.value = null
+    devicePageError.value = (e && e.status === 404)
+      ? '设备不存在或已移除'
+      : String((e && e.message) || e)
+    deviceCaps.value = { enabled: true, items: [], revision: 0 }
+    deviceSerial.value = null
+    devicePowerBindings.value = []
+    devicePowerInventory.value = []
+    devicePowerNodeId.value = ''
+    devicePowerNodeSource.value = ''
+    devicePowerNodePicking.value = false
+    devicePageLoading.value = false
+    return
+  } finally {
+    devicePageLoading.value = false
+  }
+  await Promise.all([
+    loadDeviceCaps(),
+    loadDeviceSerial(),
+    loadDevicePowerBindings(),
+  ])
+  await resolveDevicePowerNodeAndInventory({ keepManual: false })
+}
+
+async function loadDeviceCaps() {
+  const id = devicePageId.value
+  if (!id) return
+  deviceCapsLoading.value = true
+  try {
+    const raw = await api('/api/devices/' + encodeURIComponent(id) + '/capabilities')
+    if (raw && raw.enabled === false) {
+      deviceCaps.value = { enabled: false, items: [], revision: 0 }
+    } else {
+      deviceCaps.value = {
+        enabled: true,
+        items: Array.isArray(raw && raw.items) ? raw.items : [],
+        revision: (raw && raw.revision) || 0,
+      }
+    }
+  } catch (e) {
+    deviceCaps.value = { enabled: true, items: [], revision: 0 }
+    if (e && e.status !== 404) ElMessage.error('能力：' + String(e.message || e))
+  } finally {
+    deviceCapsLoading.value = false
+  }
+}
+
+async function loadDeviceSerial() {
+  const id = devicePageId.value
+  if (!id) return
+  deviceSerialLoading.value = true
+  try {
+    deviceSerial.value = await api('/api/devices/' + encodeURIComponent(id) + '/serial')
+  } catch (e) {
+    deviceSerial.value = null
+    if (e && e.status !== 404) ElMessage.error('串口：' + String(e.message || e))
+  } finally {
+    deviceSerialLoading.value = false
+  }
+}
+
+async function loadDevicePowerBindings() {
+  const id = devicePageId.value
+  if (!id) return
+  devicePowerLoading.value = true
+  try {
+    let nodes = prNodes.value || []
+    if (!nodes.length) {
+      try {
+        const raw = await api('/api/powerres/overview')
+        nodes = (raw && Array.isArray(raw.nodes)) ? raw.nodes : []
+        prNodes.value = nodes
+      } catch (e) {
+        nodes = []
+      }
+    }
+    const out = []
+    await Promise.all(nodes.map(async (n) => {
+      try {
+        const rows = await api('/api/powerres/bindings?node_id=' + encodeURIComponent(n.node_id))
+        for (const b of (Array.isArray(rows) ? rows : [])) {
+          if (b && b.device_id === id) {
+            out.push({
+              ...b,
+              node_name: n.display_name || n.node_id,
+            })
+          }
+        }
+      } catch (e) { /* 单节点失败忽略 */ }
+    }))
+    out.sort((a, b) => String(a.power_dev || '').localeCompare(String(b.power_dev || ''))
+      || (Number(a.channel) - Number(b.channel)))
+    devicePowerBindings.value = out
+  } catch (e) {
+    devicePowerBindings.value = []
+  } finally {
+    devicePowerLoading.value = false
+  }
+}
+
+/**
+ * 从串口 caps 推断 node_id：ports[].node_id 或 enrich 后的 ports[].binding.node_id；
+ * 取非空出现次数最多者（并列取先出现的）。
+ */
+function inferNodeIdFromSerialPorts(serialPayload) {
+  const ports = serialPayload && Array.isArray(serialPayload.ports) ? serialPayload.ports : []
+  const counts = Object.create(null)
+  const order = []
+  for (const p of ports) {
+    if (!p) continue
+    let nid = p.node_id
+    if (!nid && p.binding && p.binding.node_id) nid = p.binding.node_id
+    nid = nid != null ? String(nid).trim() : ''
+    if (!nid) continue
+    if (!Object.prototype.hasOwnProperty.call(counts, nid)) {
+      counts[nid] = 0
+      order.push(nid)
+    }
+    counts[nid] += 1
+  }
+  if (!order.length) return ''
+  let best = order[0]
+  let bestN = counts[best]
+  for (let i = 1; i < order.length; i++) {
+    const id = order[i]
+    if (counts[id] > bestN) {
+      best = id
+      bestN = counts[id]
+    }
+  }
+  return best
+}
+
+function devicePowerNodeLabel(nodeId) {
+  const nid = String(nodeId || '').trim()
+  if (!nid) return ''
+  const nodes = prNodes.value || []
+  const hit = nodes.find((n) => n && n.node_id === nid)
+  if (hit) return hit.display_name || hit.node_id
+  const b = (devicePowerBindings.value || []).find((x) => x && x.node_id === nid)
+  if (b && b.node_name) return b.node_name
+  return nid
+}
+
+async function ensurePowerResOverviewNodes() {
+  let nodes = prNodes.value || []
+  if (nodes.length) return nodes
+  try {
+    const raw = await api('/api/powerres/overview')
+    nodes = (raw && Array.isArray(raw.nodes)) ? raw.nodes : []
+    prNodes.value = nodes
+  } catch (e) {
+    nodes = []
+  }
+  return nodes
+}
+
+/**
+ * 节点归属：① 串口 ports 众数 node_id → ② 本机 PowerRes binding → ③ 强制手选。
+ * keepManual：刷新时若用户已手选则保留。
+ */
+async function resolveDevicePowerNodeAndInventory(opts) {
+  const keepManual = !!(opts && opts.keepManual)
+  await ensurePowerResOverviewNodes()
+
+  if (keepManual && devicePowerNodeSource.value === 'manual' && devicePowerNodeId.value) {
+    devicePowerNodePicking.value = false
+    await loadDevicePowerInventory()
+    return
+  }
+
+  const fromSerial = inferNodeIdFromSerialPorts(deviceSerial.value)
+  if (fromSerial) {
+    devicePowerNodeId.value = fromSerial
+    devicePowerNodeSource.value = 'serial'
+    devicePowerNodePicking.value = false
+    await loadDevicePowerInventory()
+    return
+  }
+
+  const binds = devicePowerBindings.value || []
+  if (binds.length && binds[0].node_id) {
+    devicePowerNodeId.value = String(binds[0].node_id)
+    devicePowerNodeSource.value = 'binding'
+    devicePowerNodePicking.value = false
+    await loadDevicePowerInventory()
+    return
+  }
+
+  // 无推断 → 强制手选
+  devicePowerNodeId.value = ''
+  devicePowerNodeSource.value = ''
+  devicePowerNodePicking.value = true
+  devicePowerInventory.value = []
+}
+
+async function loadDevicePowerInventory() {
+  const nid = String(devicePowerNodeId.value || '').trim()
+  if (!nid) {
+    devicePowerInventory.value = []
+    return
+  }
+  devicePowerInvLoading.value = true
+  try {
+    const raw = await api('/api/powerres/inventory?node_id=' + encodeURIComponent(nid))
+    devicePowerInventory.value = prNormalizeInventory(raw)
+  } catch (e) {
+    devicePowerInventory.value = []
+    if (e && e.status !== 404) {
+      ElMessage.error('电源通道：' + String((e && e.message) || e))
+    }
+  } finally {
+    devicePowerInvLoading.value = false
+  }
+}
+
+async function refreshDevicePowerCard() {
+  await loadDevicePowerBindings()
+  await resolveDevicePowerNodeAndInventory({ keepManual: true })
+}
+
+function onDevicePowerNodePick(nid) {
+  const id = String(nid || '').trim()
+  devicePowerNodeId.value = id
+  devicePowerNodeSource.value = id ? 'manual' : ''
+  devicePowerNodePicking.value = !id
+  if (id) loadDevicePowerInventory()
+  else devicePowerInventory.value = []
+}
+
+function startDevicePowerNodeReselect() {
+  devicePowerNodePicking.value = true
+  ensurePowerResOverviewNodes()
+}
+
+const deviceCapsByKind = computed(() => {
+  const items = (deviceCaps.value && deviceCaps.value.items) || []
+  const order = ['adb', 'serial.io', 'power', 'mode']
+  const groups = {}
+  for (const k of order) groups[k] = []
+  for (const it of items) {
+    const k = (it && it.kind) || 'other'
+    if (!groups[k]) groups[k] = []
+    groups[k].push(it)
+  }
+  return order.filter((k) => (groups[k] || []).length).map((k) => ({
+    kind: k,
+    label: ({ adb: 'ADB', 'serial.io': '串口', power: '电源', mode: '模式' })[k] || k,
+    items: groups[k],
+  }))
+})
+
+/** 设备页能力区扁平顺序：ADB → 串口 → 电源（mode 排最后） */
+const deviceCapsFlat = computed(() => {
+  const items = (deviceCaps.value && deviceCaps.value.items) || []
+  const order = { adb: 0, 'serial.io': 1, power: 2, mode: 3 }
+  return items.slice().sort((a, b) => {
+    const ka = order[(a && a.kind)] != null ? order[a.kind] : 9
+    const kb = order[(b && b.kind)] != null ? order[b.kind] : 9
+    return ka - kb
+  })
+})
+
+const deviceSerialPorts = computed(() => {
+  const ports = deviceSerial.value && deviceSerial.value.ports
+  return Array.isArray(ports) ? ports : []
+})
+
+/** 非 admin：电源绑定只读摘要 */
+const devicePowerBindSummary = computed(() => {
+  const rows = devicePowerBindings.value || []
+  if (!rows.length) return '未绑定电源通道'
+  const parts = rows.map((r) => {
+    const name = (r.power_dev || '?') + ' CH' + r.channel
+    const loc = r.location ? ('（' + r.location + '）') : ''
+    return name + loc
+  })
+  return '已绑定 ' + rows.length + ' 路：' + parts.join('；')
+})
+
+/** 头栏/电源卡展示用节点名（优先当前选中节点） */
+const devicePageNodeName = computed(() => {
+  if (devicePowerNodeId.value) return devicePowerNodeLabel(devicePowerNodeId.value)
+  const b = (devicePowerBindings.value || [])[0]
+  if (b && b.node_name) return b.node_name
+  const items = (deviceCaps.value && deviceCaps.value.items) || []
+  for (const it of items) {
+    if (it && it.binding && it.binding.node_id) {
+      return devicePowerNodeLabel(it.binding.node_id) || it.binding.node_id
+    }
+  }
+  return ''
+})
+
+/** 可绑定通道：未绑本机（未绑优先，其次已绑他机） */
+const devicePowerCandidates = computed(() => {
+  const id = devicePageId.value
+  const rows = (devicePowerInventory.value || []).filter((row) => {
+    const bid = prBoundDeviceId(row)
+    return !bid || bid !== id
+  })
+  rows.sort((a, b) => {
+    const aBound = !!prBoundDeviceId(a)
+    const bBound = !!prBoundDeviceId(b)
+    if (aBound !== bBound) return aBound ? 1 : -1
+    const pd = String(a.power_dev || '').localeCompare(String(b.power_dev || ''))
+    if (pd) return pd
+    return Number(a.channel) - Number(b.channel)
+  })
+  return rows
+})
+
+/** 本机无绑定且节点下无任何 inventory → 空态 */
+const devicePowerFullEmpty = computed(() => {
+  if (!devicePowerNodeId.value) return false
+  if ((devicePowerBindings.value || []).length) return false
+  return !(devicePowerInventory.value || []).length
+})
+
+function devicePageIp(dev) {
+  if (!dev) return '—'
+  if (dev.ip) return dev.ip
+  const adb = String(dev.adb_address || '')
+  const m = adb.match(/^([^:]+):/)
+  return m ? m[1] : '—'
+}
+
+function capStatusTagType(item) {
+  const reasons = (item && item.status_reasons) || []
+  if (reasons.includes('NO_BINDING')) return 'warning'
+  const st = item && item.status
+  if (st === 'available' || st === 'ready') return 'success'
+  if (st === 'degraded') return 'warning'
+  return 'info'
+}
+
+function capStatusLabel(item) {
+  if (!item) return '—'
+  if (item.status_label) return item.status_label
+  const reasons = item.status_reasons || []
+  if (reasons.includes('NO_BINDING')) return 'NO_BINDING'
+  if (reasons.includes('DISABLED')) return 'disabled'
+  return item.status || reasons[0] || '—'
+}
+
+function capEndpointText(item) {
+  const t = item && item.transport
+  const b = item && item.binding
+  return (t && t.endpoint) || (b && b.endpoint) || (t && t.port_name) || (b && b.com) || ''
+}
+
+function capKindLabel(kind) {
+  return ({ adb: 'ADB', 'serial.io': '串口', power: '电源', mode: '模式' })[kind] || kind || '—'
+}
+
+function capSourceLabel(item) {
+  const src = item && item.source
+  if (src === 'observed') return '端口目录观测'
+  if (src === 'powerres') return 'PowerRes'
+  if (src === 'declared') return '声明端口'
+  if (src === 'auto-bound') return '自动绑定'
+  return src || '声明端口'
+}
+
+function capConstraintText(item) {
+  const c = (item && item.constraints) || {}
+  const parts = []
+  if (c.read_only) parts.push('只读')
+  if (c.shared_endpoint || c.shared) parts.push('共享')
+  const src = capSourceLabel(item)
+  if (src) parts.push(src)
+  return parts.join(' / ') || '—'
+}
+
+function capConstraintOnly(item) {
+  const c = (item && item.constraints) || {}
+  const parts = []
+  if (c.read_only) parts.push('只读')
+  if (c.shared_endpoint || c.shared) parts.push('共享')
+  return parts.join(' / ')
+}
+
+function capHealthText(item) {
+  const h = item && item.health
+  if (!h) return ''
+  return h.state || ''
+}
+
+function capMatchSerialPort(item) {
+  const ports = deviceSerialPorts.value || []
+  if (!ports.length || !item) return null
+  const ep = String(capEndpointText(item) || '').toLowerCase()
+  const slot = item.binding && item.binding.slot
+  const com = (item.binding && (item.binding.com || item.binding.com_key)) || ''
+  return ports.find((p) => {
+    if (slot != null && p.slot === slot) return true
+    if (ep && String(p.endpoint || p.port_name || '').toLowerCase() === ep) return true
+    if (com && String(p.port_name || p.com || '').toLowerCase() === String(com).toLowerCase()) return true
+    return false
+  }) || null
+}
+
+function capHolderText(item) {
+  const busy = deviceSerial.value && deviceSerial.value.busy
+  if (!busy) return ''
+  const port = capMatchSerialPort(item)
+  const slot = (item && item.binding && item.binding.slot != null)
+    ? item.binding.slot
+    : (port && port.slot)
+  if (slot == null || busy.slot !== slot) return ''
+  return busy.holder || busy.held_by || 'busy'
+}
+
+function capActionsEnabled(item) {
+  const st = item && item.status
+  return st === 'available' || st === 'degraded' || st === 'ready'
+}
+
+function capPowerMeta(item) {
+  const b = (item && item.binding) || {}
+  const ep = capEndpointText(item)
+  const binds = devicePowerBindings.value || []
+  let row = binds.find((x) => ep && String(x.endpoint || '') === String(ep)) || null
+  if (!row && (b.power_dev != null || b.channel != null)) {
+    row = binds.find((x) =>
+      String(x.power_dev || '') === String(b.power_dev || '')
+      && Number(x.channel) === Number(b.channel),
+    ) || null
+  }
+  const inv = devicePowerInventory.value || []
+  let invRow = null
+  if (ep) invRow = inv.find((x) => String(x.endpoint || '') === String(ep)) || null
+  if (!invRow && (b.power_dev != null || (row && row.power_dev != null))) {
+    const pd = (row && row.power_dev) || b.power_dev
+    const ch = (row && row.channel) != null ? row.channel : b.channel
+    invRow = inv.find((x) =>
+      String(x.power_dev || '') === String(pd || '')
+      && Number(x.channel) === Number(ch),
+    ) || null
+  }
+  const powerDev = (row && row.power_dev) || b.power_dev || (invRow && invRow.power_dev) || ''
+  const channel = (row && row.channel != null) ? row.channel
+    : (b.channel != null ? b.channel : (invRow && invRow.channel))
+  return {
+    power_dev: powerDev,
+    channel,
+    slot: (row && row.slot != null) ? row.slot : (b.slot != null ? b.slot : null),
+    location: (row && row.location) || (invRow && invRow.location) || '',
+    source: prSourceText(row || invRow || { driver: null, com: b.com }) || (b.source || ''),
+    enabled: row ? row.enabled !== false : (invRow && invRow.enabled != null ? invRow.enabled !== false : null),
+    label: (row && row.label) || item.label || '',
+    restart_hold_ms: (item && item.restart_hold_ms != null) ? item.restart_hold_ms
+      : (row && row.restart_hold_ms != null) ? row.restart_hold_ms
+        : (invRow && invRow.restart_hold_ms != null) ? invRow.restart_hold_ms : null,
+  }
+}
+
+function capRestartHoldMs(item) {
+  const meta = capPowerMeta(item)
+  if (meta.restart_hold_ms == null || meta.restart_hold_ms === '') return null
+  const n = Number(meta.restart_hold_ms)
+  return Number.isFinite(n) ? n : null
+}
+
+function capRestartHoldText(item) {
+  const n = capRestartHoldMs(item)
+  return n == null ? '—' : (n + ' ms·跟随端侧')
+}
+
+function capSerialConsoleTarget(item) {
+  const b = (item && item.binding) || {}
+  const ep = capEndpointText(item)
+  if (b.node_id && b.slot != null) {
+    return {
+      mode: 'wl',
+      row: {
+        node_id: b.node_id,
+        slot: b.slot,
+        com: b.com || b.com_key,
+        com_name: b.com || b.com_key,
+        tty: b.com || b.com_key || '',
+        endpoint: b.endpoint || ep,
+        shell_reachable: true,
+      },
+    }
+  }
+  if (b.node_id && ep) {
+    return {
+      mode: 'port',
+      row: {
+        node_id: b.node_id,
+        slot: b.slot,
+        endpoint: ep,
+        com: b.com || b.com_key,
+      },
+    }
+  }
+  const port = capMatchSerialPort(item)
+  if (port && port.node_id && port.slot != null) {
+    return {
+      mode: 'wl',
+      row: {
+        node_id: port.node_id,
+        slot: port.slot,
+        com: port.port_name || port.com,
+        endpoint: port.endpoint || ep,
+        shell_reachable: true,
+      },
+    }
+  }
+  if (port && port.node_id && (port.endpoint || ep)) {
+    return {
+      mode: 'port',
+      row: {
+        node_id: port.node_id,
+        slot: port.slot,
+        endpoint: port.endpoint || ep,
+        com: port.port_name || port.com,
+      },
+    }
+  }
+  return null
+}
+
+function openCapSerialConsole(item) {
+  const target = capSerialConsoleTarget(item)
+  if (!target) {
+    ElMessage.warning('该端口未绑定节点')
+    return
+  }
+  if (target.mode === 'wl') openWlShell(target.row)
+  else openPortConsole(target.row)
+}
+
+function capKindActions(item) {
+  return Array.isArray(item && item.actions) ? item.actions.filter((a) => a && a.enabled !== false) : []
+}
+
+function isPowerActionKey(key) {
+  return key === 'power_on' || key === 'power_off' || key === 'power_cycle'
+}
+
+function deviceActionKey(scope, key) {
+  return String(scope || '') + '|' + String(key || '')
+}
+
+function deviceIsActionBusy(scope, key) {
+  return !!deviceActionBusy[deviceActionKey(scope, key)] || !!deviceActionBusy[deviceActionKey(scope, '*')]
+}
+
+function deviceFailPhase(scope, key) {
+  const f = deviceActionFail[deviceActionKey(scope, key)] || deviceActionFail[deviceActionKey(scope, '*')]
+  return f && f.phase ? f.phase : ''
+}
+
+async function runDeviceSerialAction(deviceId, actionKey, opts) {
+  const scope = (opts && opts.scope) || actionKey
+  const busyKey = deviceActionKey(scope, '*')
+  if (deviceActionBusy[busyKey]) return
+  const holdMs = (opts && opts.hold_ms != null) ? Number(opts.hold_ms) : Number(deviceHoldMs.value) || 3000
+  const body = {
+    action_key: actionKey,
+    wait_ms: 3000,
+    dry_run: false,
+  }
+  // power_off / power_cycle 强制 confirm；power_on 不带（断电残窗可立刻补偿）
+  if (actionKey === 'power_off' || actionKey === 'power_cycle' || actionKey === 'mode_edl') {
+    body.confirm = true
+  }
+  if (actionKey === 'power_cycle') body.hold_ms = holdMs
+  deviceActionBusy[busyKey] = true
+  deviceActionFail[busyKey] = null
+  try {
+    const out = await api('/api/devices/' + encodeURIComponent(deviceId) + '/serial/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (out && out.result === 'fail') {
+      const phase = out.phase || ''
+      const code = out.error_code || out.code || ''
+      const msg = out.error || out.message || '动作失败'
+      deviceActionFail[busyKey] = { phase, code, message: msg }
+      let tip = (code ? code + ': ' : '') + msg
+      if (phase === 'power_off') tip = '关机指令失败，设备可能仍通电。' + tip
+      if (phase === 'power_on') tip = '重启中途失败：设备可能处于断电；请立即点「补偿开」。' + tip
+      ElMessage.error(tip)
+      return
+    }
+    ElMessage.success(
+      actionKey === 'power_on' ? '已开'
+        : actionKey === 'power_off' ? '已关'
+          : actionKey === 'power_cycle' ? ('已重启（间隔 ' + holdMs + ' ms）')
+            : ((opts && opts.okText) || '动作成功'),
+    )
+    try { await loadDeviceSerial() } catch (e) { /* ignore */ }
+    try { await loadDeviceCaps() } catch (e) { /* ignore */ }
+  } catch (e) {
+    if (e === 'cancel' || (e && e.message === 'cancel')) return
+    const code = (e && e.code) || ''
+    let tip = String((e && e.message) || e)
+    if (code === 'SERIAL_BUSY') {
+      const holder = e.detail && (e.detail.holder || e.detail.held_by)
+      tip = holder ? ('通道被 ' + holder + ' 占用') : ('SERIAL_BUSY：' + tip)
+    } else if (code === 'POWER_DISABLED') {
+      tip = '该通道已停用'
+    } else if (code === 'CONFIRM_REQUIRED') {
+      tip = '需要确认'
+    }
+    deviceActionFail[busyKey] = { phase: '', code, message: tip }
+    ElMessage.error(tip)
+  } finally {
+    deviceActionBusy[busyKey] = false
+  }
+}
+
+async function doDeviceCapPower(item, actionKey) {
+  const id = devicePageId.value
+  if (!id) return
+  const scope = (item && item.id) || 'cap'
+  const holdMs = capRestartHoldMs(item)
+  const holdForAction = holdMs != null ? holdMs : (Number(deviceHoldMs.value) || 3000)
+  if (actionKey === 'power_cycle') {
+    try {
+      await ElMessageBox.confirm(
+        `确定对 ${id} 执行定时重启？\n断电保持间隔：${holdForAction} ms` + (holdMs != null ? '（跟随端侧）' : ''),
+        '重启确认',
+        { type: 'warning', confirmButtonText: '重启', cancelButtonText: '取消' },
+      )
+    } catch (e) { return }
+  }
+  await runDeviceSerialAction(id, actionKey, { scope, hold_ms: holdForAction })
+}
+
+async function doDeviceCapAction(item, action) {
+  const id = devicePageId.value
+  if (!id || !action) return
+  const key = action.action_key
+  if (isPowerActionKey(key)) {
+    await doDeviceCapPower(item, key)
+    return
+  }
+  if (key === 'adb_shell' || (action && action.exec_mode === 'adb_exec') || (item && item.kind === 'adb')) {
+    adbPanelOpen.value = true
+    return
+  }
+  await runDeviceSerialAction(id, key, {
+    scope: (item && item.id) || key,
+    okText: action.display_name || key,
+  })
+}
+
+function setAdbQuickCmd(cmd) {
+  adbCmd.value = cmd
+}
+
+async function runDeviceAdbExec(opts) {
+  const id = devicePageId.value
+  const command = String((opts && opts.command != null) ? opts.command : adbCmd.value || '').trim()
+  if (!id || !command) {
+    ElMessage.warning('请输入 ADB 命令')
+    return
+  }
+  if (adbBusy.value) return
+  adbBusy.value = true
+  adbErr.value = ''
+  try {
+    const body = { command }
+    if (opts && opts.confirm) body.confirm = true
+    if (opts && opts.timeout_ms != null) body.timeout_ms = opts.timeout_ms
+    const out = await api('/api/devices/' + encodeURIComponent(id) + '/adb/exec', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    adbOut.value = out || null
+    if (out && out.result === 'fail') {
+      ElMessage.error((out.error_code || out.code || 'ADB') + ': ' + (out.error || out.message || '执行失败'))
+    }
+  } catch (e) {
+    if (e === 'cancel' || (e && e.message === 'cancel')) return
+    const code = (e && e.code) || ''
+    if (code === 'ADB_CONFIRM_REQUIRED') {
+      try {
+        await ElMessageBox.confirm(
+          '该命令可能有破坏性，确认在设备上执行？\n' + command,
+          'ADB 二次确认',
+          { type: 'warning', confirmButtonText: '确认执行', cancelButtonText: '取消' },
+        )
+      } catch (ce) { return }
+      adbBusy.value = false
+      await runDeviceAdbExec({ command, confirm: true, timeout_ms: opts && opts.timeout_ms })
+      return
+    }
+    if (code === 'ADB_NOT_ALLOWED' || (e && e.status === 403)) {
+      adbErr.value = '需 admin 或设备租约'
+      ElMessage.error('需 admin 或设备租约')
+      return
+    }
+    adbErr.value = String((e && e.message) || e)
+    ElMessage.error(adbErr.value)
+  } finally {
+    adbBusy.value = false
+  }
+}
+
+function onAdbCmdEnter() {
+  runDeviceAdbExec({ command: adbCmd.value })
+}
+
+async function doDevicePowerBindingAction(row, actionKey) {
+  const id = devicePageId.value || (row && row.device_id)
+  if (!id || !row) return
+  const scope = 'pwr:' + (row.node_id || '') + ':' + (row.power_dev || '') + ':' + (row.channel || '')
+  if (actionKey === 'power_cycle') {
+    try {
+      await ElMessageBox.confirm(
+        `确定对 ${row.power_dev} CH${row.channel} 执行定时重启？\n断电保持间隔：${deviceHoldMs.value || 3000} ms`,
+        '重启确认',
+        { type: 'warning', confirmButtonText: '重启', cancelButtonText: '取消' },
+      )
+    } catch (e) { return }
+  }
+  await runDeviceSerialAction(id, actionKey, { scope, hold_ms: deviceHoldMs.value })
+}
+
+async function doDevicePowerUnbind(row) {
+  if (!row || !row.node_id) return
+  try {
+    await ElMessageBox.confirm(
+      `确定解绑 ${row.power_dev} CH${row.channel}？`,
+      '解绑确认',
+      { type: 'warning' },
+    )
+  } catch (e) { return }
+  try {
+    await api('/api/powerres/unbind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        node_id: row.node_id,
+        power_dev: row.power_dev,
+        channel: row.channel,
+      }),
+    })
+    devicePowerAlert.value = `已解绑 ${row.power_dev} CH${row.channel}`
+    ElMessage.success('已解绑')
+    await loadDeviceCaps()
+    await loadDeviceSerial()
+    await refreshDevicePowerCard()
+  } catch (e) {
+    if (e === 'cancel' || (e && e.message === 'cancel')) return
+    ElMessage.error(String((e && e.message) || e))
+  }
+}
+
+function devicePowerCandRowKey(row) {
+  if (!row) return ''
+  return String(row.power_dev || '') + '::' + String(row.channel)
+}
+
+async function doDevicePowerBind(row) {
+  const deviceId = devicePageId.value
+  const nodeId = String(devicePowerNodeId.value || '').trim()
+  if (!deviceId) return
+  if (!nodeId) {
+    ElMessage.warning('请先选择设备所在节点')
+    devicePowerNodePicking.value = true
+    return
+  }
+  if (!row || !row.power_dev || row.channel == null) return
+  const endpoint = row.endpoint != null ? String(row.endpoint).trim() : ''
+  if (!endpoint) {
+    ElMessage.warning('该通道端点缺失，请在 PowerRes 卡片补登记')
+    return
+  }
+  const otherId = prBoundDeviceId(row)
+  const otherName = otherId ? (prDeviceName(otherId) || otherId) : ''
+  const ch = row.channel
+  try {
+    if (otherId && otherId !== deviceId) {
+      await ElMessageBox.confirm(
+        `确定将 ${row.power_dev} CH${ch} 绑定到本设备？\n` +
+          `该通道当前绑定的设备（${otherName}）将失去远程控电能力。`,
+        '抢绑确认',
+        { type: 'warning', confirmButtonText: '仍要绑定', cancelButtonText: '取消' },
+      )
+    } else {
+      await ElMessageBox.confirm(
+        `确定将 ${row.power_dev} CH${ch} 绑定到本设备？`,
+        '绑定确认',
+        { type: 'info', confirmButtonText: '绑定', cancelButtonText: '取消' },
+      )
+    }
+  } catch (e) { return }
+
+  const busyKey = devicePowerCandRowKey(row)
+  devicePowerBindBusy.value = busyKey
+  try {
+    await api('/api/powerres/bind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        node_id: nodeId,
+        power_dev: row.power_dev,
+        channel: row.channel,
+        endpoint,
+        device_id: deviceId,
+        // slot 省略：后端 _allocate_slot
+      }),
+    })
+    ElMessage.success('已绑定 CH' + ch)
+    devicePowerAlert.value = `已绑定 ${row.power_dev} CH${ch}`
+    await loadDeviceCaps()
+    await loadDeviceSerial()
+    await refreshDevicePowerCard()
+  } catch (e) {
+    if (e === 'cancel' || (e && e.message === 'cancel')) return
+    const code = (e && e.code) || ''
+    if (code === 'POWERRES_NO_SLOT') {
+      ElMessage.error('POWERRES_NO_SLOT: 该设备已达 16 个串口上限')
+    } else {
+      const msg = String((e && e.message) || e)
+      ElMessage.error(code ? (code + ': ' + msg) : msg)
+    }
+  } finally {
+    devicePowerBindBusy.value = ''
+  }
+}
+
+function openDevicePageFromList(row) {
+  if (!row || !row.device_id) return
+  openPrDevicePage(row.device_id)
+}
+
+function prBindingEnabled(row) {
+  if (!row) return true
+  if (row.enabled === false) return false
+  if (row.bound && typeof row.bound === 'object' && row.bound.enabled === false) return false
+  return true
+}
+
+/** PT7a：管理员通道级动作（未绑定也可直控；已绑定受 enabled 闸） */
+async function runPrChannelAction(row, actionKey) {
+  if (!row || !prNodeId.value) return
+  if (!prBindingEnabled(row)) {
+    ElMessage.warning('该通道已停用')
+    return
+  }
+  const k = prRowKey(row)
+  if (prActionBusy[k]) return
+  const holdMs = prGetHoldMs(row)
+  const body = {
+    node_id: prNodeId.value,
+    power_dev: row.power_dev,
+    channel: row.channel,
+    action: actionKey,
+  }
+  if (actionKey === 'power_cycle') body.hold_ms = holdMs
+  prActionBusy[k] = true
+  prActionFail[k] = null
+  try {
+    const out = await api('/api/powerres/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (out && (out.result === 'fail' || out.result === 'failed')) {
+      const phase = out.phase || ''
+      const code = out.error_code || out.code || ''
+      const msg = out.error || out.message || '动作失败'
+      prActionFail[k] = { phase, code, message: msg }
+      let tip = (code ? code + ': ' : '') + msg
+      if (phase === 'power_off') tip = '关机指令失败，设备可能仍通电。' + tip
+      if (phase === 'power_on') tip = '重启中途失败：设备可能处于断电；请立即点「补偿开」。' + tip
+      ElMessage.error(tip)
+      return
+    }
+    if (actionKey === 'power_query') {
+      const st = (out && out.state) || '—'
+      ElMessage.success('当前状态：' + st)
+    } else {
+      ElMessage.success(
+        actionKey === 'power_on' ? '已开'
+          : actionKey === 'power_off' ? '已关'
+            : actionKey === 'power_cycle' ? ('已重启（间隔 ' + holdMs + ' ms）')
+              : '动作成功',
+      )
+    }
+    await loadPowerResInventory({ skipLoading: true })
+  } catch (e) {
+    if (e === 'cancel' || (e && e.message === 'cancel')) return
+    const code = (e && e.code) || ''
+    let tip = String((e && e.message) || e)
+    if (code === 'POWERRES_BUSY' || code === 'SERIAL_BUSY') {
+      const holder = e.detail && (e.detail.holder || e.detail.held_by)
+      tip = holder
+        ? ('通道被 ' + holder + ' 占用')
+        : ((code === 'POWERRES_BUSY' ? 'POWERRES_BUSY：' : 'SERIAL_BUSY：') + tip)
+    } else if (code === 'POWERRES_NO_ENDPOINT') {
+      tip = '端点缺失，请检查 hub 上报'
+    } else if (code === 'POWER_DISABLED') {
+      tip = '该通道已停用'
+    } else if (code === 'CONFIRM_REQUIRED') {
+      tip = '需要确认'
+    }
+    prActionFail[k] = { phase: '', code, message: tip }
+    ElMessage.error(tip)
+  } finally {
+    prActionBusy[k] = false
+  }
+}
+
+async function runPrSerialAction(row, actionKey, opts) {
+  const deviceId = prBoundDeviceId(row)
+  if (!deviceId) {
+    ElMessage.warning('请先绑定目标设备')
+    return
+  }
+  if (!prBindingEnabled(row)) {
+    ElMessage.warning('该通道已停用')
+    return
+  }
+  const k = prRowKey(row)
+  if (prActionBusy[k]) return
+  const holdMs = prGetHoldMs(row)
+  const body = {
+    action_key: actionKey,
+    wait_ms: 3000,
+    dry_run: false,
+  }
+  if (actionKey === 'power_off' || actionKey === 'power_cycle') {
+    body.confirm = true
+  }
+  if (actionKey === 'power_cycle') body.hold_ms = holdMs
+  prActionBusy[k] = true
+  prActionFail[k] = null
+  try {
+    const out = await api('/api/devices/' + encodeURIComponent(deviceId) + '/serial/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (out && out.result === 'fail') {
+      const phase = out.phase || ''
+      const code = out.error_code || out.code || ''
+      const msg = out.error || out.message || '动作失败'
+      prActionFail[k] = { phase, code, message: msg }
+      let tip = (code ? code + ': ' : '') + msg
+      if (phase === 'power_off') tip = '关机指令失败，设备可能仍通电。' + tip
+      if (phase === 'power_on') tip = '重启中途失败：设备可能处于断电；请立即点「补偿开」。' + tip
+      ElMessage.error(tip)
+      return
+    }
+    ElMessage.success(
+      actionKey === 'power_on' ? '已开'
+        : actionKey === 'power_off' ? '已关'
+          : actionKey === 'power_cycle' ? ('已重启（间隔 ' + holdMs + ' ms）')
+            : '动作成功',
+    )
+    // 刷新该行状态：重拉 inventory；顺带读串口能力（状态/holder）
+    try {
+      await api('/api/devices/' + encodeURIComponent(deviceId) + '/serial')
+    } catch (e) { /* 可选刷新，忽略 */ }
+    await loadPowerResInventory({ skipLoading: true })
+  } catch (e) {
+    if (e === 'cancel' || (e && e.message === 'cancel')) return
+    const code = (e && e.code) || ''
+    let tip = String((e && e.message) || e)
+    if (code === 'SERIAL_BUSY' || code === 'POWERRES_BUSY') {
+      const holder = e.detail && (e.detail.holder || e.detail.held_by)
+      tip = holder
+        ? ('通道被 ' + holder + ' 占用')
+        : ((code === 'POWERRES_BUSY' ? 'POWERRES_BUSY：' : 'SERIAL_BUSY：') + tip)
+    } else if (code === 'POWERRES_NO_ENDPOINT') {
+      tip = '端点缺失，请检查 hub 上报'
+    } else if (code === 'POWER_DISABLED') {
+      tip = '该通道已停用'
+    } else if (code === 'CONFIRM_REQUIRED') {
+      tip = '需要确认'
+    }
+    prActionFail[k] = { phase: '', code, message: tip }
+    ElMessage.error(tip)
+  } finally {
+    prActionBusy[k] = false
+  }
+}
+
+/** admin → 通道级；非 admin → 设备级（需绑定+租约） */
+async function runPrPowerAction(row, actionKey) {
+  if (prIsAdmin()) {
+    await runPrChannelAction(row, actionKey)
+  } else {
+    await runPrSerialAction(row, actionKey)
+  }
+}
+
+async function doPrPowerOn(row) {
+  await runPrPowerAction(row, 'power_on')
+}
+
+async function doPrPowerOff(row) {
+  const target = prRowBound(row)
+    ? prBoundTargetText(row)
+    : ((row && row.power_dev ? row.power_dev : '') + ' CH' + (row && row.channel))
+  try {
+    await ElMessageBox.confirm(
+      `确定关闭 ${target} 电源？`,
+      '关机确认',
+      { type: 'warning', confirmButtonText: '关机', cancelButtonText: '取消' },
+    )
+  } catch (e) {
+    return
+  }
+  await runPrPowerAction(row, 'power_off')
+}
+
+/** PT8-tres：el-switch 切换；on→power_off / off→power_on；不乐观更新，靠返回 state */
+async function onPrPowerSwitch(row, wantedOn) {
+  if (!row || !prSwitchKnown(row)) return
+  const curOn = prSwitchOn(row)
+  if (wantedOn === curOn) return
+  if (wantedOn) {
+    await doPrPowerOn(row)
+  } else {
+    await doPrPowerOff(row)
+  }
+}
+
+async function doPrPowerCycle(row) {
+  if (!prIsAdmin() && !prRowBound(row)) return
+  const hold = prGetHoldMs(row)
+  const target = prRowBound(row)
+    ? prBoundTargetText(row)
+    : ((row && row.power_dev ? row.power_dev : '') + ' CH' + (row && row.channel))
+  try {
+    await ElMessageBox.confirm(
+      `确定对 ${target} 执行定时重启？\n断电保持间隔：${hold} ms`,
+      '重启确认',
+      { type: 'warning', confirmButtonText: '重启', cancelButtonText: '取消' },
+    )
+  } catch (e) {
+    return
+  }
+  await runPrPowerAction(row, 'power_cycle')
+}
+
+async function doPrCompensateOn(row) {
+  await runPrPowerAction(row, 'power_on')
+}
+
+async function doPrPowerQuery(row) {
+  if (!prIsAdmin()) return
+  await runPrChannelAction(row, 'power_query')
+}
+
+async function enterPowerRes() {
+  if (!(devices.value || []).length) loadDevices()
+  await loadPowerResOverview()
+}
+
+async function loadPowerResOverview() {
+  prError.value = ''
+  prUnsupported.value = false
+  prLoading.value = true
+  try {
+    const raw = await api('/api/powerres/overview')
+    const nodes = (raw && Array.isArray(raw.nodes)) ? raw.nodes : []
+    prNodes.value = nodes
+    if (prNodeId.value && !nodes.some((n) => n.node_id === prNodeId.value)) {
+      prNodeId.value = ''
+      prItems.value = []
+    }
+    if (!prNodeId.value && nodes.length) {
+      prNodeId.value = nodes[0].node_id
+    }
+    if (prNodeId.value) {
+      await loadPowerResInventory({ skipLoading: true })
+    } else {
+      prItems.value = []
+    }
+  } catch (e) {
+    prNodes.value = []
+    prItems.value = []
+    if (prIsUnsupportedStatus(e && e.status)) {
+      prUnsupported.value = true
+      prError.value = ''
+    } else {
+      prError.value = String(e.message || e)
+      ElMessage.error('PowerRes：' + prError.value)
+    }
+  } finally {
+    prLoading.value = false
+  }
+}
+
+async function loadPowerResInventory(opts) {
+  const skipLoading = opts && opts.skipLoading
+  prError.value = ''
+  if (prUnsupported.value) return
+  if (!prNodeId.value) {
+    prItems.value = []
+    return
+  }
+  if (!skipLoading) prLoading.value = true
+  try {
+    const raw = await api('/api/powerres/inventory?node_id=' + encodeURIComponent(prNodeId.value))
+    prItems.value = prNormalizeInventory(raw)
+  } catch (e) {
+    prItems.value = []
+    if (prIsUnsupportedStatus(e && e.status)) {
+      prUnsupported.value = true
+      prError.value = ''
+    } else {
+      prError.value = String(e.message || e)
+      ElMessage.error('PowerRes：' + prError.value)
+    }
+  } finally {
+    if (!skipLoading) prLoading.value = false
+  }
+}
+
+function onPrNodeChange() {
+  loadPowerResInventory()
+}
+
+function refreshPowerRes() {
+  loadPowerResOverview()
+}
+
+async function loadPrBindPowerCounts() {
+  const nid = prNodeId.value
+  if (!nid || prUnsupported.value) {
+    prBindPowerCounts.value = {}
+    return
+  }
+  prBindDlg.bindingsLoading = true
+  try {
+    const raw = await api('/api/powerres/bindings?node_id=' + encodeURIComponent(nid))
+    const list = Array.isArray(raw) ? raw : (raw && Array.isArray(raw.bindings) ? raw.bindings : [])
+    prBindPowerCounts.value = aggregatePowerBoundCounts(list)
+  } catch (e) {
+    prBindPowerCounts.value = {}
+    if (prIsUnsupportedStatus(e && e.status)) {
+      prUnsupported.value = true
+      return
+    }
+    // 已绑数仅展示用：失败不阻断绑定对话框
+  } finally {
+    prBindDlg.bindingsLoading = false
+  }
+}
+
+function openPrBind(row) {
+  if (!row) return
+  prBindDlg.power_dev = row.power_dev || ''
+  prBindDlg.name = row.name || ''
+  prBindDlg.com = row.com || ''
+  prBindDlg.location = row.location || ''
+  prBindDlg.driver = row.driver || ''
+  prBindDlg.channel = row.channel
+  prBindDlg.endpoint = row.endpoint || ''
+  prBindDlg.device_id = ''
+  prBindDlg.label = ''
+  prBindDlg.slot = ''
+  prBindDlg.modelFilter = ''
+  prBindDlg.keyword = ''
+  prBindDlg.busy = false
+  prBindDlg.visible = true
+  if (!(devices.value || []).length) loadDevices()
+  loadPrBindPowerCounts()
+}
+
+watch(prNodeId, () => {
+  if (prBindDlg.visible) loadPrBindPowerCounts()
+})
+
+async function submitPrBind() {
+  if (!prNodeId.value) {
+    ElMessage.warning('请先选择节点')
+    return
+  }
+  if (!prBindDlg.device_id) {
+    ElMessage.warning('请选择目标被测设备')
+    return
+  }
+  if (!prBindDlg.endpoint) {
+    ElMessage.warning('该通道无 endpoint，无法绑定')
+    return
+  }
+  const body = {
+    node_id: prNodeId.value,
+    device_id: prBindDlg.device_id,
+    power_dev: prBindDlg.power_dev,
+    channel: prBindDlg.channel,
+    endpoint: prBindDlg.endpoint,
+  }
+  if (prBindDlg.label && String(prBindDlg.label).trim()) {
+    body.label = String(prBindDlg.label).trim()
+  }
+  if (prBindDlg.com) body.com = prBindDlg.com
+  const slotRaw = prBindDlg.slot
+  if (slotRaw !== '' && slotRaw != null) {
+    const n = Number(slotRaw)
+    if (!Number.isInteger(n) || n < 1 || n > PR_SLOT_MAX) {
+      ElMessage.warning('slot 须为 1..' + PR_SLOT_MAX + ' 的整数，或留空自动分配')
+      return
+    }
+    body.slot = n
+  }
+  prBindDlg.busy = true
+  try {
+    await api('/api/powerres/bind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    ElMessage.success('绑定成功')
+    prBindDlg.visible = false
+    await loadPowerResOverview()
+  } catch (e) {
+    if (prIsUnsupportedStatus(e && e.status)) {
+      prUnsupported.value = true
+      prBindDlg.visible = false
+      return
+    }
+    const code = (e && e.code) || ''
+    const msg = String((e && e.message) || e)
+    ElMessage.error(code ? (code + ': ' + msg) : msg)
+  } finally {
+    prBindDlg.busy = false
+  }
+}
+
+async function doPrUnbind(row) {
+  if (!row || !prNodeId.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确定解绑 ${row.power_dev} CH${row.channel}？` +
+        (prRowBound(row) ? `（当前绑定 ${prBoundTargetText(row)}）` : ''),
+      '解绑确认',
+      { type: 'warning' },
+    )
+    await api('/api/powerres/unbind', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        node_id: prNodeId.value,
+        power_dev: row.power_dev,
+        channel: row.channel,
+      }),
+    })
+    ElMessage.success('已解绑')
+    await loadPowerResOverview()
+  } catch (e) {
+    if (e === 'cancel' || e?.message === 'cancel') return
+    if (prIsUnsupportedStatus(e && e.status)) {
+      prUnsupported.value = true
+      return
+    }
+    ElMessage.error(String(e.message || e))
+  }
+}
+
+async function openPrAdd() {
+  if (prUnsupported.value) return
+  prAddDlg.node_id = prNodeId.value || ''
+  prAddDlg.power_dev = ''
+  prAddDlg.name = ''
+  prAddDlg.com = ''
+  prAddDlg.channel = ''
+  prAddDlg.endpoint = ''
+  prAddDlg.location = ''
+  prAddDlg.driver = ''
+  prAddDlg.busy = false
+  prAddDlg.visible = true
+  // 手工登记需可选任意 wirelog 节点（overview 尚无该节点时的建档兜底）
+  if (!(wlNodes.value || []).length) {
+    try { await loadWlNodes() } catch (e) { /* loadWlNodes 已提示 */ }
+  }
+}
+
+async function submitPrAdd() {
+  const nid = String(prAddDlg.node_id || '').trim()
+  const powerDev = String(prAddDlg.power_dev || '').trim()
+  const chRaw = prAddDlg.channel
+  const endpoint = String(prAddDlg.endpoint || '').trim()
+  if (!nid) {
+    ElMessage.warning('请选择节点')
+    return
+  }
+  if (!powerDev) {
+    ElMessage.warning('请填写电源设备 id')
+    return
+  }
+  const ch = Number(chRaw)
+  if (!Number.isInteger(ch) || ch < 0) {
+    ElMessage.warning('通道号须为非负整数')
+    return
+  }
+  if (!endpoint) {
+    ElMessage.warning('请填写端点（如 tcp://host:port）')
+    return
+  }
+  const body = {
+    node_id: nid,
+    power_dev: powerDev,
+    channel: ch,
+    endpoint,
+  }
+  const name = String(prAddDlg.name || '').trim()
+  const com = String(prAddDlg.com || '').trim()
+  const location = String(prAddDlg.location || '').trim()
+  const driver = String(prAddDlg.driver || '').trim()
+  if (name) body.name = name
+  if (com) body.com = com
+  if (location) body.location = location
+  if (driver) body.driver = driver
+  prAddDlg.busy = true
+  try {
+    const raw = await api('/api/powerres/inventory', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    ElMessage.success('资源已登记')
+    prAddDlg.visible = false
+    prNodeId.value = nid
+    // 刷新 overview（新建节点会进入下拉）再刷 inventory
+    await loadPowerResOverview()
+    prItems.value = prNormalizeInventory(raw)
+  } catch (e) {
+    if (prIsUnsupportedStatus(e && e.status)) {
+      prUnsupported.value = true
+      prAddDlg.visible = false
+      return
+    }
+    ElMessage.error(String(e.message || e))
+  } finally {
+    prAddDlg.busy = false
+  }
+}
+
 // ---------------- COMRes 串口终端（独立全屏 xterm 页 /shell.html，浏览器 TCP shell） ----------------
 function openWlShell(row) {
   if (!portCanOpen(row)) {
@@ -2234,8 +4069,10 @@ function jumpToDevice(deviceId) {
 }
 
 function jumpToWlNode(nodeId) {
-  active.value = 'wirelog'
+  ctrlresCard.value = 'comres'
   comresTab.value = 'nodes'
+  active.value = 'ctrlres'
+  syncCtrlresHash()
   loadWlNodes()
   openWlDetail(nodeId)
 }
@@ -2256,10 +4093,21 @@ async function openDeviceWlBindings(row) {
 
 function switchPage(key) {
   if (LEGACY_BOARD_KEYS.has(key)) key = 'devices'
+  // 旧导航 key 兼容（概览卡片 / 外部入口）
+  if (key === 'wirelog') { key = 'ctrlres'; ctrlresCard.value = 'comres' }
+  else if (key === 'powerres') { key = 'ctrlres'; ctrlresCard.value = 'powerres' }
+  if (key !== 'device') {
+    devicePageId.value = ''
+    // 离开详情页时清掉 #/device/...，避免侧栏切页后 hash 残留
+    if (/^#\/?device\//i.test(String(window.location.hash || ''))) {
+      history.replaceState(null, '', window.location.pathname + window.location.search)
+    }
+  }
   active.value = key
   if (key === 'devices') {
     goDevices()
     loadDevices()
+    loadLeases()
     loadDashboard()
     loadComresResources()
   }
@@ -2268,16 +4116,10 @@ function switchPage(key) {
   }
   else if (key === 'onboarding') loadContacts()
   else if (key === 'credentials') loadCredentials()
-  else if (key === 'wirelog') {
-    if (comresTab.value === 'settings') {
-      loadPackages()
-      loadComresAuthSummary()
-    } else if (comresTab.value === 'pool') {
-      loadComresResources()
-    } else {
-      loadWlNodes()
-      loadComresResources()
-    }
+  else if (key === 'ctrlres') {
+    syncCtrlresHash()
+    if (ctrlresCard.value === 'powerres') enterPowerRes()
+    else enterComRes()
   }
   else if (key === 'settings') {
     loadSettings(); loadProductTypes(); loadContacts(); loadSmtp(); loadAudit(); loadFeedback(); loadBuildServers()
@@ -2305,16 +4147,32 @@ async function boot() {
     } catch (e) { me.value = null }
   }
   booting.value = false
-  resolveLegacyRoute()
   if (me.value) {
-    active.value = 'devices'
-    loadDashboard()
     loadVersionInfo()
     loadHealthInfo()
     loadProductTypes()
     loadBuildServers()
-    loadDevices()
-    loadComresResources()
+    const routed = resolveLegacyRoute()
+    if (!routed) {
+      active.value = 'devices'
+      loadDashboard()
+      loadDevices()
+      loadLeases()
+      loadComresResources()
+    } else if (active.value === 'ctrlres') {
+      // 深链进 CtrlRes 时仍需设备列表（PowerRes 绑定下拉）
+      if (!(devices.value || []).length) loadDevices()
+    } else if (active.value === 'device') {
+      if (!(devices.value || []).length) loadDevices()
+      loadLeases()
+    } else if (active.value === 'devices') {
+      loadDashboard()
+      loadDevices()
+      loadLeases()
+      loadComresResources()
+    }
+  } else {
+    resolveLegacyRoute()
   }
 }
 onMounted(() => {
@@ -2563,12 +4421,167 @@ async function forceReleaseLease(leaseId) {
     ElMessage.success('已强制回收'); loadLeases(); loadDevices()
   } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
 }
+
+/** 当前用户在某设备上的活跃租约（依赖 loadLeases） */
+function myLeaseForDevice(deviceId) {
+  if (!me.value || !deviceId) return null
+  const email = me.value.email
+  return (leases.value || []).find(l => l.device_id === deviceId && l.email === email) || null
+}
+function canApplyDevice(row) {
+  return !!(me.value && row && row.claimable && row.status !== 'occupied')
+}
+function isMyOccupiedDevice(row) {
+  return !!(me.value && row && row.holder_email && row.holder_email === me.value.email)
+}
+function holderDisplay(row) {
+  if (!row || !row.holder_email) return ''
+  if (me.value && row.holder_email === me.value.email) return '我占用'
+  const name = (row.holder_name || (contacts.value || []).find(c => c.email === row.holder_email)?.name) || ''
+  return name ? (name + ' · ' + row.holder_email) : row.holder_email
+}
+async function refreshDevicesAndLeases() {
+  await Promise.all([loadDevices(), loadLeases()])
+  if (active.value === 'device' && devicePageId.value) await refreshDevicePage()
+}
+async function applyDeviceLease(row) {
+  if (!row || !canApplyDevice(row)) return
+  const purpose = ref('人工测试')
+  const minutes = ref(120)
+  try {
+    await ElMessageBox({
+      title: '申请设备 ' + (row.display_name || row.device_id),
+      message: () => h('div', { style: 'display:flex;flex-direction:column;gap:12px;min-width:280px' }, [
+        h('div', [
+          h('div', { style: 'margin-bottom:6px;font-size:13px;color:#606266' }, '用途'),
+          h(ElInput, {
+            modelValue: purpose.value,
+            'onUpdate:modelValue': (v) => { purpose.value = v },
+            placeholder: '人工测试',
+          }),
+        ]),
+        h('div', [
+          h('div', { style: 'margin-bottom:6px;font-size:13px;color:#606266' }, '时长（分钟）'),
+          h(ElSelect, {
+            modelValue: minutes.value,
+            'onUpdate:modelValue': (v) => { minutes.value = v },
+            style: 'width:100%',
+          }, () => [30, 60, 120, 240].map(m =>
+            h(ElOption, { key: m, label: m + ' 分钟', value: m }),
+          )),
+        ]),
+      ]),
+      showCancelButton: true,
+      confirmButtonText: '申请',
+      cancelButtonText: '取消',
+      closeOnClickModal: false,
+    })
+    const r = await api('/api/leases/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        device_id: row.device_id,
+        purpose: (purpose.value || '').trim() || '人工测试',
+        expected_minutes: Number(minutes.value) || 120,
+      }),
+    })
+    if (r.state === 'GRANTED') {
+      const lease = r.lease || {}
+      ElMessage.success(
+        '已申请：' + (lease.adb_address || row.device_id)
+        + (lease.expires_at ? '，到期 ' + formatLocal(lease.expires_at) : ''),
+      )
+      await refreshDevicesAndLeases()
+    } else if (r.state === 'QUEUED') {
+      ElMessage.warning(
+        '已排队 ticket=' + (r.ticket_id || '—')
+        + (r.position != null ? '，位次 ' + r.position : ''),
+      )
+      loadQueue()
+      await refreshDevicesAndLeases()
+    } else {
+      ElMessage.info(r.state || '已提交')
+      await refreshDevicesAndLeases()
+    }
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e.message || '申请失败')
+  }
+}
+async function releaseDeviceLease(row) {
+  const lease = myLeaseForDevice(row && row.device_id)
+  if (!lease) {
+    ElMessage.warning('未找到你在该设备上的租约，请到「资源调度」查看')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '确认释放设备「' + (row.display_name || row.device_id) + '」？释放后 Agent 可再申请。',
+      '释放租约',
+      { type: 'warning', confirmButtonText: '释放', cancelButtonText: '取消' },
+    )
+    await api('/api/leases/' + encodeURIComponent(lease.lease_id) + '/release', { method: 'POST' })
+    ElMessage.success('已释放')
+    await refreshDevicesAndLeases()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e.message || '释放失败')
+  }
+}
+async function renewDeviceLease(row) {
+  const lease = myLeaseForDevice(row && row.device_id)
+  if (!lease) {
+    ElMessage.warning('未找到你在该设备上的租约')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      '为「' + (row.display_name || row.device_id) + '」续租 30 分钟？',
+      '续租',
+      { confirmButtonText: '续租', cancelButtonText: '取消' },
+    )
+    const r = await api('/api/leases/' + encodeURIComponent(lease.lease_id) + '/renew', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ extra_minutes: 30 }),
+    })
+    ElMessage.success('已续租' + (r.expires_at ? '，到期 ' + formatLocal(r.expires_at) : ''))
+    await refreshDevicesAndLeases()
+  } catch (e) {
+    if (e !== 'cancel') ElMessage.error(e.message || '续租失败')
+  }
+}
 async function renewCredential(id) {
   await api('/api/credentials/renew', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ credential_id: id, days: 90 }),
   })
   ElMessage.success('已续期 90 天'); loadCredentials()
+}
+function isSelfCredentialRow(row) {
+  if (!me.value || !row) return false
+  if (me.value.credential_id != null) return row.id === me.value.credential_id
+  // auth/me 未暴露 credential_id 时：同邮箱且同 role 保守视为当前会话凭据
+  return row.email === me.value.email && row.role === me.value.role
+}
+async function setCredentialRole(row, role) {
+  const promote = role === 'admin'
+  try {
+    await ElMessageBox.confirm(
+      promote
+        ? '将该凭据提升为管理员？其持有者将立即获得管理员权限（强制回收/发凭据/机型管理等）。'
+        : '将该凭据降为普通用户？其权限立即收窄为普通用户。',
+      promote ? '设为管理员' : '设为普通用户',
+      { confirmButtonText: '确认', cancelButtonText: '取消', type: promote ? 'warning' : 'warning' },
+    )
+    await api('/api/credentials/' + row.id + '/role', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role }),
+    })
+    ElMessage.success(promote ? '已设为管理员' : '已设为普通用户')
+    loadCredentials()
+  } catch (e) {
+    if (e === 'cancel') return
+    ElMessage.error(e.message || '操作失败')
+  }
 }
 async function disableProductType(code) {
   try {
@@ -2848,7 +4861,7 @@ const legendRole = [
         <span>Quamm TRES</span>
         <span class="title-version">v{{ versionInfo ? versionInfo.version : '—' }}</span>
       </div>
-      <el-menu :default-active="active" @select="switchPage" style="flex: 1">
+      <el-menu :default-active="active === 'device' ? 'devices' : active" @select="switchPage" style="flex: 1">
         <el-menu-item v-for="p in pages.filter(x => !x.admin || me.role === 'admin')" :key="p.key" :index="p.key">{{ p.label }}</el-menu-item>
       </el-menu>
       <div class="user-box">
@@ -2903,7 +4916,7 @@ const legendRole = [
             <div class="ov-num ov-idle">{{ deviceTotals.available }}</div>
             <div class="ov-sub ov-sub-spacer">&nbsp;</div>
           </el-card>
-          <el-card shadow="never" class="ov-card ov-card-comres" @click="switchPage('wirelog')">
+          <el-card shadow="never" class="ov-card ov-card-comres" @click="ctrlresCard = 'comres'; switchPage('ctrlres')">
             <div class="ov-label">串口资源</div>
             <div class="ov-num ov-comres">{{ comresPortStats.total }}</div>
             <div class="ov-sub">在池 {{ comresPortStats.pool }}</div>
@@ -2926,8 +4939,7 @@ const legendRole = [
               <h2 style="margin: 0">设备中心</h2>
               <span style="color: #909399; font-size: 12px">登记新设备：探测 → 确认注册（两步）</span>
             </div>
-            <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
-            <el-button v-else type="primary" plain disabled style="cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
+            <el-button type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
           </div>
 
           <p style="color: #909399; margin: 12px 0 8px">共 {{ deviceOverview.length }} 个品类，点击卡片或上方机型 chip 查看明细。</p>
@@ -2948,8 +4960,7 @@ const legendRole = [
             </el-col>
           </el-row>
           <el-empty v-if="!deviceOverview.length" description="还没有设备，先登记一台吧">
-            <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
-            <span v-else style="color: #909399; font-size: 12px">添加设备需要管理员权限，请联系管理员登记</span>
+            <el-button type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
           </el-empty>
         </div>
 
@@ -2960,9 +4971,8 @@ const legendRole = [
             <h2 style="margin: 0">{{ detailTitle }}</h2>
             <el-tag size="small" type="info">共 {{ detailCounts.all }} 台</el-tag>
             <el-button size="small" plain :loading="cfgAuditBusy" @click="showConfigAudit">配置体检</el-button>
-            <el-button v-if="me.role === 'admin'" type="primary" style="margin-left: auto"
+            <el-button type="primary" style="margin-left: auto"
               @click="openDeviceAdd(prefillType)">＋ 添加 {{ detailTitle }} 设备</el-button>
-            <el-button v-else type="primary" plain disabled style="margin-left: auto; cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 10px 0">
             <el-tabs v-model="detailStatusTab" style="flex: 1; min-width: 280px" @tab-change="onDetailStatusTabChange">
@@ -2982,14 +4992,18 @@ const legendRole = [
             </div>
           </div>
           <div class="device-table-wrap">
-          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1545px" @sort-change="onDeviceSortChange">
-            <el-table-column label="操作" width="260">
+          <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1600px" @sort-change="onDeviceSortChange">
+            <el-table-column label="操作" width="280">
               <template #default="{ row }">
+                <el-button v-if="canApplyDevice(row)" type="primary" size="small"
+                  @click.stop="applyDeviceLease(row)">申请</el-button>
+                <el-button v-if="isMyOccupiedDevice(row)" type="warning" size="small"
+                  @click.stop="releaseDeviceLease(row)">释放</el-button>
+                <el-button v-if="isMyOccupiedDevice(row) && myLeaseForDevice(row.device_id)" size="small"
+                  @click.stop="renewDeviceLease(row)">续租</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small"
                   :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
-                <el-button v-if="me.role === 'admin'" link type="primary" size="small" :loading="screenshotBusy === row.device_id" @click="takeScreenshot(row)">截图</el-button>
-                <el-button v-if="me.role === 'admin'" link size="small" @click="openScreenshotHistory(row)">记录</el-button>
                 <el-tooltip
                   :disabled="!!row.serial_openable"
                   content="该设备当前无可用串口（未绑定或不可达）"
@@ -3003,8 +5017,16 @@ const legendRole = [
                 <el-button v-if="canEditDevice(row)" link type="danger" size="small" @click="removeDevice(row)">移除</el-button>
               </template>
             </el-table-column>
-            <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip />
-            <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip />
+            <el-table-column prop="device_id" label="ID" width="115" show-overflow-tooltip>
+              <template #default="{ row }">
+                <a class="dev-link" href="javascript:;" @click.prevent="openDevicePageFromList(row)">{{ row.device_id }}</a>
+              </template>
+            </el-table-column>
+            <el-table-column prop="display_name" label="名称" width="130" show-overflow-tooltip>
+              <template #default="{ row }">
+                <a class="dev-link" href="javascript:;" @click.prevent="openDevicePageFromList(row)">{{ row.display_name || row.device_id }}</a>
+              </template>
+            </el-table-column>
             <el-table-column prop="position_code" label="位置" width="85" show-overflow-tooltip />
             <el-table-column prop="owner" label="责任人" width="85" show-overflow-tooltip />
             <el-table-column prop="register_agent" label="Agent" width="115" show-overflow-tooltip>
@@ -3034,9 +5056,134 @@ const legendRole = [
                 </el-tooltip>
               </template>
             </el-table-column>
+            <el-table-column label="电源" width="110">
+              <template #default="{ row }">
+                <template v-if="listPowerN(row) == null">
+                  <span style="color:#c0c4cc">-</span>
+                </template>
+                <el-popover
+                  v-else
+                  placement="bottom-start"
+                  :width="420"
+                  trigger="click"
+                  @show="onListPowerPopoverShow(row)"
+                >
+                  <template #reference>
+                    <el-tag
+                      v-if="listPowerN(row) > 0"
+                      size="small"
+                      type="success"
+                      style="cursor:pointer"
+                      @click.stop
+                    >电源 {{ listPowerN(row) }}</el-tag>
+                    <el-tag
+                      v-else
+                      size="small"
+                      type="info"
+                      effect="plain"
+                      style="cursor:pointer"
+                      @click.stop
+                    >无电源</el-tag>
+                  </template>
+                  <div class="list-power-pop" @click.stop>
+                    <template v-if="listPowerN(row) === 0">
+                      <el-empty description="该设备未绑定电源通道" :image-size="48">
+                        <el-button
+                          v-if="me.role === 'admin'"
+                          size="small"
+                          type="primary"
+                          @click="openDevicePageFromList(row)"
+                        >去设备页绑定</el-button>
+                      </el-empty>
+                    </template>
+                    <template v-else>
+                      <div v-if="listPowerCache(row.device_id).loading" style="padding:12px;color:#909399;font-size:12px">加载中…</div>
+                      <div v-else-if="listPowerCache(row.device_id).error" style="padding:8px;color:#f56c6c;font-size:12px">
+                        {{ listPowerCache(row.device_id).error }}
+                      </div>
+                      <div v-else-if="!(listPowerCache(row.device_id).items || []).length">
+                        <el-empty description="暂无电源能力项" :image-size="40" />
+                      </div>
+                      <div v-else>
+                        <div
+                          v-for="it in listPowerCache(row.device_id).items"
+                          :key="it.id || listPowerItemTitle(it)"
+                          class="list-power-item"
+                          style="margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid #ebeef5"
+                        >
+                          <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+                            <span style="font-size:12px;word-break:break-all">{{ listPowerItemTitle(it) }}</span>
+                            <el-tag size="small" :type="capStatusTagType(it)">{{ capStatusLabel(it) }}</el-tag>
+                          </div>
+                          <el-tooltip
+                            content="需持有目标设备租约"
+                            :disabled="!listPowerLeaseBlocked(row)"
+                            placement="top"
+                          >
+                            <span style="display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px">
+                              <el-button
+                                size="small"
+                                type="success"
+                                :loading="deviceIsActionBusy('list:' + row.device_id + ':' + (it.id || 'cap'), '*')"
+                                :disabled="listPowerLeaseBlocked(row) || deviceIsActionBusy('list:' + row.device_id + ':' + (it.id || 'cap'), '*')"
+                                @click.stop="doListCapPower(row, it, 'power_on')"
+                              >开</el-button>
+                              <el-button
+                                size="small"
+                                type="warning"
+                                :loading="deviceIsActionBusy('list:' + row.device_id + ':' + (it.id || 'cap'), '*')"
+                                :disabled="listPowerLeaseBlocked(row) || deviceIsActionBusy('list:' + row.device_id + ':' + (it.id || 'cap'), '*')"
+                                @click.stop="doListCapPower(row, it, 'power_off')"
+                              >关</el-button>
+                              <el-button
+                                size="small"
+                                :loading="deviceIsActionBusy('list:' + row.device_id + ':' + (it.id || 'cap'), '*')"
+                                :disabled="listPowerLeaseBlocked(row) || deviceIsActionBusy('list:' + row.device_id + ':' + (it.id || 'cap'), '*')"
+                                @click.stop="doListCapPower(row, it, 'power_cycle')"
+                              >重启</el-button>
+                              <el-button
+                                v-if="deviceFailPhase('list:' + row.device_id + ':' + (it.id || 'cap'), '*') === 'power_on'"
+                                size="small"
+                                type="danger"
+                                plain
+                                :disabled="listPowerLeaseBlocked(row)"
+                                @click.stop="doListCapPower(row, it, 'power_on')"
+                              >补偿开</el-button>
+                            </span>
+                          </el-tooltip>
+                        </div>
+                        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:4px">
+                          <span class="comres-muted" style="font-size:11px">hold</span>
+                          <el-input-number
+                            size="small"
+                            v-model="listPowerHoldMs"
+                            :min="500"
+                            :max="30000"
+                            :step="500"
+                            controls-position="right"
+                            style="width:110px"
+                          />
+                          <span class="comres-muted" style="font-size:11px">ms</span>
+                        </div>
+                      </div>
+                      <div style="margin-top:10px;display:flex;gap:12px;flex-wrap:wrap">
+                        <el-button size="small" link type="primary" @click.stop="openDevicePageFromList(row)">查看设备页</el-button>
+                        <el-button
+                          v-if="me.role === 'admin'"
+                          size="small"
+                          link
+                          type="primary"
+                          @click.stop="openDevicePageFromList(row)"
+                        >去绑定</el-button>
+                      </div>
+                    </template>
+                  </div>
+                </el-popover>
+              </template>
+            </el-table-column>
             <el-table-column label="占用者" width="135" show-overflow-tooltip>
               <template #default="{ row }">
-                <span v-if="row.holder_email">{{ row.holder_email }}</span>
+                <span v-if="row.holder_email">{{ holderDisplay(row) }}</span>
                 <span v-else style="color: #c0c4cc">-</span>
               </template>
             </el-table-column>
@@ -3071,7 +5218,7 @@ const legendRole = [
                 @click="showAllInDetail"
               >查看全部 {{ detailCounts.all }} 台</el-button>
               <el-button
-                v-if="me.role === 'admin' && !detailCounts.all"
+                v-if="!detailCounts.all"
                 type="primary"
                 style="margin-left: 8px"
                 @click="openDeviceAdd(prefillType)"
@@ -3089,6 +5236,434 @@ const legendRole = [
             />
           </div>
         </div>
+      </div>
+
+      <!-- PT3b：设备独立详情页 #/device/{id} -->
+      <div v-else-if="active === 'device'" class="dev-page" v-loading="devicePageLoading">
+        <div class="dev-head">
+          <div class="dev-head-left">
+            <el-button size="small" @click="backToDeviceCenter">← 返回设备中心</el-button>
+            <template v-if="devicePage">
+              <h2 class="dev-title">{{ devicePage.display_name || devicePage.device_id }}</h2>
+              <span class="kv-mono">{{ devicePage.device_id }}</span>
+              <el-tag size="small" :type="statusTag[devicePage.status] || 'info'">{{ devicePage.status }}</el-tag>
+              <el-tag size="small" type="info">健康 {{ devicePage.health_level || '—' }}</el-tag>
+              <el-tag v-if="devicePageNodeName" size="small" effect="plain">{{ devicePageNodeName }}</el-tag>
+              <el-tag v-if="devicePage.holder_email" size="small" :type="isMyOccupiedDevice(devicePage) ? 'warning' : 'info'">
+                {{ holderDisplay(devicePage) }}
+              </el-tag>
+              <span class="dev-owner">责任人 {{ devicePage.owner || '—' }}</span>
+            </template>
+            <template v-else-if="!devicePageLoading">
+              <h2 class="dev-title">设备详情</h2>
+              <span class="kv-mono">{{ devicePageId }}</span>
+            </template>
+          </div>
+          <div v-if="devicePage" class="dev-head-actions">
+            <el-button v-if="canApplyDevice(devicePage)" type="primary" size="small"
+              @click="applyDeviceLease(devicePage)">申请</el-button>
+            <el-button v-if="isMyOccupiedDevice(devicePage)" type="warning" size="small"
+              @click="releaseDeviceLease(devicePage)">释放</el-button>
+            <el-button v-if="isMyOccupiedDevice(devicePage) && myLeaseForDevice(devicePage.device_id)" size="small"
+              @click="renewDeviceLease(devicePage)">续租</el-button>
+            <el-button v-if="canEditDevice(devicePage)" size="small" type="primary"
+              :loading="probeBusy === devicePage.device_id" @click="probeOne(devicePage)">探测</el-button>
+            <el-button v-if="me.role === 'admin'" size="small"
+              :loading="screenshotBusy === devicePage.device_id" @click="takeScreenshot(devicePage)">截图</el-button>
+            <el-button v-if="me.role === 'admin'" size="small"
+              @click="openScreenshotHistory(devicePage)">记录</el-button>
+            <el-button size="small" :disabled="!devicePage.serial_openable"
+              @click="openDeviceWlBindings(devicePage)">串口控制台</el-button>
+            <el-button size="small" :loading="devicePageLoading || deviceCapsLoading || deviceSerialLoading || devicePowerLoading"
+              @click="refreshDevicePage">刷新</el-button>
+          </div>
+        </div>
+
+        <el-empty v-if="!devicePage && !devicePageLoading"
+          :description="devicePageError || '设备不存在或已移除'">
+          <el-button type="primary" @click="backToDeviceCenter">返回设备中心</el-button>
+        </el-empty>
+
+        <el-row v-else-if="devicePage" :gutter="16">
+          <el-col :xs="24" :sm="24" :md="16">
+            <el-card shadow="never" class="dev-section">
+              <template #header><span>指纹</span></template>
+              <el-descriptions :column="3" border size="small" class="dev-desc">
+                <el-descriptions-item label="设备 ID"><span class="kv-mono">{{ devicePage.device_id }}</span></el-descriptions-item>
+                <el-descriptions-item label="名称">{{ devicePage.display_name || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="机型">{{ devicePage.model_class || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="节点">{{ devicePageNodeName || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="位置">{{ devicePage.position_code || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="责任人">{{ devicePage.owner || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="Agent">{{ devicePage.register_agent || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="ADB"><span class="kv-mono">{{ devicePage.adb_address || '—' }}</span></el-descriptions-item>
+                <el-descriptions-item label="IP"><span class="kv-mono">{{ devicePageIp(devicePage) }}</span></el-descriptions-item>
+                <el-descriptions-item label="状态">
+                  <el-tag size="small" :type="statusTag[devicePage.status] || 'info'">{{ devicePage.status }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="健康">{{ devicePage.health_level || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="共享">{{ devicePage.share_scope || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="锁定">
+                  <template v-if="devicePage.locked">
+                    <el-tag size="small" type="warning">锁定</el-tag>
+                    <span v-if="devicePage.locked_reason" style="margin-left:6px">{{ devicePage.locked_reason }}</span>
+                  </template>
+                  <span v-else>—</span>
+                </el-descriptions-item>
+                <el-descriptions-item label="最近探测">{{ devicePage.last_probe_at ? formatLocal(devicePage.last_probe_at) : '从未探测' }}</el-descriptions-item>
+                <el-descriptions-item label="配置指纹">
+                  <el-tooltip v-if="devicePage.config && devicePage.config.state === 'fingerprinted'"
+                    :content="cfgTooltip(devicePage.config)" placement="top">
+                    <el-tag size="small" :type="cfgTagType(devicePage.config.verdict)">
+                      {{ devicePage.config.defconfig_short || '?' }}
+                      <span v-if="devicePage.config.verdict"> · {{ devicePage.config.verdict }}</span>
+                    </el-tag>
+                  </el-tooltip>
+                  <el-tooltip v-else-if="devicePage.config && devicePage.config.state === 'legacy'"
+                    content="能连但无 build-info（老固件）" placement="top">
+                    <el-tag size="small" type="info" effect="plain">老固件</el-tag>
+                  </el-tooltip>
+                  <span v-else style="color:#c0c4cc">—</span>
+                </el-descriptions-item>
+              </el-descriptions>
+            </el-card>
+
+            <el-card shadow="never" class="dev-section" v-loading="deviceCapsLoading">
+              <template #header>
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+                  <span>能力</span>
+                  <span class="comres-muted" style="font-size:12px">
+                    <template v-if="deviceCaps.enabled === false">已关闭</template>
+                    <template v-else>revision {{ deviceCaps.revision || 0 }}</template>
+                  </span>
+                </div>
+              </template>
+              <el-empty v-if="deviceCaps.enabled === false" description="能力开关已关闭" :image-size="64" />
+              <el-empty v-else-if="!(deviceCapsFlat || []).length" description="暂无能力项" :image-size="64" />
+              <el-row v-else :gutter="12" class="cap-row">
+                <el-col
+                  v-for="it in deviceCapsFlat"
+                  :key="it.id || (it.kind + '-' + (it.label || ''))"
+                  :xs="24" :sm="12" :md="8" :lg="8"
+                  class="cap-col"
+                >
+                  <div class="cap-card cap-card--stretch" :class="{ 'cap-card--dim': !capActionsEnabled(it) }">
+                    <div class="cap-card-head">
+                      <span class="cap-card-name">{{ it.label || it.name || it.id || '—' }}</span>
+                      <div class="cap-card-tags">
+                        <el-tag size="small" effect="plain">{{ capKindLabel(it.kind) }}</el-tag>
+                        <el-tag size="small" :type="capStatusTagType(it)">{{ capStatusLabel(it) }}</el-tag>
+                      </div>
+                    </div>
+                    <div class="cap-card-row">
+                      <span class="comres-muted">端点</span>
+                      <el-tooltip :content="capEndpointText(it) || '—'" placement="top" :disabled="!capEndpointText(it)">
+                        <span class="kv-mono cap-ep">{{ capEndpointText(it) || '—' }}</span>
+                      </el-tooltip>
+                    </div>
+                    <div class="cap-card-row">
+                      <span class="comres-muted">来源</span>
+                      <span>{{ capSourceLabel(it) }}</span>
+                    </div>
+                    <div v-if="it.kind === 'serial.io' && capHealthText(it)" class="cap-card-row">
+                      <span class="comres-muted">健康</span>
+                      <span>{{ capHealthText(it) }}</span>
+                    </div>
+                    <div v-if="it.kind === 'serial.io'" class="cap-card-row">
+                      <span class="comres-muted">占用</span>
+                      <el-tooltip
+                        :content="capHolderText(it) || '空闲'"
+                        placement="top"
+                        :disabled="!capHolderText(it)"
+                      >
+                        <span :class="capHolderText(it) ? '' : 'comres-muted'">{{ capHolderText(it) || '—' }}</span>
+                      </el-tooltip>
+                    </div>
+                    <div v-if="capConstraintOnly(it)" class="cap-card-row">
+                      <span class="comres-muted">约束</span>
+                      <span>{{ capConstraintOnly(it) }}</span>
+                    </div>
+
+                    <!-- 电源：唯一操作入口 -->
+                    <template v-if="it.kind === 'power'">
+                      <div class="cap-card-row">
+                        <span class="comres-muted">重启间隔</span>
+                        <span>{{ capRestartHoldText(it) }}</span>
+                      </div>
+                      <div class="cap-card-actions">
+                        <el-button size="small" type="success"
+                          :loading="deviceIsActionBusy(it.id, '*')"
+                          :disabled="!capActionsEnabled(it) || deviceIsActionBusy(it.id, '*') || devicePowerLeaseBlocked()"
+                          @click="doDeviceCapPower(it, 'power_on')">开</el-button>
+                        <el-button size="small" type="warning"
+                          :loading="deviceIsActionBusy(it.id, '*')"
+                          :disabled="!capActionsEnabled(it) || deviceIsActionBusy(it.id, '*') || devicePowerLeaseBlocked()"
+                          @click="doDeviceCapPower(it, 'power_off')">关</el-button>
+                        <el-button size="small"
+                          :loading="deviceIsActionBusy(it.id, '*')"
+                          :disabled="!capActionsEnabled(it) || deviceIsActionBusy(it.id, '*') || devicePowerLeaseBlocked()"
+                          @click="doDeviceCapPower(it, 'power_cycle')">重启</el-button>
+                        <el-button v-if="deviceFailPhase(it.id, '*') === 'power_on'" size="small" type="danger" plain
+                          :loading="deviceIsActionBusy(it.id, '*')"
+                          :disabled="devicePowerLeaseBlocked()"
+                          @click="doDeviceCapPower(it, 'power_on')">补偿开</el-button>
+                      </div>
+                      <el-collapse class="cap-detail-collapse">
+                        <el-collapse-item title="详情" name="detail">
+                          <div class="cap-card-row"><span class="comres-muted">已绑对象</span>
+                            <span>{{ capPowerMeta(it).power_dev || '—' }}{{ capPowerMeta(it).channel != null ? (' CH' + capPowerMeta(it).channel) : '' }}</span>
+                          </div>
+                          <div class="cap-card-row"><span class="comres-muted">slot</span>
+                            <span>{{ capPowerMeta(it).slot != null ? capPowerMeta(it).slot : '—' }}</span>
+                          </div>
+                          <div class="cap-card-row"><span class="comres-muted">位置</span>
+                            <span>{{ capPowerMeta(it).location || '—' }}</span>
+                          </div>
+                          <div class="cap-card-row"><span class="comres-muted">来源</span>
+                            <span>{{ capPowerMeta(it).source || '—' }}</span>
+                          </div>
+                          <div class="cap-card-row"><span class="comres-muted">enabled</span>
+                            <span v-if="capPowerMeta(it).enabled === false">停用</span>
+                            <span v-else-if="capPowerMeta(it).enabled === true">启用</span>
+                            <span v-else>—</span>
+                          </div>
+                        </el-collapse-item>
+                      </el-collapse>
+                    </template>
+
+                    <!-- 串口：控制台 -->
+                    <template v-else-if="it.kind === 'serial.io'">
+                      <div class="cap-card-actions">
+                        <el-tooltip
+                          content="该端口未绑定节点"
+                          placement="top"
+                          :disabled="!!capSerialConsoleTarget(it)"
+                        >
+                          <span>
+                            <el-button size="small" type="primary"
+                              :disabled="!capSerialConsoleTarget(it)"
+                              @click="openCapSerialConsole(it)">控制台</el-button>
+                          </span>
+                        </el-tooltip>
+                      </div>
+                    </template>
+
+                    <!-- ADB：调试区 -->
+                    <template v-else-if="it.kind === 'adb'">
+                      <div class="cap-card-actions">
+                        <el-button size="small" type="primary"
+                          :disabled="!capActionsEnabled(it)"
+                          @click="adbPanelOpen = !adbPanelOpen">{{ adbPanelOpen ? '收起调试' : 'ADB 调试' }}</el-button>
+                      </div>
+                      <div v-if="adbPanelOpen" class="adb-debug">
+                        <div class="adb-quick">
+                          <span class="comres-muted" style="font-size:11px">常用</span>
+                          <el-button
+                            v-for="q in ADB_QUICK_CMDS" :key="q.cmd" size="small" link type="primary"
+                            @click="setAdbQuickCmd(q.cmd)">{{ q.label }}</el-button>
+                        </div>
+                        <el-input
+                          v-model="adbCmd"
+                          size="small"
+                          placeholder="adb shell 命令，Enter 执行"
+                          :disabled="adbBusy"
+                          @keyup.enter="onAdbCmdEnter"
+                        >
+                          <template #append>
+                            <el-button :loading="adbBusy" @click="runDeviceAdbExec({ command: adbCmd })">执行</el-button>
+                          </template>
+                        </el-input>
+                        <p v-if="adbErr" class="adb-err">{{ adbErr }}</p>
+                        <pre v-if="adbOut" class="adb-out">rc={{ adbOut.rc }} · {{ adbOut.duration_ms }}ms{{ adbOut.truncated ? ' · truncated' : '' }}
+{{ adbOut.stdout || '' }}{{ adbOut.stderr ? ('\n[stderr]\n' + adbOut.stderr) : '' }}</pre>
+                      </div>
+                    </template>
+
+                    <!-- mode 等其它 kind：保留动作按钮 -->
+                    <template v-else>
+                      <div v-if="capKindActions(it).length" class="cap-card-actions">
+                        <el-button v-for="act in capKindActions(it)" :key="act.action_key" size="small"
+                          :loading="deviceIsActionBusy(it.id, '*')"
+                          :disabled="!capActionsEnabled(it) || deviceIsActionBusy(it.id, '*')"
+                          @click="doDeviceCapAction(it, act)">{{ act.display_name || act.action_key }}</el-button>
+                      </div>
+                    </template>
+                  </div>
+                </el-col>
+              </el-row>
+            </el-card>
+
+            <!-- 非 admin：电源绑定只读摘要 -->
+            <el-card v-if="me.role !== 'admin'" shadow="never" class="dev-section"
+              v-loading="devicePowerLoading">
+              <template #header><span>电源绑定</span></template>
+              <p class="comres-muted" style="margin:0;font-size:13px;line-height:1.5">{{ devicePowerBindSummary }}</p>
+            </el-card>
+
+            <!-- admin：电源配置（默认折叠） -->
+            <el-card v-if="me.role === 'admin'" shadow="never" class="dev-section"
+              v-loading="devicePowerLoading || devicePowerInvLoading">
+              <template #header><span>电源配置</span></template>
+              <el-collapse v-model="devicePowerConfigOpen" class="dev-power-config">
+                <el-collapse-item title="展开以管理节点与绑定" name="config">
+                  <div class="dev-power-head" style="margin-bottom:10px">
+                    <div class="dev-power-node">
+                      <template v-if="devicePowerNodeId && !devicePowerNodePicking">
+                        <el-tag size="small" effect="plain">节点 {{ devicePowerNodeLabel(devicePowerNodeId) }}</el-tag>
+                        <el-button size="small" link type="primary" @click="startDevicePowerNodeReselect">重新选择</el-button>
+                      </template>
+                      <el-select
+                        v-else
+                        :model-value="devicePowerNodeId"
+                        size="small"
+                        filterable
+                        clearable
+                        placeholder="请先选择设备所在节点"
+                        style="width:220px"
+                        @change="onDevicePowerNodePick"
+                      >
+                        <el-option
+                          v-for="n in (prNodes || [])"
+                          :key="n.node_id"
+                          :label="(n.display_name || n.node_id) + ' (' + n.node_id + ')'"
+                          :value="n.node_id"
+                        />
+                      </el-select>
+                    </div>
+                  </div>
+                  <el-alert v-if="devicePowerAlert" :title="devicePowerAlert" type="success" show-icon
+                    style="margin-bottom:12px" @close="devicePowerAlert = ''" />
+                  <el-alert
+                    v-if="!devicePowerNodeId"
+                    title="请先选择设备所在节点"
+                    type="warning"
+                    show-icon
+                    :closable="false"
+                    style="margin-bottom:12px"
+                  />
+
+                  <el-empty v-if="devicePowerFullEmpty"
+                    description="该节点暂无电源通道；如需新增，请在 CtrlRes → PowerRes 手工登记或让 hub 上报">
+                    <el-button type="primary" size="small" @click="goBindPowerRes">打开 PowerRes 卡片</el-button>
+                  </el-empty>
+
+                  <template v-else>
+                    <div v-if="(devicePowerBindings || []).length" class="dev-power-bound">
+                      <div class="cap-kind-title">已绑定到本机</div>
+                      <el-table :data="devicePowerBindings" border size="small">
+                        <el-table-column prop="power_dev" label="电源设备" min-width="110" show-overflow-tooltip />
+                        <el-table-column label="通道" width="70">
+                          <template #default="{ row }">CH{{ row.channel }}</template>
+                        </el-table-column>
+                        <el-table-column prop="endpoint" label="端点" min-width="140" show-overflow-tooltip>
+                          <template #default="{ row }"><span class="kv-mono">{{ row.endpoint || '—' }}</span></template>
+                        </el-table-column>
+                        <el-table-column label="位置" min-width="120" show-overflow-tooltip>
+                          <template #default="{ row }">{{ prLocationText(row) }}</template>
+                        </el-table-column>
+                        <el-table-column label="来源" min-width="130" show-overflow-tooltip>
+                          <template #default="{ row }">{{ prSourceText(row) || '—' }}</template>
+                        </el-table-column>
+                        <el-table-column label="槽位" width="60">
+                          <template #default="{ row }">{{ row.slot != null ? row.slot : '—' }}</template>
+                        </el-table-column>
+                        <el-table-column prop="label" label="label" min-width="100" show-overflow-tooltip>
+                          <template #default="{ row }">{{ row.label || '—' }}</template>
+                        </el-table-column>
+                        <el-table-column label="状态" width="80">
+                          <template #default="{ row }">
+                            <el-tag v-if="row.enabled === false" size="small" type="info">停用</el-tag>
+                            <el-tag v-else size="small" type="success">启用</el-tag>
+                          </template>
+                        </el-table-column>
+                        <el-table-column label="操作" width="90" fixed="right">
+                          <template #default="{ row }">
+                            <el-button size="small" type="danger" link @click="doDevicePowerUnbind(row)">解绑</el-button>
+                          </template>
+                        </el-table-column>
+                      </el-table>
+                    </div>
+                    <el-empty v-else-if="devicePowerNodeId" description="该设备尚未绑定电源通道" :image-size="48"
+                      style="padding:8px 0 4px" />
+
+                    <el-collapse v-if="devicePowerNodeId" v-model="devicePowerCandOpen" class="dev-power-cand">
+                      <el-collapse-item title="可绑定通道" name="candidates">
+                        <el-table v-if="(devicePowerCandidates || []).length" :data="devicePowerCandidates" border size="small">
+                          <el-table-column prop="power_dev" label="电源设备" min-width="110" show-overflow-tooltip>
+                            <template #default="{ row }">{{ row.name || row.power_dev }}</template>
+                          </el-table-column>
+                          <el-table-column label="通道" width="70">
+                            <template #default="{ row }">CH{{ row.channel }}</template>
+                          </el-table-column>
+                          <el-table-column label="端点" min-width="140" show-overflow-tooltip>
+                            <template #default="{ row }"><span class="kv-mono">{{ row.endpoint || '—' }}</span></template>
+                          </el-table-column>
+                          <el-table-column label="位置" min-width="120" show-overflow-tooltip>
+                            <template #default="{ row }">{{ prLocationText(row) }}</template>
+                          </el-table-column>
+                          <el-table-column label="来源" min-width="130" show-overflow-tooltip>
+                            <template #default="{ row }">{{ prSourceText(row) || '—' }}</template>
+                          </el-table-column>
+                          <el-table-column label="当前状态" width="90">
+                            <template #default="{ row }">{{ row.state || '—' }}</template>
+                          </el-table-column>
+                          <el-table-column label="绑定情况" min-width="140">
+                            <template #default="{ row }">
+                              <el-tag v-if="prBoundDeviceId(row)" size="small" type="warning">
+                                已绑 {{ prDeviceName(prBoundDeviceId(row)) || prBoundDeviceId(row) }}
+                              </el-tag>
+                              <span v-else class="comres-muted">未绑定</span>
+                            </template>
+                          </el-table-column>
+                          <el-table-column label="操作" width="100" fixed="right">
+                            <template #default="{ row }">
+                              <el-tooltip
+                                v-if="!(row.endpoint && String(row.endpoint).trim())"
+                                content="该通道端点缺失，请在 PowerRes 卡片补登记"
+                                placement="top"
+                              >
+                                <span>
+                                  <el-button size="small" type="primary" disabled>绑定</el-button>
+                                </span>
+                              </el-tooltip>
+                              <el-button
+                                v-else
+                                size="small"
+                                type="primary"
+                                :loading="devicePowerBindBusy === devicePowerCandRowKey(row)"
+                                :disabled="!!devicePowerBindBusy || !devicePowerNodeId"
+                                @click="doDevicePowerBind(row)"
+                              >绑定</el-button>
+                            </template>
+                          </el-table-column>
+                        </el-table>
+                        <p v-else class="comres-muted" style="font-size:12px;margin:4px 0">
+                          该节点暂无可绑定通道（均已绑本机，或尚无登记）。
+                        </p>
+                      </el-collapse-item>
+                    </el-collapse>
+                  </template>
+                </el-collapse-item>
+              </el-collapse>
+            </el-card>
+          </el-col>
+
+          <el-col :xs="24" :sm="24" :md="8">
+            <el-card shadow="never" class="dev-section">
+              <template #header><span>健康摘要</span></template>
+              <el-descriptions :column="1" border size="small">
+                <el-descriptions-item label="健康级别">{{ devicePage.health_level || '—' }}</el-descriptions-item>
+                <el-descriptions-item label="状态">
+                  <el-tag size="small" :type="statusTag[devicePage.status] || 'info'">{{ devicePage.status }}</el-tag>
+                </el-descriptions-item>
+                <el-descriptions-item label="最近探测">{{ devicePage.last_probe_at ? formatLocal(devicePage.last_probe_at) : '从未探测' }}</el-descriptions-item>
+                <el-descriptions-item label="最近在线">{{ devicePage.last_seen_at ? formatLocal(devicePage.last_seen_at) : '—' }}</el-descriptions-item>
+                <el-descriptions-item label="串口可用">{{ devicePage.serial_openable ? '是' : '否' }}（{{ devicePage.serial_ports || 0 }}）</el-descriptions-item>
+                <el-descriptions-item label="电源绑定">{{ (devicePowerBindings || []).length }} 路</el-descriptions-item>
+              </el-descriptions>
+            </el-card>
+          </el-col>
+        </el-row>
       </div>
 
       <!-- 资源调度：占用 / 排队 / 异常 -->
@@ -3265,16 +5840,30 @@ const legendRole = [
             <el-table :data="credentials.filter((c) => !c.revoked)" border>
               <el-table-column prop="email" label="邮箱" width="200" />
               <el-table-column prop="name" label="姓名" width="120" />
-              <el-table-column prop="role" label="权限" width="80" />
+              <el-table-column label="权限" width="100">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="row.role === 'admin' ? 'danger' : 'info'" effect="plain">{{ row.role }}</el-tag>
+                </template>
+              </el-table-column>
               <el-table-column prop="token_prefix" label="token 前缀" width="140" />
               <el-table-column prop="agent_label" label="Agent" width="140" />
               <el-table-column prop="note" label="备注" width="140" />
               <el-table-column label="到期时间" width="200"><template #default="{ row }">{{ formatLocal(row.expires_at) }}</template></el-table-column>
               <el-table-column label="创建时间" width="200"><template #default="{ row }">{{ formatLocal(row.created_at) }}</template></el-table-column>
-              <el-table-column label="操作" width="180" fixed="right">
+              <el-table-column label="操作" width="260" fixed="right">
                 <template #default="{ row }">
                   <el-button size="small" @click="renewCredential(row.id)">续期</el-button>
                   <el-button size="small" type="danger" @click="revokeCredential(row.id)">吊销</el-button>
+                  <el-button
+                    v-if="me && me.role === 'admin' && row.role === 'user'"
+                    size="small" type="primary" plain
+                    @click="setCredentialRole(row, 'admin')"
+                  >设为管理员</el-button>
+                  <el-button
+                    v-if="me && me.role === 'admin' && row.role === 'admin' && !isSelfCredentialRow(row)"
+                    size="small" type="warning" plain
+                    @click="setCredentialRole(row, 'user')"
+                  >设为普通用户</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -3300,8 +5889,10 @@ const legendRole = [
         </el-tabs>
       </div>
 
-      <!-- COMRes：节点视图 / 资源池 / 设置（原 WireLog tab，key 仍为 wirelog） -->
-      <div v-else-if="active === 'wirelog'">
+      <!-- CtrlRes：一页两卡片（el-tabs）。选 tabs 而非并列 el-card：与 ?card= 深链一一对应，且 COMRes 内部已有多层 el-card，避免再套一层。 -->
+      <div v-else-if="active === 'ctrlres'">
+        <el-tabs v-model="ctrlresCard" @tab-change="onCtrlresCardChange">
+          <el-tab-pane label="COMRes" name="comres">
         <!-- 串口恢复对话框（readonly / restart_adbd / reboot） -->
         <el-dialog v-model="recoverDialog" title="串口恢复" width="720px" append-to-body>
           <div v-if="recoverDevice">
@@ -4081,6 +6672,383 @@ const legendRole = [
             </div>
           </div>
         </el-drawer>
+          </el-tab-pane>
+
+          <el-tab-pane label="PowerRes" name="powerres">
+        <!-- PowerRes：电源通道绑定到被测设备 -->
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;gap:12px;flex-wrap:wrap">
+          <h2 style="margin:0">PowerRes</h2>
+          <div v-if="!prUnsupported" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <el-select
+              v-model="prNodeId"
+              placeholder="选择节点"
+              filterable
+              clearable
+              style="width:280px"
+              @change="onPrNodeChange"
+            >
+              <el-option
+                v-for="n in prNodes"
+                :key="n.node_id"
+                :label="(n.display_name || n.node_id) + ' (' + n.node_id + ')'"
+                :value="n.node_id"
+              />
+            </el-select>
+            <el-button size="small" :loading="prLoading" @click="refreshPowerRes">刷新</el-button>
+            <el-button v-if="me.role === 'admin'" size="small" type="primary" plain :disabled="prUnsupported" @click="openPrAdd">手工添加资源</el-button>
+            <el-tag size="small" type="info">设备 {{ prStats.devices }}</el-tag>
+            <el-tag size="small" type="info">通道 {{ prStats.channels }}</el-tag>
+            <el-tag size="small" :type="prStats.bound ? 'success' : 'info'">已绑定 {{ prStats.bound }}</el-tag>
+          </div>
+        </div>
+
+        <div
+          v-if="prUnsupported"
+          style="display:flex;align-items:center;justify-content:center;min-height:280px;padding:24px"
+        >
+          <div style="text-align:center;max-width:420px;color:var(--el-text-color-regular);line-height:1.6">
+            {{ PR_UNSUPPORTED_HINT }}
+          </div>
+        </div>
+
+        <template v-else>
+          <el-alert v-if="prError" type="error" :closable="false" show-icon
+                    :title="'PowerRes：' + prError" style="margin-bottom:10px" />
+
+          <el-alert
+            v-else-if="!prLoading && !(prNodes || []).length"
+            type="info"
+            :closable="false"
+            show-icon
+            :title="PR_NO_NODES_HINT"
+            style="margin-bottom:10px"
+          />
+
+          <el-alert
+            v-if="!prUnsupported && me.role !== 'admin'"
+            type="info"
+            :closable="false"
+            show-icon
+            title="绑定关系由管理员维护；你可对已绑定到你设备的通道执行电源动作"
+            style="margin-bottom:10px"
+          />
+
+          <el-card shadow="never" class="comres-panel" v-loading="prLoading">
+            <template #header>
+              <span>电源资源（/api/powerres/inventory）</span>
+            </template>
+            <el-empty
+              v-if="!prLoading && prNodeId && !(prItems || []).length && !prError"
+              description="该节点暂无电源资源，可点「手工添加资源」建档"
+            />
+            <el-empty
+              v-else-if="!prLoading && !prNodeId"
+              :description="(prNodes || []).length ? '请选择节点以查看电源通道' : PR_NO_NODES_HINT"
+            />
+            <el-table
+              v-else-if="(prItems || []).length"
+              :data="prItems"
+              border
+              size="small"
+              stripe
+            >
+              <el-table-column prop="power_dev" label="电源设备" min-width="120" show-overflow-tooltip />
+              <el-table-column prop="name" label="名称" min-width="100" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.name || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="com" label="COM" width="90" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.com || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="通道" width="80">
+                <template #default="{ row }">CH{{ row.channel }}</template>
+              </el-table-column>
+              <el-table-column prop="endpoint" label="端点" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.endpoint || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="位置" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ prLocationText(row) }}</template>
+              </el-table-column>
+              <el-table-column label="来源" min-width="140" show-overflow-tooltip>
+                <template #default="{ row }">{{ prSourceText(row) || '—' }}</template>
+              </el-table-column>
+              <el-table-column prop="state" label="当前状态" width="100">
+                <template #default="{ row }">{{ row.state || '—' }}</template>
+              </el-table-column>
+              <el-table-column label="启用" width="80">
+                <template #default="{ row }">
+                  <el-tag v-if="prRowBound(row) && !prBindingEnabled(row)" size="small" type="info">停用</el-tag>
+                  <el-tag v-else-if="prRowBound(row)" size="small" type="success">启用</el-tag>
+                  <span v-else class="comres-muted">—</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="绑定目标" min-width="160" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <template v-if="prRowBound(row)">
+                    <a
+                      class="pr-device-link"
+                      href="javascript:;"
+                      :title="'设备详情 ' + prBoundDeviceId(row)"
+                      @click.prevent="openPrDevicePage(prBoundDeviceId(row))"
+                    >{{ prDeviceName(prBoundDeviceId(row)) || prBoundDeviceId(row) }}</a>
+                    <span v-if="prBoundSlot(row) != null" class="comres-muted">({{ prBoundSlot(row) }})</span>
+                  </template>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" min-width="380" fixed="right">
+                <template #default="{ row }">
+                  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px">
+                    <!-- 未绑定 + 非 admin：禁用 -->
+                    <el-tooltip
+                      v-if="!prRowBound(row) && me.role !== 'admin'"
+                      content="请先绑定目标设备"
+                      placement="top"
+                    >
+                      <span style="display:inline-flex;gap:4px;align-items:center">
+                        <el-switch size="small" disabled :model-value="prSwitchOn(row)" />
+                        <el-button size="small" disabled>重启</el-button>
+                      </span>
+                    </el-tooltip>
+                    <!-- 已绑定且停用：禁用 -->
+                    <el-tooltip
+                      v-else-if="prRowBound(row) && !prBindingEnabled(row)"
+                      content="该通道已停用"
+                      placement="top"
+                    >
+                      <span style="display:inline-flex;gap:4px;align-items:center">
+                        <el-switch size="small" disabled :model-value="prSwitchOn(row)" />
+                        <el-button size="small" disabled>重启</el-button>
+                      </span>
+                    </el-tooltip>
+                    <!-- 已绑定 + 非 admin 无租约：禁用 -->
+                    <el-tooltip
+                      v-else-if="prRowBound(row) && prActionLeaseBlocked(row)"
+                      content="需持有目标设备租约"
+                      placement="top"
+                    >
+                      <span style="display:inline-flex;gap:4px;align-items:center">
+                        <el-switch size="small" disabled :model-value="prSwitchOn(row)" />
+                        <el-button size="small" disabled>重启</el-button>
+                      </span>
+                    </el-tooltip>
+                    <!-- admin 未绑定 / admin 已绑启用 / 非 admin 持租：可操作 -->
+                    <span
+                      v-else
+                      style="display:inline-flex;gap:4px;flex-wrap:wrap;align-items:center"
+                    >
+                      <el-tooltip
+                        :disabled="prSwitchKnown(row)"
+                        content="状态未知（等待端侧上报/心跳）"
+                        placement="top"
+                      >
+                        <span style="display:inline-flex;align-items:center">
+                          <el-switch
+                            size="small"
+                            :model-value="prSwitchOn(row)"
+                            :disabled="!prSwitchKnown(row) || prIsActionBusy(row)"
+                            :loading="prIsActionBusy(row)"
+                            @change="(v) => onPrPowerSwitch(row, v)"
+                          />
+                        </span>
+                      </el-tooltip>
+                      <el-button
+                        size="small"
+                        :loading="prIsActionBusy(row)"
+                        :disabled="prIsActionBusy(row)"
+                        @click="doPrPowerCycle(row)"
+                      >重启</el-button>
+                      <el-input-number
+                        size="small"
+                        :model-value="prGetHoldMs(row)"
+                        :min="500"
+                        :max="30000"
+                        :step="500"
+                        controls-position="right"
+                        style="width:110px"
+                        :disabled="prIsActionBusy(row) || prHoldFollowsHub(row)"
+                        @update:model-value="(v) => prSetHoldMs(row, v)"
+                      />
+                      <span class="comres-muted" style="font-size:11px">
+                        {{ prHoldFollowsHub(row) ? 'ms·跟随端侧' : 'ms' }}
+                      </span>
+                      <el-button
+                        v-if="me.role === 'admin'"
+                        size="small"
+                        link
+                        type="primary"
+                        :loading="prIsActionBusy(row)"
+                        :disabled="prIsActionBusy(row)"
+                        @click="doPrPowerQuery(row)"
+                      >查询</el-button>
+                      <el-button
+                        v-if="prFailPhase(row) === 'power_on'"
+                        size="small"
+                        type="danger"
+                        plain
+                        :loading="prIsActionBusy(row)"
+                        :disabled="prIsActionBusy(row)"
+                        @click="doPrCompensateOn(row)"
+                      >补偿开</el-button>
+                    </span>
+                    <el-button
+                      v-if="!prRowBound(row) && me.role === 'admin'"
+                      size="small"
+                      type="primary"
+                      link
+                      :disabled="!row.endpoint"
+                      @click="openPrBind(row)"
+                    >绑定</el-button>
+                    <el-button
+                      v-else-if="me.role === 'admin'"
+                      size="small"
+                      type="danger"
+                      link
+                      :disabled="prIsActionBusy(row)"
+                      @click="doPrUnbind(row)"
+                    >解绑</el-button>
+                  </div>
+                </template>
+              </el-table-column>
+            </el-table>
+          </el-card>
+        </template>
+
+        <el-dialog v-model="prBindDlg.visible" title="绑定电源通道" width="600px" append-to-body>
+          <el-form label-width="110px" size="small">
+            <el-form-item label="电源设备">
+              <span>{{ prBindDlg.power_dev }}</span>
+              <span v-if="prBindDlg.name" class="comres-muted" style="margin-left:8px">{{ prBindDlg.name }}</span>
+              <span v-if="prBindDlg.driver" class="comres-muted" style="margin-left:8px">{{ prBindDlg.driver }}</span>
+            </el-form-item>
+            <el-form-item label="通道">
+              <span>CH{{ prBindDlg.channel }}</span>
+            </el-form-item>
+            <el-form-item label="端点">
+              <span class="mono">{{ prBindDlg.endpoint || '—' }}</span>
+            </el-form-item>
+            <el-form-item label="COM">
+              <span>{{ prBindDlg.com || '—' }}</span>
+            </el-form-item>
+            <el-form-item label="位置">
+              <span v-if="prBindDlg.location">{{ prBindDlg.location }}</span>
+              <span v-else>
+                <span class="comres-muted">未登记位置</span>
+                <span class="comres-muted" style="font-size:11px;margin-left:6px">可在 deskserialhub 设置里登记</span>
+              </span>
+            </el-form-item>
+            <el-form-item label="筛选">
+              <div class="pr-bind-filters">
+                <el-select
+                  v-model="prBindDlg.modelFilter"
+                  size="small"
+                  clearable
+                  placeholder="全部机型"
+                  style="width:160px"
+                >
+                  <el-option label="全部机型" value="" />
+                  <el-option
+                    v-for="m in prBindModelOptions"
+                    :key="m"
+                    :label="m"
+                    :value="m"
+                  />
+                </el-select>
+                <el-input
+                  v-model="prBindDlg.keyword"
+                  size="small"
+                  clearable
+                  placeholder="ID / 名称 / 位置 / 负责人 / ADB"
+                  style="flex:1;min-width:160px"
+                />
+              </div>
+            </el-form-item>
+            <el-form-item label="目标设备" required>
+              <el-select
+                v-model="prBindDlg.device_id"
+                filterable
+                size="small"
+                placeholder="选择被测设备"
+                style="width:100%"
+                :loading="prBindDlg.bindingsLoading"
+              >
+                <template #empty>
+                  <el-empty description="无匹配设备" :image-size="48" />
+                </template>
+                <el-option
+                  v-for="d in prDeviceOptions"
+                  :key="d.device_id"
+                  :label="d.label"
+                  :value="d.device_id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="label">
+              <el-input v-model="prBindDlg.label" size="small" placeholder="可选；默认 power_dev CHn" clearable />
+            </el-form-item>
+            <el-form-item label="slot">
+              <el-input
+                v-model="prBindDlg.slot"
+                size="small"
+                :placeholder="'留空=自动分配 1..' + PR_SLOT_MAX"
+                clearable
+              />
+            </el-form-item>
+          </el-form>
+          <div class="comres-muted" style="font-size:12px;margin-top:4px">
+            绑定后控制权跟随设备：管理员直控，其他人需持该设备租约
+          </div>
+          <template #footer>
+            <el-button size="small" @click="prBindDlg.visible = false">取消</el-button>
+            <el-button size="small" type="primary" :loading="prBindDlg.busy" @click="submitPrBind">绑定</el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog v-model="prAddDlg.visible" title="手工添加电源资源" width="520px" append-to-body>
+          <el-form label-width="110px">
+            <el-form-item label="节点" required>
+              <el-select
+                v-model="prAddDlg.node_id"
+                filterable
+                placeholder="选择 wirelog 节点"
+                style="width:100%"
+              >
+                <el-option
+                  v-for="n in wlNodes"
+                  :key="n.node_id"
+                  :label="(n.display_name || n.node_id) + ' (' + n.node_id + ')'"
+                  :value="n.node_id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="设备 id" required>
+              <el-input v-model="prAddDlg.power_dev" placeholder="power_dev，如 relay1" clearable />
+            </el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="prAddDlg.name" placeholder="可选" clearable />
+            </el-form-item>
+            <el-form-item label="COM">
+              <el-input v-model="prAddDlg.com" placeholder="可选，如 COM24" clearable />
+            </el-form-item>
+            <el-form-item label="通道号" required>
+              <el-input v-model="prAddDlg.channel" placeholder="如 1" clearable />
+            </el-form-item>
+            <el-form-item label="端点" required>
+              <el-input v-model="prAddDlg.endpoint" placeholder="tcp://host:port" clearable />
+            </el-form-item>
+            <el-form-item label="位置">
+              <el-input v-model="prAddDlg.location" placeholder="可选，电源设备所在位置（≤64 字）" maxlength="64" clearable />
+            </el-form-item>
+            <el-form-item label="驱动/型号">
+              <el-input v-model="prAddDlg.driver" placeholder="可选，relay 驱动名（≤32 字）" maxlength="32" clearable />
+            </el-form-item>
+          </el-form>
+          <template #footer>
+            <el-button @click="prAddDlg.visible = false">取消</el-button>
+            <el-button type="primary" :loading="prAddDlg.busy" @click="submitPrAdd">登记</el-button>
+          </template>
+        </el-dialog>
+          </el-tab-pane>
+        </el-tabs>
       </div>
 
       <!-- 设置：系统 + 设备类型 + 通讯录 + SMTP + 介绍 + 审计 -->
@@ -5119,6 +8087,152 @@ const legendRole = [
 }
 /* COMRes：无串口资源 / 失效资源灰显 */
 .comres-muted { color: #c0c4cc; }
+.pr-device-link {
+  color: var(--el-color-primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+.pr-device-link:hover { text-decoration: underline; }
+/* PT3b 设备独立页 */
+.dev-link {
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.dev-link:hover {
+  color: var(--el-color-primary);
+  text-decoration: underline;
+}
+.dev-page { max-width: 1400px; }
+.dev-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.dev-head-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.dev-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.dev-title { margin: 0; font-size: 18px; }
+.dev-owner { color: #909399; font-size: 13px; }
+.dev-section { margin-bottom: 16px; }
+.dev-section .el-card__header { padding: 10px 14px; font-weight: 600; }
+.dev-section .el-card__body { padding: 12px 14px; }
+.dev-power-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.dev-power-node {
+  display: flex; align-items: center; gap: 6px; font-weight: 400;
+}
+.dev-power-bound { margin-bottom: 8px; }
+.dev-power-cand { margin-top: 4px; border: none; }
+.dev-power-cand .el-collapse-item__header { font-size: 13px; font-weight: 600; height: 36px; line-height: 36px; }
+.dev-power-cand .el-collapse-item__wrap { border-bottom: none; }
+.dev-power-cand .el-collapse-item__content { padding-bottom: 4px; }
+.kv-mono {
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+.cap-kind-block { margin-bottom: 12px; }
+.cap-kind-title {
+  font-size: 13px; font-weight: 600; color: #606266;
+  margin: 4px 0 8px;
+}
+.cap-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.cap-row { align-items: stretch; }
+.cap-col {
+  display: flex;
+  margin-bottom: 12px;
+}
+.cap-card {
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.cap-card--stretch {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.cap-card--dim { opacity: 0.65; }
+.cap-card-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; margin-bottom: 8px;
+}
+.cap-card-tags { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.cap-card-name { font-weight: 600; font-size: 13px; }
+.cap-card-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; margin-bottom: 4px;
+}
+.cap-ep {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px;
+}
+.cap-card-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+  margin-top: auto;
+  padding-top: 8px;
+}
+.cap-detail-collapse {
+  margin-top: 6px;
+  border: none;
+}
+.cap-detail-collapse .el-collapse-item__header {
+  height: 28px; line-height: 28px; font-size: 12px; font-weight: 500; border: none;
+}
+.cap-detail-collapse .el-collapse-item__wrap { border: none; }
+.cap-detail-collapse .el-collapse-item__content { padding-bottom: 2px; }
+.dev-power-config { border: none; }
+.dev-power-config .el-collapse-item__header {
+  font-size: 13px; font-weight: 600; height: 36px; line-height: 36px;
+}
+.dev-power-config .el-collapse-item__wrap { border-bottom: none; }
+.adb-debug { margin-top: 8px; }
+.adb-quick {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px;
+  margin-bottom: 6px;
+}
+.adb-err { color: #f56c6c; font-size: 12px; margin: 6px 0 0; }
+.adb-out {
+  margin: 8px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px;
+  background: #f5f7fa;
+  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: 4px;
+  font-family: Consolas, Monaco, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.pr-bind-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  align-items: center;
+}
 .comres-no-serial { color: #c0c4cc; }
 .comres-no-serial .cell { color: #c0c4cc; }
 .comres-unauthorized { color: #c0c4cc; }

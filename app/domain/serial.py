@@ -18,6 +18,7 @@ from app.domain.catalog import DomainError
 from app.models import (
     Device,
     DeviceSerialPort,
+    PowerResBinding,
     SerialAction,
     SerialLogCursor,
     SerialState,
@@ -29,6 +30,8 @@ VALID_TRANSPORTS = ("tcp", "local")
 POWER_KEYS = ("power_on", "power_off", "power_cycle")
 MODE_KEYS = ("mode_normal", "mode_fastboot", "mode_edl")
 POWER_CYCLE_HOLD_MS = 1200   # 断电保持；电源板电容释放一般 1~3s，必要时调
+HOLD_MS_MIN = 500
+HOLD_MS_MAX = 30000
 DEFAULT_TTL_SEC = 120.0
 DEFAULT_HARD_TIMEOUT_S = 5.0
 DEFAULT_HOLD_WAIT_MS = 2000  # 共享串口：被占时最多等这么久（等持有方 release）
@@ -579,6 +582,88 @@ def _exec_steps(
     )
 
 
+def _clamp_hold_ms(hold_ms: int | None) -> int:
+    """hold_ms 缺省用 POWER_CYCLE_HOLD_MS；显式传入则夹紧到 [HOLD_MS_MIN, HOLD_MS_MAX]。"""
+    if hold_ms is None:
+        return POWER_CYCLE_HOLD_MS
+    return max(HOLD_MS_MIN, min(HOLD_MS_MAX, int(hold_ms)))
+
+
+def _reject_power_guard(
+    session: Session,
+    device_id: str,
+    action_key: str,
+    port: DeviceSerialPort,
+    *,
+    by: str,
+    lease_id: str | None,
+    code: str,
+    message: str,
+    detail: dict | None = None,
+) -> None:
+    """校验失败：写一条 result=rejected 审计后抛 DomainError（HTTP 侧映为 400）。"""
+    result = {
+        "device_id": device_id,
+        "action_key": action_key,
+        "result": "rejected",
+        "error": message,
+        "error_code": code,
+        "duration_ms": 0,
+    }
+    if detail:
+        result["detail"] = detail
+    _audit(session, device_id, action_key, port, lease_id, by, result)
+    session.commit()
+    raise DomainError(code, message, detail or {"action_key": action_key})
+
+
+def _guard_power_action(
+    session: Session,
+    device_id: str,
+    action_key: str,
+    port: DeviceSerialPort,
+    *,
+    by: str,
+    lease_id: str | None,
+    confirm: bool,
+) -> None:
+    """power_on/off/cycle：confirm（off/cycle）→ binding.enabled。顺序在 acquire 之前。"""
+    if action_key not in POWER_KEYS:
+        return
+    if action_key in ("power_off", "power_cycle") and not confirm:
+        _reject_power_guard(
+            session,
+            device_id,
+            action_key,
+            port,
+            by=by,
+            lease_id=lease_id,
+            code="CONFIRM_REQUIRED",
+            message=f"{action_key} 需要 confirm=true 二次确认",
+            detail={"action_key": action_key},
+        )
+    disabled = (
+        session.query(PowerResBinding.id)
+        .filter(
+            PowerResBinding.device_id == device_id,
+            PowerResBinding.enabled.is_(False),
+        )
+        .first()
+    )
+    if disabled is not None:
+        _reject_power_guard(
+            session,
+            device_id,
+            action_key,
+            port,
+            by=by,
+            lease_id=lease_id,
+            code="POWER_DISABLED",
+            message=f"设备 {device_id} 的 PowerRes 绑定已停用，拒绝电源动作",
+            detail={"action_key": action_key, "device_id": device_id},
+        )
+
+
 def run_action(
     session: Session,
     device_id: str,
@@ -591,12 +676,23 @@ def run_action(
     wait_ms: int = DEFAULT_HOLD_WAIT_MS,
     hard_timeout_s: float = DEFAULT_HARD_TIMEOUT_S,
     dry_run: bool = False,
+    confirm: bool = False,
 ) -> dict:
     """服务端执行一个已定义的动作（含 power_cycle 的 off/hold/on 组合）。"""
     _device(session, device_id)
     port, act = _find_action(session, device_id, action_key)
     key = _hold_key(port)
-    hold = POWER_CYCLE_HOLD_MS if hold_ms is None else max(0, int(hold_ms))
+    hold = _clamp_hold_ms(hold_ms)
+    # 入口闸：confirm → enabled →（其后）acquire
+    _guard_power_action(
+        session,
+        device_id,
+        action_key,
+        port,
+        by=by,
+        lease_id=lease_id,
+        confirm=confirm,
+    )
 
     if dry_run:
         planned = [s for s in (act.steps or [])]
@@ -761,6 +857,7 @@ def _audit(
             "result": result.get("result"),
             "duration_ms": result.get("duration_ms"),
             "error": result.get("error"),
+            "error_code": result.get("error_code"),
             "by": by,
         },
     )
@@ -1051,13 +1148,24 @@ def serial_flags(session: Session) -> dict[str, dict]:
     out: dict[str, dict] = {}
     for p in ports:
         f = out.setdefault(
-            p.device_id, {"log": False, "power": False, "mode": False, "slots": 0}
+            p.device_id,
+            {
+                "log": False,
+                "power": False,
+                "mode": False,
+                "slots": 0,
+                "power_n": 0,
+                "log_n": 0,
+            },
         )
         f["slots"] += 1
         if p.role == "log":
             f["log"] = True
-        elif p.role == "power" and (keys_by_port.get(p.id) or set()) & set(POWER_KEYS):
-            f["power"] = True
+            f["log_n"] += 1
+        elif p.role == "power":
+            f["power_n"] += 1
+            if (keys_by_port.get(p.id) or set()) & set(POWER_KEYS):
+                f["power"] = True
         elif p.role == "mode" and (keys_by_port.get(p.id) or set()) & set(MODE_KEYS):
             f["mode"] = True
     return out

@@ -1,61 +1,42 @@
 ---
-task_id: t1043
+task_id: t1139
 ---
 
-# t1043：P0 probe source guard（禁止 mock 静默落库）
+# t1139 验收证据（普通用户可添加设备，机型仍 admin）
 
 ## a. 编译/构建
 
-- 命令：`timeout 60 /home/scm/github_gitee/quamm-res/.venv/bin/python -m py_compile app/constants.py app/config.py app/runtime_config.py app/domain/probe.py app/domain/catalog.py app/models.py app/migrations.py app/mcp/server.py app/main.py`
+- 命令：`cd web && npm run build`
 - 退出码：`0`
-- 关键结果：语法编译通过（无独立前端构建；Web 仅改 `App.vue` 选项文案）
+- 关键结果：构建成功，产物存在
+  - `web/dist/assets/index-5pGRhd4R.js`（1,282.07 kB）
+  - `web/dist/assets/index-BzwBFL8y.css`（376.00 kB）
+  - `web/dist/index.html`
 
 ## b. 改动文件清单
 
-- `app/constants.py` — 新增 `ProbeSource`（real/serial/mock/unknown + PRODUCTION/ALL）
-- `app/config.py` — `probe_backend` 默认 `real`；新增 `allow_mock_probe=False`
-- `app/runtime_config.py` — 运行时键 `allow_mock_probe`；保留 probe_backend real/mock
-- `app/domain/probe.py` — `build_prober` 未知值抛 `ValueError`，不再回退 mock
-- `app/domain/catalog.py` — `_resolve_probe_source`；probe/register 闸门；audit/source；`_public_device` 输出 `source`/`simulated`
-- `app/models.py` — `Device.source` 默认 real；只读属性 `simulated`
-- `app/migrations.py` — 新列默认 real；空值标 unknown；删除刷 mock 逻辑
-- `app/mcp/server.py` — `res_device_probe` docstring 标明 mock 仅开发/测试
-- `app/main.py` — 启动注释对齐默认 real
-- `web/src/App.vue` — 去掉全局 mock 探测选项；注明生产只允许 real
-- `tests/conftest.py` — 测试显式 `allow_mock_probe=True` + `probe_backend=mock`
-- `tests/test_patrol_cycle.py` — 适配 build_prober 默认 real / 未知抛错
-- `tests/test_probe_source_guard.py` — P0 闸门单测（新建）
+- `app/api/router.py` — `web_device_probe` / `web_device_register` / `web_device_discover` 依赖改 `require_login`，docstring 补 v0.54.5 说明；其它 admin 接口未改
+- `web/src/App.vue` — 四处「＋ 添加设备」去除 `me.role === 'admin'` 限制
+- `tests/test_device_add_user.py` — 新增 5 例（user probe/register/discover、user product-types 403、admin 四接口回归）
+- `VERSION` — 0.54.6 → 0.54.5（按任务目标；工作区此前已被其它任务改为 0.54.6，见备注）
+- `CHANGELOG.md` — 顶部新增 `[0.54.5]` 条目
+- `AGENT_BRIDGE_EVIDENCE.md` / `AGENT_BRIDGE_PROGRESS.md` — 本任务验收落盘
 
 ## c. 版本/提交证据
 
-- 分支：`feat/probe-source-guard`
-- `git log -1 --oneline`：`41ae518 chore(release): v0.51.0；real 探测器兼容交互式 adbd 变体`
-- `git status --short`：12 modified + 1 untracked（见上清单）；**未 commit、未 push**
-- `git diff --stat`：`12 files changed, 126 insertions(+), 37 deletions(-)`（不含未跟踪测试文件行数）
-- Gerrit change：不适用
-- 部署：未部署 201；未写生产 DB
+- `git log -1 --oneline`：`62cce60 chore(release): v0.53.0 设备统一能力描述符 Phase 1`
+- `git status --short`：工作区大量未提交（含本任务 5 处改动；未 commit/push）
+- `git diff --stat`：15 files changed, 4204 insertions(+), 162 deletions(-)（含他人未提交改动，非本任务全部）
+- Gerrit change：无（禁止提交）
 
 ## d. 验证/自测
 
-### d1. 目标测试
+- `python -m pytest tests/test_device_add_user.py -q` → **5 passed**，退出码 0
+- `python -m pytest tests/test_credentials_role.py tests/test_device_capabilities_api.py tests/test_probe_source_guard.py tests/test_registration.py tests/test_device_acl.py -q` → **33 passed, 2 failed**，退出码 1
+  - 2 个失败均在 `tests/test_registration.py`（`test_register_20_devices`、`test_probe_unreachable_registers_pending`），属既有失败：`app/seed.py` 的 `PRODUCT_TYPES=[]`（HEAD 已如此，v0.17 起移除 mock 机型种子），与本任务无关；本任务未触碰 MCP/seed。
+- 既有 `tests/test_web_auth*.py`、`tests/test_catalog*.py` 不存在（`ls` 无匹配），故不适用。
 
-```
-timeout 90 …/python -m pytest tests/test_probe_source_guard.py tests/test_patrol_cycle.py tests/test_pending_probe.py -q
-```
+## 备注：MCP 现状（只报告，未改）
 
-- 退出码：`0`
-- 结果：`18 passed`
-
-### d2. 全量测试
-
-```
-timeout 600 …/python -m pytest -q --tb=no
-```
-
-- 结果：`210 passed, 17 failed, 37 warnings`
-- 失败清单与归属（相对 base `41ae518` 对照，同域已红，**非本次引入**）：
-  - `tests/test_apply_flow.py`：`test_list_products_and_whoami`、`test_product_metadata_completeness_and_stats`（products 夹具/口径，base 已失败）
-  - `tests/test_flash.py`：10 个 AttributeError（flash 夹具，base 已失败）
-  - `tests/test_mcp_http.py`：`test_mcp_http_full_flow`、`test_mcp_http_list_products_never_empty`
-  - `tests/test_queue.py`：`test_apply_by_product_type_queues_in_model_queue`
-  - `tests/test_registration.py`：`test_register_20_devices`、`test_probe_unreachable_registers_pending`（base 已失败：available=0 / apply 无 state）
+- `app/mcp/server.py` `res_device_probe`（L489）、`res_device_register`（L517）**无 admin 判定**，仅 `require_auth()`；即 MCP 侧普通用户本就允许添加设备，与本次 Web 语义一致，无冲突。
+- 机型维护 MCP 工具 `res_upsert_product_type`（约 L156）有 `if not auth.is_admin` → `FORBIDDEN`，保持仅管理员。

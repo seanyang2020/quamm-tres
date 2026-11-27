@@ -1,9 +1,9 @@
-# t1043 P0 probe source guard — 进度
+# t1139 — 进度
 
-> 任务：禁止 mock 静默落库 / source 可审计  
-> task_id: t1043  
-> 工作区：`/home/scm/worktree/tres-probe-source-guard`  
-> 分支：`feat/probe-source-guard`（基于 41ae518）
+> 任务：普通用户（role=user）可添加设备；机型/设备类型增删改仍仅 admin
+> task_id: t1139
+> 工作区：`/home/scm/github_gitee/quamm-res`
+> 分支：`feat/capabilities`（HEAD 62cce60 v0.53.0，工作区大量未提交）
 
 ## 状态：已完成（停住等审）
 
@@ -11,23 +11,17 @@
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| ProbeSource 常量 | `ALL_SOURCES` / `PRODUCTION_SOURCES` | ✅ |
-| 配置默认 | `probe_backend=real`，`allow_mock_probe=False` | ✅ |
-| 运行时键 | `allow_mock_probe` bool | ✅ |
-| build_prober | 未知值 ValueError，不再回退 mock | ✅ |
-| catalog 闸门 | `_resolve_probe_source`；probe/register 封口 | ✅ |
-| 模型/迁移 | 默认 real；`simulated` 派生；空值→unknown | ✅ |
-| 公开视图/MCP/UI | source+simulated；docstring；去掉 mock 选项 | ✅ |
-| 单测 | `test_probe_source_guard.py` + conftest/patrol 适配 | ✅ |
-| 提交/部署 | 未 commit / 未 push / 未部署 | ✅ |
+| 后端依赖 | probe/register/discover 由 `require_admin` 改 `require_login`，docstring 补 v0.54.5 | ✅ |
+| 未放开 | 截图、probe-batch、删除设备等 admin 接口均未改 | ✅ |
+| 前端按钮 | 概况标题、el-empty、品类详标题、细网格空态四处去除 admin 限制 | ✅ |
+| 机型页 | 「新增机型」按钮保持 `v-if="me.role === 'admin'"` | ✅ |
+| 新测试 | `tests/test_device_add_user.py` 5 例全绿 | ✅ |
+| 版本 | VERSION 0.54.5，CHANGELOG `[0.54.5]` | ✅ |
+| 构建 | `cd web && npm run build` 退出码 0，新 dist `index-5pGRhd4R.js` | ✅ |
+| 禁止项 | 未 commit/push、未重启服务、未改其它仓/文档 | ✅ |
 
-## 关键设计
+## 备注
 
-- **校验放在 catalog 入口**（`device_probe` / `device_register`），不封死 `get_prober_for("mock")`，故既有 mock 设备巡检仍可用。
-- **mock 仅当 `allow_mock_probe=True`**；生产默认拒绝，错误码 `MOCK_PROBE_DISABLED`。
-
-## 风险 / 未完成
-
-- 已有库 `device.source` 列若早已以 `DEFAULT 'mock'` 建好，SQLite 无法在线改列默认；仅影响「将来 ADD COLUMN」路径与 ORM 默认。
-- 未批量改写既有 `source=mock` 行（按 P0 要求）。
-- 全量 17 个既有失败（flash/registration/products/queue/mcp_http）未在本任务修复。
+- 进入任务时 `VERSION` 实际为 `0.54.6`（未提交，CHANGELOG 最高仍 0.54.4）。按任务明确目标写为 `0.54.5`，需确认是否与并行任务冲突。
+- MCP：`res_device_probe`/`res_device_register` 本就无 admin 判定（仅 require_auth），与 Web 新语义一致；机型 MCP 工具仍 admin-only。
+- 既有 `tests/test_registration.py` 2 例失败为历史遗留（seed 机型列表为空），与本任务无关。

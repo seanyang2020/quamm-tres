@@ -1186,6 +1186,7 @@ def _serial_action_impl(session, auth, device_id, action_key, lease_id=None,
         session, device_id, action_key,
         by=_serial_actor(auth), lease_id=lease_id, hold_ms=hold_ms,
         wait_ms=wait_ms if wait_ms is not None else serial_svc.DEFAULT_HOLD_WAIT_MS,
+        confirm=confirm,
     )
 
 
@@ -1274,8 +1275,9 @@ def res_serial_action(
 ) -> dict:
     """服务端执行一个已定义串口动作（power_on / power_off / power_cycle / mode_* / custom_*）。
 
-    需要持有该设备租约或管理员权限；mode_edl 额外要 confirm=true。
+    需要持有该设备租约或管理员权限；mode_edl / power_off / power_cycle 要 confirm=true。
     power_cycle 若没单独定义，会按 power_off + 断电保持(默认1200ms) + power_on 组合执行。
+    hold_ms 有效范围 500–30000（越界夹紧）；PowerResBinding.enabled=false 时拒绝电源动作。
     """
     return _guard(_serial_action_impl, device_id, action_key, lease_id, confirm, hold_ms, wait_ms)
 

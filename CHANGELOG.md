@@ -3,6 +3,73 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.5] - 2026-11-27
+
+### 变更：普通用户可添加设备
+- 放开 `POST /api/devices/probe`、`/api/devices/register`、`/api/devices/discover` 至已登录用户（`require_login`），普通用户可自助登记设备。
+- 设备类型（机型）增删改仍仅限管理员；截图、批量探测、删除设备等其它 admin 接口保持不变。
+- Web 端设备中心／空态／品类详情页去掉「需管理员」占位按钮，所有已登录用户可见可点。
+
+## [0.54.4] - 2026-11-26
+
+### 新增：管理员可调整凭据（token）权限
+- 管理员可在凭据页把 user 凭据提升为 admin，也可反向降级；`credential.role` 鉴权即时生效，无需重新登录或重新发 token。
+- 新增 `POST /api/credentials/{id}/role`（仅 admin）；自降级当前登录凭据禁止（`SELF_DEMOTE_FORBIDDEN`）；写审计 `set_credential_role`。
+
+## [0.54.3] - 2026-11-26
+
+### 变更：能力模型修正（电源/模式不再伪装串口；只读约束收紧）
+- `role=power|mode` 不再产出 `serial.io`，消除电源通道在串口区的假 `NO_BINDING` 卡。
+- `constraints.read_only` 仅反映真实写约束（`role=log` 或显式 ro）；`source=observed` 不再视为只读。
+
+### 新增：浏览器内 ADB 命令执行
+- 新增 `POST /api/devices/{id}/adb/exec`：admin 或持设备租约可执行 adb shell；
+  破坏性命令需 confirm；输出截断 64KB；写审计事件。
+
+### 变更：设备页信息架构整合
+- 能力区 ADB / 串口 / 电源三卡一排，操作留在卡内。
+- 「电源配置」仅 admin 且默认折叠、去掉开关列；非 admin 只读摘要。
+- 删除底部串口表；串口卡内增加控制台入口与 health / holder。
+
+## [0.54.2] - 2026-11-26
+
+### 变更：PowerRes 卡片开关合并与重启间隔跟随
+- PowerRes 卡片「开/关」合并为单个 `el-switch`，跟随端侧上报 `state`；未知态禁用并提示等待上报。
+- inventory 增加 `restart_hold_ms`（hub `/api/powerres/sync` 透传）；已注册通道重启强制用注册值，
+  前端 hold 输入只读并标注「跟随端侧」；手工通道仍可编辑 hold（500–30000 夹紧）。
+
+## [0.54.1] - 2026-11-26
+
+### 新增：PowerRes 通道级动作（管理员直控）
+- 新增 `POST /api/powerres/action`（admin）：未绑定通道也可直接开 / 关 / 重启 / 查询；
+  已绑定且 `enabled=false` 的通道仍拒绝；重启 hold 复用串口 5–30s 夹紧规则。
+- PowerRes 卡片操作列新增「查询」，用于读取端侧当前开关状态；动作写审计事件
+  `powerres_channel_action`。
+
+## [0.54.0] - 2026-11-26
+
+### 新增：PowerRes 资源域
+- 新增 PowerRes inventory / binding / overview 与手工登记；按节点同步电源设备与通道，
+  支持将通道绑定到目标设备并写入串口 power 端口。
+- 绑定行与 inventory 携带 location / driver，便于在 Web 与 deskserialhub 侧对照物理位置。
+
+### 新增：PowerRes 卡片电源动作
+- CtrlRes PowerRes 卡片支持对已绑定通道执行开 / 关 / 重启，重启可配置 hold_ms。
+- 串口 steps 统一 data/encoding 表达，并兼容旧 hex 载荷。
+
+### 新增：设备独立页与能力只读接口
+- 新增设备独立页 `#/device/{id}`，聚合指纹、能力、串口与电源绑定。
+- `GET /api/devices/{id}/capabilities` 返回只读能力快照；绑定对话框支持机型过滤与搜索。
+
+### 变更：电源动作安全闸与绑定权限
+- 电源动作：hold 限制 5–30s；`power_off` / `power_cycle` 强制 confirm；尊重 binding.enabled。
+- 绑定 / 解绑 / inventory 写操作仅 admin；控制权跟随设备（admin 直控，他人需持租约）。
+
+### 变更：设备中心电源能力入口
+- 设备中心列表新增「电源」列（`serial.power_n`），点击展开通道与开/关/重启；截图与截图历史
+  从列表移入设备详情页。
+- `serial_flags` / `GET /devices` 轻量附带 `power_n` / `log_n`，不改 MCP 既有字段语义。
+
 ## [0.53.0] - 2026-11-25
 
 ### 新增：设备统一能力描述符 Phase 1
