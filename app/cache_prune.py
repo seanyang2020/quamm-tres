@@ -166,7 +166,8 @@ def prune_db_source(
     deleted: list[dict] = []
     freed = 0
     if not root.exists():
-        return {"deleted": [], "freed_bytes": 0, "freed_human": "0 B", "dry_run": dry_run}
+        return {"deleted": [], "deleted_count": 0,
+                "freed_bytes": 0, "freed_human": "0 B", "dry_run": dry_run}
 
     keep_days = settings.db_source_keep_days if keep_days is None else keep_days
     keep_per_label = settings.db_source_keep_per_label if keep_per_label is None else keep_per_label

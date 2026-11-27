@@ -304,4 +304,7 @@ def prune_work_root(keep_days: int | None = None, keep_per_label: int | None = N
     from app import cache_prune
 
     result = cache_prune.prune_db_source(keep_days=keep_days, keep_per_label=keep_per_label)
-    return {"deleted_count": result["deleted_count"], "freed_bytes": result["freed_bytes"]}
+    return {
+        "deleted_count": int(result.get("deleted_count", 0) or 0),
+        "freed_bytes": int(result.get("freed_bytes", 0) or 0),
+    }

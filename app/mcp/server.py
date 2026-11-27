@@ -799,6 +799,15 @@ def res_db_prepare(source: str = "daily", project_path: str = "",
         return {"error": "AUTH", "message": e.message}
 
 
+def _safe_prune_for_upgrade() -> dict:
+    """升级前回收 DB 缓存：best-effort，清理失败只降级告警，不阻塞真正升级。"""
+    try:
+        return db_source.prune_work_root()
+    except Exception as e:  # 缓存清理非关键路径，任何异常都不应中断升级
+        logger.warning("db upgrade cache prune failed: %s", e)
+        return {"deleted_count": 0, "freed_bytes": 0, "warning": str(e)}
+
+
 @mcp.tool()
 def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: int = 5555,
                    source: str = "daily", project_path: str = "",
@@ -820,7 +829,7 @@ def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: in
         if not norm["project_url"]:
             raise DomainError("MISSING_PROJECT", "需提供 project_path")
         before = db_source.device_db_version(addr, port, project_path or None)
-        cleaned = db_source.prune_work_root()
+        cleaned = _safe_prune_for_upgrade()
         fv = db_source.find_versions(norm["project_url"], version)
         pkg = db_source.list_packages(fv["version_url"])[0]
         label = project_path.replace("/", "_") + f"_{fv['selected']}"

@@ -3,6 +3,19 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.7] - 2026-11-27
+
+### 修复：res_db_upgrade 因 deleted_count 缺失在升级前置阶段失败
+- 现象：`var/db_source` 不存在时调用 `res_db_upgrade`，服务端抛 `KeyError('deleted_count')`，
+  板端未收到升级。
+- 根因：`cache_prune.prune_db_source()` 在根目录不存在时早退，返回体缺少 `deleted_count`；
+  `db_source.prune_work_root()` 直接按下标读取该字段。
+- 修复：早退返回补 `deleted_count=0`，统一 `prune_db_source()` 所有返回路径的契约；
+  `prune_work_root()` 改用防御性 `.get()` 读取。
+- `res_db_upgrade` 的升级前缓存清理改为 best-effort：清理异常只告警降级，继续执行
+  版本发现/下载/升级，不再阻塞真正的 DB 升级。
+- 测试：新增缓存清理返回契约与升级降级用例，覆盖目录不存在、空目录与清理异常场景。
+
 ## [0.54.5] - 2026-11-26
 
 ### 合并：0.54.4 功能合入 0.54.3 热修基线
