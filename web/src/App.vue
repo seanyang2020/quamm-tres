@@ -2307,6 +2307,64 @@ const prBindDlg = reactive({
 })
 /** 当前节点 powerres bindings 按 device_id 聚合的已绑数 */
 const prBindPowerCounts = ref({})
+/** 通道级「重启测试」对话框（进程内单例：同一时刻只允许一条） */
+const prRebootDlg = reactive({
+  visible: false,
+  row: null,
+  power_dev: '',
+  channel: null,
+  node_id: '',
+  hold_ms: 3000,
+  interval_s: 5,
+  repeat: 10,
+  status: null,
+  starting: false,
+  stopping: false,
+})
+let prRebootPollTimer = null
+function stopPrRebootPoll() {
+  if (prRebootPollTimer) {
+    clearInterval(prRebootPollTimer)
+    prRebootPollTimer = null
+  }
+}
+function startPrRebootPoll() {
+  stopPrRebootPoll()
+  prRebootPollTimer = setInterval(async () => {
+    try {
+      const st = await api('/api/powerres/reboot-test/status')
+      prRebootDlg.status = st
+      if (!st || !st.running) stopPrRebootPoll()
+    } catch (e) {
+      stopPrRebootPoll()
+    }
+  }, 2000)
+}
+const prRebootEstimatedS = computed(() => {
+  const n = Number(prRebootDlg.repeat) || 0
+  const itv = Number(prRebootDlg.interval_s) || 0
+  const hold = (Number(prRebootDlg.hold_ms) || 0) / 1000
+  return Math.round(n * (hold + 2 + itv))
+})
+const prRebootEstimatedText = computed(() => {
+  const t = prRebootEstimatedS.value
+  if (!t) return '—'
+  const m = Math.floor(t / 60)
+  const s = t % 60
+  return m > 0 ? (m + ' 分 ' + s + ' 秒') : (s + ' 秒')
+})
+const prRebootStatusText = computed(() => {
+  const st = prRebootDlg.status
+  if (!st) return ''
+  const round = st.round || 0
+  const total = st.total_rounds || 0
+  const elapsed = st.elapsed_s || 0
+  let tail = '等待首轮结果'
+  if (st.last_result === 'ok') tail = '最近一次 OK'
+  else if (st.last_result === 'failed') tail = '失败：' + (st.last_error || '未知原因')
+  else if (!st.running && total) tail = st.cancelled ? '已停止' : '已结束'
+  return '第 ' + round + '/' + total + ' 次 · 已用 ' + elapsed + ' 秒 · ' + tail
+})
 const prAddDlg = reactive({
   visible: false,
   busy: false,
@@ -3698,6 +3756,106 @@ async function doPrCompensateOn(row) {
 async function doPrPowerQuery(row) {
   if (!prIsAdmin()) return
   await runPrChannelAction(row, 'power_query')
+}
+
+/** PT：通道级重启测试（admin）——间隔 / 次数 / 起停 */
+function openPrRebootDlg(row) {
+  if (!prIsAdmin() || !row) return
+  if (!prBindingEnabled(row)) {
+    ElMessage.warning('该通道已停用')
+    return
+  }
+  prRebootDlg.row = row
+  prRebootDlg.power_dev = row.power_dev || ''
+  prRebootDlg.channel = row.channel
+  prRebootDlg.node_id = prNodeId.value
+  prRebootDlg.hold_ms = prGetHoldMs(row)
+  prRebootDlg.interval_s = 5
+  prRebootDlg.repeat = 10
+  prRebootDlg.status = null
+  prRebootDlg.visible = true
+  // 打开即读取一次当前状态：单例 runner 可能已在别处运行
+  api('/api/powerres/reboot-test/status')
+    .then((st) => {
+      prRebootDlg.status = st
+      if (st && st.running) startPrRebootPoll()
+    })
+    .catch(() => {})
+}
+
+function closePrRebootDlg() {
+  prRebootDlg.visible = false
+  stopPrRebootPoll()
+}
+
+async function startPrRebootTest() {
+  const row = prRebootDlg.row
+  if (!row || !prRebootDlg.node_id) return
+  const repeat = Number(prRebootDlg.repeat) || 0
+  const interval = Number(prRebootDlg.interval_s) || 0
+  if (repeat < 1 || interval < 1) {
+    ElMessage.warning('间隔与次数需 ≥ 1')
+    return
+  }
+  let confirm = false
+  if (repeat > 100) {
+    try {
+      await ElMessageBox.confirm(
+        `次数 ${repeat} 超过 100，将连续多轮断电重启，确认开始？`,
+        '重启测试确认',
+        { type: 'warning', confirmButtonText: '开始', cancelButtonText: '取消' },
+      )
+    } catch (e) {
+      return
+    }
+    confirm = true
+  }
+  prRebootDlg.starting = true
+  try {
+    const out = await api('/api/powerres/reboot-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        node_id: prRebootDlg.node_id,
+        power_dev: row.power_dev,
+        channel: row.channel,
+        interval_s: interval,
+        repeat,
+        hold_ms: prRebootDlg.hold_ms,
+        confirm,
+      }),
+    })
+    prRebootDlg.status = out
+    startPrRebootPoll()
+    ElMessage.success('重启测试已启动')
+  } catch (e) {
+    if (e && e.code === 'FLOW_BUSY') {
+      const st = e.detail && e.detail.status
+      if (st) prRebootDlg.status = st
+      ElMessage.error('已有重启测试在运行')
+    } else if (e && e.code === 'TOO_LONG') {
+      ElMessage.error('预计耗时超过 1 小时，请减少次数或间隔')
+    } else if (e && e.code === 'NEED_CONFIRM') {
+      ElMessage.error('次数超过 100，需二次确认')
+    } else {
+      ElMessage.error(String((e && (e.apiMessage || e.message)) || e))
+    }
+  } finally {
+    prRebootDlg.starting = false
+  }
+}
+
+async function stopPrRebootTest() {
+  prRebootDlg.stopping = true
+  try {
+    const out = await api('/api/powerres/reboot-test/stop', { method: 'POST' })
+    prRebootDlg.status = out
+    if (out && !out.running) stopPrRebootPoll()
+  } catch (e) {
+    ElMessage.error(String((e && (e.apiMessage || e.message)) || e))
+  } finally {
+    prRebootDlg.stopping = false
+  }
 }
 
 async function enterPowerRes() {
@@ -6888,6 +7046,12 @@ const legendRole = [
                         @click="doPrPowerQuery(row)"
                       >查询</el-button>
                       <el-button
+                        v-if="me.role === 'admin'"
+                        size="small"
+                        :disabled="prIsActionBusy(row) || !prBindingEnabled(row)"
+                        @click="openPrRebootDlg(row)"
+                      >重启测试</el-button>
+                      <el-button
                         v-if="prFailPhase(row) === 'power_on'"
                         size="small"
                         type="danger"
@@ -7052,6 +7216,55 @@ const legendRole = [
           <template #footer>
             <el-button @click="prAddDlg.visible = false">取消</el-button>
             <el-button type="primary" :loading="prAddDlg.busy" @click="submitPrAdd">登记</el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog
+          v-model="prRebootDlg.visible"
+          :title="'重启测试 · ' + prRebootDlg.power_dev + ' CH' + prRebootDlg.channel"
+          width="520px"
+          append-to-body
+          @close="stopPrRebootPoll"
+        >
+          <el-form label-width="90px" size="small">
+            <el-form-item label="间隔">
+              <el-input-number v-model="prRebootDlg.interval_s" :min="1" :max="3600" />
+              <span class="comres-muted" style="margin-left:8px">秒</span>
+            </el-form-item>
+            <el-form-item label="次数">
+              <el-input-number v-model="prRebootDlg.repeat" :min="1" :max="1000" />
+              <span class="comres-muted" style="margin-left:8px">次</span>
+            </el-form-item>
+            <el-form-item label="预计耗时">
+              <span>{{ prRebootEstimatedText }}</span>
+            </el-form-item>
+          </el-form>
+          <div
+            v-if="prRebootDlg.status"
+            style="margin:8px 0;padding:8px;background:#f5f7fa;border-radius:4px;font-size:13px"
+          >
+            <el-tag v-if="prRebootDlg.status.running" size="small" type="warning">运行中</el-tag>
+            <el-tag v-else size="small" type="info">{{ prRebootDlg.status.cancelled ? '已停止' : '已结束' }}</el-tag>
+            <span style="margin-left:8px">{{ prRebootStatusText }}</span>
+          </div>
+          <div class="comres-muted" style="font-size:12px">
+            一轮 = 断电→保持({{ prRebootDlg.hold_ms }}ms)→上电，然后等待间隔秒。
+          </div>
+          <template #footer>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="prRebootDlg.starting"
+              :disabled="prRebootDlg.status && prRebootDlg.status.running"
+              @click="startPrRebootTest"
+            >开始</el-button>
+            <el-button
+              size="small"
+              :loading="prRebootDlg.stopping"
+              :disabled="!(prRebootDlg.status && prRebootDlg.status.running)"
+              @click="stopPrRebootTest"
+            >停止</el-button>
+            <el-button size="small" @click="closePrRebootDlg">关闭</el-button>
           </template>
         </el-dialog>
           </el-tab-pane>
