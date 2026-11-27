@@ -883,7 +883,7 @@ watch(
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
-const ptEditRow = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555, model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '' })
+const ptEditRow = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555, model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', db_project_name: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '' })
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
@@ -895,7 +895,8 @@ const ptCreateSaving = ref(false)
 const ptCreateRow = ref({
   type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
   adb_port: 5555, model_pattern: '',
-  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '',
+  db_project_name: '', notes: '',
   chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
 })
 const ptCreateTitle = ref('新增机型')
@@ -4628,7 +4629,8 @@ function openPtEdit(row) {
     adb_port: row.adb_port || 5555, model_pattern: row.model_pattern || '',
     defconfig: row.defconfig || '', sdk_repo_cmd: row.sdk_repo_cmd || '',
     build_cmd: row.build_cmd || '', image_path: row.image_path || '',
-    jenkins_url: row.jenkins_url || '', notes: row.notes || '',
+    jenkins_url: row.jenkins_url || '', db_project_name: row.db_project_name || '',
+    notes: row.notes || '',
     chip_model: row.chip_model || '', float_abi: row.float_abi || 'auto', has_fpu: !!row.has_fpu,
     build_server_id: row.build_server_id || null,
     new_type_code: row.type_code,
@@ -4649,7 +4651,8 @@ async function savePtEdit() {
         model_pattern: ptEditRow.value.model_pattern,
         defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
-        jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
+        jenkins_url: ptEditRow.value.jenkins_url, db_project_name: ptEditRow.value.db_project_name,
+        notes: ptEditRow.value.notes,
         chip_model: ptEditRow.value.chip_model, float_abi: ptEditRow.value.float_abi,
         has_fpu: ptEditRow.value.has_fpu, build_server_id: ptEditRow.value.build_server_id,
       }),
@@ -4687,7 +4690,8 @@ function resetPtCreate() {
   ptCreateRow.value = {
     type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
     adb_port: 5555, model_pattern: '',
-    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '',
+    db_project_name: '', notes: '',
     chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
   }
   ptAllowIncomplete.value = false
@@ -4722,7 +4726,8 @@ async function openPtDerive(row, fromDevice) {
     adb_port: tpl.adb_port || 5555, model_pattern: tpl.model_pattern || '',
     defconfig: tpl.defconfig || '', sdk_repo_cmd: tpl.sdk_repo_cmd || '',
     build_cmd: tpl.build_cmd || '', image_path: tpl.image_path || '',
-    jenkins_url: tpl.jenkins_url || '', notes: tpl.notes || '',
+    jenkins_url: tpl.jenkins_url || '', db_project_name: tpl.db_project_name || '',
+    notes: tpl.notes || '',
     chip_model: tpl.chip_model || '', float_abi: tpl.float_abi || 'auto',
     has_fpu: !!tpl.has_fpu, build_server_id: tpl.build_server_id || null,
     copy_from: code,
@@ -4750,7 +4755,8 @@ async function submitPtCreate() {
         adb_port: row.adb_port, model_pattern: row.model_pattern,
         copy_from: row.copy_from || null,
         defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
-        image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+        image_path: row.image_path, jenkins_url: row.jenkins_url,
+        db_project_name: row.db_project_name, notes: row.notes,
         chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
         build_server_id: row.build_server_id,
       }),
@@ -4761,7 +4767,8 @@ async function submitPtCreate() {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
-          image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+          image_path: row.image_path, jenkins_url: row.jenkins_url,
+          db_project_name: row.db_project_name, notes: row.notes,
           chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
           build_server_id: row.build_server_id,
         }),
@@ -7131,6 +7138,9 @@ const legendRole = [
               <el-table-column prop="type_code" label="type_code" width="150" />
               <el-table-column prop="display_name" label="名称" width="140" />
               <el-table-column prop="defconfig" label="defconfig" width="200" show-overflow-tooltip />
+              <el-table-column label="DB 路径" width="140" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.db_project_name || '-' }}</template>
+              </el-table-column>
               <el-table-column label="完整度" width="110">
                 <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'warning'">{{ row.complete_label }}</el-tag></template>
               </el-table-column>
@@ -7379,6 +7389,7 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="SDK 获取命令" class="pt-full"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" class="pt-full"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="DB 路径"><el-input v-model="ptEditRow.db_project_name" placeholder="Daily/XOS 下的工程名，如 esl2 / moto_ld；不要填完整 URL" /></el-form-item>
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接"><el-input v-model="ptEditRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="浮点 ABI">
@@ -7868,6 +7879,7 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd" class="pt-full"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" prop="build_cmd" class="pt-full"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
+            <el-form-item label="DB 路径"><el-input v-model="ptCreateRow.db_project_name" placeholder="Daily/XOS 下的工程名，如 esl2 / moto_ld；不要填完整 URL" /></el-form-item>
             <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>

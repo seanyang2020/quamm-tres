@@ -1602,6 +1602,7 @@ def add_product_type(
     hf = payload.get("has_fpu")
     has_fpu = hf if isinstance(hf, bool) else str(hf or "").strip().lower() in ("1", "true", "yes", "on")
     chip_model = payload.get("chip_model")
+    db_project_name = payload.get("db_project_name")
     pt = ProductType(
         type_code=code,
         display_name=payload.get("display_name") or code,
@@ -1612,6 +1613,7 @@ def add_product_type(
         enabled=True,
         model_pattern=payload.get("model_pattern"),
         chip_model=(str(chip_model).strip() or None) if chip_model is not None else None,
+        db_project_name=(str(db_project_name).strip() or None) if db_project_name is not None else None,
         float_abi=fa,
         has_fpu=has_fpu,
         created_at=utcnow(),
