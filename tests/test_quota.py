@@ -26,3 +26,23 @@ def test_quota_exceeded(db):
     finally:
         for d in devices:
             d.stop()
+
+
+def test_admin_can_lease_with_zero_quota(db):
+    """admin principal 的 quota=0，租约入口应对 admin 豁免（v0.54.13）。"""
+    devices = []
+    ids = []
+    for i in range(2):
+        dev = MockDevice(model="QM102V").start()
+        reg = register_device(db, "user01@corp.com", dev, f"302-R6-{i:02d}", "owner@corp.com")
+        devices.append(dev)
+        ids.append(reg["device_id"])
+
+    try:
+        r1 = db.call("admin@corp.com", res_apply, target=ids[0])
+        assert r1["state"] == "GRANTED", r1
+        r2 = db.call("admin@corp.com", res_apply, target=ids[1])
+        assert r2["state"] == "GRANTED", r2
+    finally:
+        for d in devices:
+            d.stop()

@@ -539,8 +539,10 @@ def apply(
     # 回写到凭据，看板/凭据页可识别该 token 用的是哪个 Agent。
     auth.credential.agent_label = agent_info
 
+    # v0.54.13：admin 在 seed 里 quota=0（不占普通用户配额），租约入口必须对 admin 豁免，
+    # 否则管理员无法申请设备做验证，被 QUOTA_EXCEEDED 0/0 挡住。
     active = count_active_leases(session, principal.id)
-    if active >= principal.quota:
+    if not auth.is_admin and active >= principal.quota:
         raise DomainError(
             "QUOTA_EXCEEDED",
             f"已占用 {active}/{principal.quota} 台，达到配额上限",

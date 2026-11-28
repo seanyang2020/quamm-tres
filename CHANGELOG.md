@@ -3,6 +3,11 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.13] - 2026-11-28
+
+### 修复：admin 无法申请设备
+- 租约入口的并发配额门禁改为对 admin 豁免：admin principal 在种子数据里 `quota=0`，此前申请直接 `QUOTA_EXCEEDED 0/0`，导致管理员无法借设备做验证。
+- 普通用户配额行为不变（仍按 principal.quota 限制），新增回归用例 `test_admin_can_lease_with_zero_quota`。
 ## [0.54.12] - 2026-11-28
 
 ### 新增：PowerRes 通道级重启测试
