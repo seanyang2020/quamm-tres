@@ -16,6 +16,8 @@ from app.domain.serial import _clamp_hold_ms
 
 KIND = "powerres-reboot"
 DEFAULT_HOLD_MS = 3000
+DEFAULT_INTERVAL_S = 30
+DEFAULT_REPEAT = 20
 # 单轮继电器帧（断/上电两次 TCP 写 + 应答）耗时上界，用于估算总时长
 ROUND_FRAME_OVERHEAD_S = 2.0
 MAX_ESTIMATED_S = 3600
@@ -235,6 +237,10 @@ def start(
     except (TypeError, ValueError) as e:
         raise _bad(f"非法 channel: {channel!r}") from e
 
+    if interval_s is None or interval_s == "":
+        interval_s = DEFAULT_INTERVAL_S
+    if repeat is None or repeat == "":
+        repeat = DEFAULT_REPEAT
     interval = _parse_int(
         interval_s, "interval_s", minimum=INTERVAL_MIN_S, maximum=INTERVAL_MAX_S,
     )

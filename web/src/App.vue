@@ -2338,8 +2338,8 @@ const prRebootDlg = reactive({
   channel: null,
   node_id: '',
   hold_ms: 3000,
-  interval_s: 5,
-  repeat: 10,
+  interval_s: 30,
+  repeat: 20,
   status: null,
   starting: false,
   stopping: false,
@@ -3793,8 +3793,8 @@ function openPrRebootDlg(row) {
   prRebootDlg.channel = row.channel
   prRebootDlg.node_id = prNodeId.value
   prRebootDlg.hold_ms = prGetHoldMs(row)
-  prRebootDlg.interval_s = 5
-  prRebootDlg.repeat = 10
+  prRebootDlg.interval_s = 30
+  prRebootDlg.repeat = 20
   prRebootDlg.status = null
   prRebootDlg.visible = true
   // 打开即读取一次当前状态：单例 runner 可能已在别处运行
@@ -5721,7 +5721,17 @@ const legendRole = [
           <el-tab-pane label="占用" name="leases">
         <el-table :data="leases" border>
           <el-table-column prop="lease_id" label="租约" width="140" />
-          <el-table-column prop="display_name" label="设备" />
+          <el-table-column label="设备" min-width="210">
+            <template #default="{ row }">
+              <div class="sched-dev">
+                <div class="sched-dev-name">{{ row.display_name || '未命名设备' }}</div>
+                <el-link v-if="row.device_id" type="primary" :underline="false"
+                         class="sched-dev-id"
+                         @click="enterDevicePage(row.device_id)">{{ row.device_id }}</el-link>
+                <span v-else class="sched-dev-id">-</span>
+              </div>
+            </template>
+          </el-table-column>
           <el-table-column prop="email" label="申请人邮箱" width="200" />
           <el-table-column prop="name" label="申请人姓名" width="140" />
           <el-table-column prop="purpose" label="用途" />
@@ -8451,4 +8461,7 @@ const legendRole = [
   margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto;
   background: #0f1115; color: #d7dbe7; border-radius: 8px;
   white-space: pre-wrap; word-break: break-all; font-size: 12px;
-}</style>
+}.sched-dev { line-height: 1.4; }
+.sched-dev-name { color: #303133; font-weight: 600; }
+.sched-dev-id { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
+</style>

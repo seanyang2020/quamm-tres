@@ -214,3 +214,15 @@ def test_status_fields_and_completion(monkeypatch):
     assert snap["cancelled"] is False
     assert isinstance(snap["elapsed_s"], int)
     assert snap["elapsed_s"] >= 0
+
+
+def test_defaults_30s_20_rounds(monkeypatch):
+    """未显式传 interval_s/repeat 时默认 30s / 20 次（0.54.14）。"""
+    monkeypatch.setattr(
+        powerreboot.powerres, "channel_action", lambda *a, **k: _ok_result(),
+    )
+    out = powerreboot.start("n", "p", 1, None, None, hold_ms=0)
+    assert out["interval_s"] == 30
+    assert out["total_rounds"] == 20
+    powerreboot.stop()
+    assert _wait_until(lambda: not powerreboot.status()["running"])
