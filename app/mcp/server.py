@@ -1,4 +1,4 @@
-"""MCP Server：quamm-tres（31 个工具，streamable HTTP，单实例）。
+"""MCP Server：quamm-tres（32 个工具，streamable HTTP，单实例）。
 
 鉴权由 McpAuthMiddleware 完成；工具内 require_auth() 取当前身份。
 res_admin 仅管理员可用（运行时校验），普通 token 调用返回 FORBIDDEN。
@@ -524,8 +524,12 @@ def res_device_register(
     share_scope: str | None = None,
     allowed_emails: list[str] | None = None,
     allowed_agent_labels: list[str] | None = None,
+    display_name: str | None = None,
 ) -> dict:
     """提交注册表（两段式第二步，agent_info 为必填）。位置编号与责任人缺失会拒绝。
+
+    display_name（可选）：设备名称；不填则使用设备类型（机型字典）的可读展示名，
+    类型展示名也不可用时回退为 type_code-position_code。建议填人类可读名称。
 
     可选共享设置：share_scope=shared（默认公共）/private（个人独享）/restricted（指定名单）；
     restricted 时用 allowed_emails（用户邮箱）与 allowed_agent_labels（Agent 名）给出允许名单。
@@ -543,7 +547,7 @@ def res_device_register(
             session, form_id, position_code, owner,
             actor_email=auth.email, model_class=model_class, note=note, agent_info=agent_info,
             share_scope=share_scope, allowed_emails=allowed_emails,
-            allowed_agent_labels=allowed_agent_labels,
+            allowed_agent_labels=allowed_agent_labels, display_name=display_name,
         )
         # 用解析后的 agent_info（可能回退自 probe 暂存）回写凭据，避免显式入参为空时漏写。
         resolved_label = str(result.get("agent_info") or "").strip()[:128] or None
@@ -644,12 +648,24 @@ def res_flash(
     version: str | None = None,
     preserve_data: bool = True,
     confirm_erase_data: bool = False,
+    source: str = "db",
+    build_server_id: str | None = None,
+    image_mode: str | None = None,
+    script_ini: str | None = None,
+    partition: str | None = None,
+    file_path: str | None = None,
+    image_name: str | None = None,
+    image_sha256: str | None = None,
 ) -> dict:
-    """异步刷机（5-15 分钟）：立即返回 job_id，用 res_flash_status 轮询。
+    """异步刷机：默认 source=db 从 201 拉包；也可 local / build_server 直刷本地或编译机镜像。
 
     - 仅 GRANTED 租约、仅租约持有人（或管理员）
-    - preserve_data=True（默认）保留 data 分区用户数据；False 必须同时 confirm_erase_data=True
-    - version 为空则刷该机型最新版本；同一租约已有任务 -> FLASH_IN_PROGRESS
+    - preserve_data=True（默认）保留 data 分区；False 必须同时 confirm_erase_data=True
+    - source=db：version 为空取最新；返回 mode=server_db
+    - source=local：不启服务端线程，返回 WAITING_AGENT + command_argv，Agent 刷完调 res_flash_report
+    - source=build_server：SSH 到已登记编译机执行 xosadb2update（镜像不经 201）；缺工具 -> RUNNER_TOOL_MISSING
+    - image_mode=script 需 script_ini；partition 需 partition+file_path
+    - 同一租约已有 QUEUED/RUNNING/WAITING_AGENT 任务 -> FLASH_IN_PROGRESS
     """
     return _guard(
         flash.start_flash,
@@ -657,13 +673,43 @@ def res_flash(
         version=version,
         preserve_data=preserve_data,
         confirm_erase_data=confirm_erase_data,
+        source=source,
+        build_server_id=build_server_id,
+        image_mode=image_mode,
+        script_ini=script_ini,
+        partition=partition,
+        file_path=file_path,
+        image_name=image_name,
+        image_sha256=image_sha256,
     )
 
 
 @mcp.tool()
 def res_flash_status(job_id: str) -> dict:
-    """查询刷机任务：QUEUED / RUNNING / SUCCEEDED / FAILED + 日志最后 50 行。"""
+    """查询刷机任务：QUEUED/RUNNING/WAITING_AGENT/SUCCEEDED/FAILED + 日志尾 + mode/executor/image。"""
     return _guard(flash.flash_status, job_id)
+
+
+@mcp.tool()
+def res_flash_report(
+    job_id: str,
+    status: str,
+    progress: int | None = None,
+    log_tail: str | None = None,
+    error: str | None = None,
+) -> dict:
+    """Agent 上报 source=local 刷机进度（RUNNING/SUCCEEDED/FAILED）。
+
+    仅租约持有人可报；重复终态幂等；已终态再报不同终态 -> JOB_ALREADY_FINISHED。
+    """
+    return _guard(
+        flash.flash_report,
+        job_id,
+        status,
+        progress=progress,
+        log_tail=log_tail,
+        error=error,
+    )
 
 
 @mcp.tool()
@@ -757,6 +803,15 @@ def res_db_prepare(source: str = "daily", project_path: str = "",
         return {"error": "AUTH", "message": e.message}
 
 
+def _safe_prune_for_upgrade() -> dict:
+    """升级前回收 DB 缓存：best-effort，清理失败只降级告警，不阻塞真正升级。"""
+    try:
+        return db_source.prune_work_root()
+    except Exception as e:  # 缓存清理非关键路径，任何异常都不应中断升级
+        logger.warning("db upgrade cache prune failed: %s", e)
+        return {"deleted_count": 0, "freed_bytes": 0, "warning": str(e)}
+
+
 @mcp.tool()
 def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: int = 5555,
                    source: str = "daily", project_path: str = "",
@@ -778,7 +833,7 @@ def res_db_upgrade(device_id: str | None = None, ip: str | None = None, port: in
         if not norm["project_url"]:
             raise DomainError("MISSING_PROJECT", "需提供 project_path")
         before = db_source.device_db_version(addr, port, project_path or None)
-        cleaned = db_source.prune_work_root()
+        cleaned = _safe_prune_for_upgrade()
         fv = db_source.find_versions(norm["project_url"], version)
         pkg = db_source.list_packages(fv["version_url"])[0]
         label = project_path.replace("/", "_") + f"_{fv['selected']}"

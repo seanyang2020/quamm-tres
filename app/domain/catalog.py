@@ -22,6 +22,10 @@ from app.constants import (
 )
 import json
 from app.domain import audit, device_acl
+from app.domain.device_naming import (
+    SOURCE_EXPLICIT,
+    resolve_device_display_name,
+)
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
 from app.models import Device, Lease, ProductType, QueueEntry, WireLogPortBinding
@@ -390,6 +394,9 @@ def _public_device(
                 "allowed_agent_labels": device_acl.allowed_agent_labels(d),
                 "locked_by": d.locked_by,
                 "locked_reason": d.locked_reason,
+                # v0.54.10 (Redmine #8437): Web 视图返回真实 IP/端口，供编辑弹窗回填，避免空值回写
+                "ip": d.ip,
+                "adb_port": d.adb_port,
                 "eng_config": _eng_config_dict(d),
             }
         )
@@ -755,6 +762,7 @@ def device_register(
     share_scope: str | None = None,
     allowed_emails: list[str] | None = None,
     allowed_agent_labels: list[str] | None = None,
+    display_name: str | None = None,
 ) -> dict:
     form = form_store.get(form_id)
     if form is None:
@@ -800,6 +808,14 @@ def device_register(
     else:
         final_model = "unknown_model"
 
+    # v0.54.8（#8436）：新建设备默认名优先用机型字典的可读展示名，
+    # 不再把技术 type_code-position 当首选默认名。
+    product_display = None
+    if final_model != "unknown_model":
+        pt_row = session.get(ProductType, final_model)
+        if pt_row is not None:
+            product_display = (pt_row.display_name or "").strip() or None
+
     # 身份强锚比对（MAC/SN/asset_tag）先算出来：
     # 重复注册同一台设备时，position_code 本来就属于它自己，不能按“位置重复”拒绝。
     existing = _match_existing(session, probe)
@@ -833,6 +849,14 @@ def device_register(
         if final_model != "unknown_model":
             device.model_class = final_model
         matched_as = "existing"
+        # 已有设备：仅显式 display_name 非空时更新名称，空值/旧 note 不覆盖用户自定义名。
+        explicit_name = (display_name or "").strip()[:128]
+        if explicit_name:
+            device.display_name = explicit_name
+            name_source = SOURCE_EXPLICIT
+        else:
+            name_source = "kept"
+        resolved_name = device.display_name
     else:
         # 新建：生产只落 real/serial；mock 仅 allow_mock_probe=True 的开发/测试可落
         if form_source == ProbeSource.MOCK:
@@ -845,9 +869,16 @@ def device_register(
                 f"新建设备 source 只能是 real/serial，拒绝 {form_source!r}",
                 {"source": form_source},
             )
+        resolved_name, name_source = resolve_device_display_name(
+            explicit_display_name=display_name,
+            legacy_note=note,
+            product_display_name=product_display,
+            model_class=final_model,
+            position_code=position_code,
+        )
         device = Device(
             device_id=new_device_id(),
-            display_name=note or f"{final_model}-{position_code}",
+            display_name=resolved_name,
             model_class=final_model if final_model != "unknown_model" else None,
             mac=probe.get("mac"),
             sn=probe.get("sn"),
@@ -904,6 +935,8 @@ def device_register(
         "device_id": device.device_id,
         "status": device.status,
         "matched_as": matched_as,
+        "display_name": resolved_name,
+        "display_name_source": name_source,
         "agent_info": agent_info,
         "warnings": warnings,
         "next": "设备已受理；可用 res_list_devices 查询。若为 L3 已入池，申请用 res_apply 指定 device_id 或机型",
@@ -997,6 +1030,80 @@ def device_unregister(session: Session, device_id: str, actor_email: str, is_adm
     return {"device_id": device_id, "status": DeviceStatus.RETIRED}
 
 
+def _release_serial_bindings_for_device(session: Session, device_id: str) -> list[dict]:
+    """释放某设备持有的全部串口绑定（不清 binding 行 / 不删设备）。
+
+    返回 released_bindings 明细，供 unregister / 存量清理审计复用。
+    """
+    rows = (
+        session.query(WireLogPortBinding)
+        .filter(WireLogPortBinding.bound_device_id == device_id)
+        .all()
+    )
+    released: list[dict] = []
+    for b in rows:
+        released.append({
+            "binding_id": b.id,
+            "node_id": b.node_id,
+            "slot": b.slot,
+            "com_name": b.com_name,
+            "endpoint": b.endpoint,
+            "previous_device_id": b.bound_device_id,
+        })
+        b.bound_device_id = None
+        b.allocated_by = None
+        b.allocated_at = None
+        b.allocated_expire = None
+    return released
+
+
+def release_bindings_of_retired_devices(
+    session: Session, actor_email: str = "admin@corp.com"
+) -> dict:
+    """一次性清理：释放已 retired 但仍占串口绑定的设备。
+
+    运维脚本显式调用；不在生产启动时自动跑。幂等：无残留绑定时 released=0。
+    """
+    retired_ids = [
+        r[0]
+        for r in (
+            session.query(Device.device_id)
+            .filter(Device.status == DeviceStatus.RETIRED)
+            .all()
+        )
+    ]
+    if not retired_ids:
+        return {"released": 0, "devices": []}
+
+    bound_ids = {
+        r[0]
+        for r in (
+            session.query(WireLogPortBinding.bound_device_id)
+            .filter(WireLogPortBinding.bound_device_id.in_(retired_ids))
+            .distinct()
+            .all()
+        )
+        if r[0]
+    }
+    devices_out: list[dict] = []
+    total = 0
+    for device_id in sorted(bound_ids):
+        released = _release_serial_bindings_for_device(session, device_id)
+        if not released:
+            continue
+        total += len(released)
+        audit.record(
+            session,
+            actor=actor_email,
+            action="retired_bindings_released",
+            device_id=device_id,
+            detail={"released_bindings": released},
+        )
+        devices_out.append({"device_id": device_id, "released": len(released)})
+    session.commit()
+    return {"released": total, "devices": devices_out}
+
+
 def _retire_device(session: Session, d: Device, actor_email: str) -> None:
     # 通知排队等这台设备的人
     from app.models import QueueEntry
@@ -1025,12 +1132,21 @@ def _retire_device(session: Session, d: Device, actor_email: str) -> None:
     # 同位置允许放多台设备，因此这里只是业务上的“空出”，不是唯一索引约束。
     released_position = d.position_code
     d.position_code = None
+    # retired 立即释放串口绑定，避免资源页长期显示「已绑定未分配」。
+    released_bindings = _release_serial_bindings_for_device(session, d.device_id)
+    detail: dict | None = None
+    if released_position or released_bindings:
+        detail = {}
+        if released_position:
+            detail["released_position"] = released_position
+        if released_bindings:
+            detail["released_bindings"] = released_bindings
     audit.record(
         session,
         actor=actor_email,
         action="unregister",
         device_id=d.device_id,
-        detail={"released_position": released_position} if released_position else None,
+        detail=detail,
     )
 
 

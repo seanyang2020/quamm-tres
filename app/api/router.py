@@ -36,6 +36,7 @@ from app import discovery
 from app.domain.queueing import position as queue_position
 from app.domain import build_servers as buildsvc
 from app.domain.catalog import DomainError
+from app.domain.device_naming import name_warning_for_type
 from app import sdk_build
 from app.models import (
     AuditEvent,
@@ -58,24 +59,10 @@ from app.runtime_config import (
     set_runtime_value,
     validate_runtime_value,
 )
-from app.security import AuthContext, AuthError, resolve_token
+from app.security import AuthError, resolve_token
 from app.utils import hash_token, new_id, new_token, token_prefix, utcnow
 
 router = APIRouter(prefix="/api")
-
-
-def _web_auth_context(session: Session, identity: web_auth.WebIdentity) -> AuthContext:
-    """用 Web 会话身份构造领域层 AuthContext（不伪造 Agent）。"""
-    cred = session.get(Credential, identity.credential_id)
-    principal = session.get(Principal, identity.principal_id)
-    if cred is None or principal is None or principal.status != "active":
-        raise HTTPException(status_code=401, detail="未登录")
-    return AuthContext(
-        principal=principal,
-        credential=cred,
-        email=principal.email,
-        is_admin=(identity.role == "admin"),
-    )
 
 
 def _iso(dt) -> str | None:
@@ -432,10 +419,7 @@ def web_device_probe(
     identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
-    """Web 手工添加设备第一步：按 IP/端口探测，返回 form_id 与探测结果。
-
-    v0.54.5：普通用户也可添加设备（探测/注册/发现），机型字典仍由管理员维护。
-    """
+    """Web 手工添加设备第一步：按 IP/端口探测，返回 form_id 与探测结果。"""
     ip = str(payload.get("ip") or "").strip()
     if not ip:
         raise HTTPException(status_code=400, detail="ip 必填")
@@ -502,10 +486,7 @@ def web_device_register(
     identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
-    """Web 手工添加设备第二步：确认位置/负责人/机型后入库。
-
-    v0.54.5：普通用户也可添加设备（探测/注册/发现），机型字典仍由管理员维护。
-    """
+    """Web 手工添加设备第二步：确认位置/负责人/机型后入库。"""
     form_id = str(payload.get("form_id") or "").strip()
     if not form_id:
         raise HTTPException(status_code=400, detail="form_id 必填")
@@ -518,6 +499,7 @@ def web_device_register(
             actor_email=identity.email,
             model_class=(str(payload.get("model_class") or "").strip() or None),
             note=(str(payload.get("note") or "").strip() or None),
+            display_name=(str(payload.get("display_name") or "").strip() or None),
             agent_info="web-console",
             share_scope=(str(payload.get("share_scope") or "").strip() or None),
             allowed_emails=payload.get("allowed_emails") or None,
@@ -533,10 +515,7 @@ def web_device_discover(
     identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
-    """设备发现模式：扫描网段（可指定 networks，缺省自动探测本机 /24），返回可注册设备。
-
-    v0.54.5：普通用户也可添加设备（探测/注册/发现），机型字典仍由管理员维护。
-    """
+    """设备发现模式：扫描网段（可指定 networks，缺省自动探测本机 /24），返回可注册设备。"""
     raw = payload.get("networks")
     if isinstance(raw, str):
         networks = [raw] if raw.strip() else None
@@ -757,81 +736,6 @@ def leases(
     ]
 
 
-@router.post("/leases/apply")
-def web_lease_apply(
-    payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
-    session: Session = Depends(get_session),
-):
-    """Web 人工申请设备：形成正常 lease，Agent 无法抢走已占用设备。"""
-    device_id = str(payload.get("device_id") or "").strip()
-    if not device_id:
-        raise HTTPException(status_code=400, detail="device_id 必填")
-    purpose_raw = payload.get("purpose")
-    purpose = (
-        str(purpose_raw).strip()
-        if purpose_raw is not None and str(purpose_raw).strip()
-        else "人工测试"
-    )
-    raw_mins = payload.get("expected_minutes", 120)
-    try:
-        expected_minutes = int(120 if raw_mins is None else raw_mins)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="expected_minutes 必须为整数")
-    if expected_minutes < 1 or expected_minutes > 1440:
-        raise HTTPException(status_code=400, detail="expected_minutes 需在 1~1440 之间")
-
-    auth = _web_auth_context(session, identity)
-    agent_info = f"WebUI/{identity.name or identity.email}"
-    try:
-        return leasing.apply(
-            session,
-            auth,
-            device_id=device_id,
-            purpose=purpose,
-            expected_minutes=expected_minutes,
-            agent_info=agent_info,
-        )
-    except DomainError as e:
-        raise _domain_http(e)
-
-
-@router.post("/leases/{lease_id}/release")
-def web_lease_release(
-    lease_id: str,
-    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
-    session: Session = Depends(get_session),
-):
-    """Web 释放自己的租约（admin 也可代释）。"""
-    auth = _web_auth_context(session, identity)
-    try:
-        return leasing.release(session, auth, lease_id)
-    except DomainError as e:
-        raise _domain_http(e)
-
-
-@router.post("/leases/{lease_id}/renew")
-def web_lease_renew(
-    lease_id: str,
-    payload: dict | None = Body(None),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
-    session: Session = Depends(get_session),
-):
-    """Web 续租自己的租约。"""
-    raw = (payload or {}).get("extra_minutes", 30)
-    try:
-        extra_minutes = int(30 if raw is None else raw)
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="extra_minutes 必须为整数")
-    if extra_minutes < 1 or extra_minutes > 1440:
-        raise HTTPException(status_code=400, detail="extra_minutes 需在 1~1440 之间")
-    auth = _web_auth_context(session, identity)
-    try:
-        return leasing.renew(session, auth, lease_id, extra_minutes=extra_minutes)
-    except DomainError as e:
-        raise _domain_http(e)
-
-
 @router.post("/leases/{lease_id}/force-release")
 def force_release(
     lease_id: str,
@@ -839,6 +743,8 @@ def force_release(
     identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
     session: Session = Depends(get_session),
 ):
+    from app.security import AuthContext
+
     admin_principal = (
         session.query(Principal).filter(Principal.is_admin.is_(True)).first()
     )
@@ -1547,6 +1453,7 @@ def update_product_type(
             synchronize_session=False
         )
     session.commit()
+    final_pt = session.get(ProductType, new_code or previous_code)
     return {
         "type_code": new_code or previous_code,
         "previous_type_code": previous_code,
@@ -1557,6 +1464,11 @@ def update_product_type(
         "complete": complete_now,
         "complete_label": "完整" if complete_now else "信息不全",
         "enabled": enabled_now,
+        # v0.54.8（#8436）：名称防呆提示，仅提示不拒绝
+        "name_warning": (
+            name_warning_for_type(final_pt.type_code, final_pt.display_name)
+            if final_pt is not None else None
+        ),
     }
 
 
@@ -1596,6 +1508,7 @@ def add_product_type(
             "display_name": derived.display_name,
             "enabled": True,
             "derived_from": copy_from,
+            "name_warning": name_warning_for_type(derived.type_code, derived.display_name),
         }
     fa = str(payload.get("float_abi") or "auto").strip().lower()
     fa = fa if fa in ("hard", "soft", "auto") else "auto"
@@ -1620,7 +1533,12 @@ def add_product_type(
     )
     session.add(pt)
     session.commit()
-    return {"type_code": code, "display_name": pt.display_name, "enabled": True}
+    return {
+        "type_code": code,
+        "display_name": pt.display_name,
+        "enabled": True,
+        "name_warning": name_warning_for_type(pt.type_code, pt.display_name),
+    }
 
 
 @router.post("/product-types/{type_code}/disable")

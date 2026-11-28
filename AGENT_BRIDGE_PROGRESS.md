@@ -1,35 +1,38 @@
-# inner-4405 — 进度
+# t8436 新建设备默认名用设备类型展示名 — 进度
 
-> 任务：Quamm TRES 租约配额门禁修复：admin 账号可正常申请/租约设备
-> task_id: inner-4405
-> 工作区：`/home/scm/github_gitee/quamm-res`
-> 分支：当前工作区（HEAD `e927470`，VERSION 0.54.12）
+> 任务：Redmine #8436，esl2_skw 新建设备名称不应是 esl2_skw-技术部
+> task_id: t8436
+> 工作区：`/home/scm/worktree/tres-8436-name`
+> 分支：`fix/8436-device-default-name`（基线 main / release-0.54.7 58c0f25）
 
 ## 状态：已完成（停住等审）
 
-## 根因
+## 侧车追加（2026-11-27）
 
-`app/domain/leasing.py` 的 `apply()` 在 ACL 裁决前先查配额，未豁免 admin；`app/seed.py` 中 admin `quota=0`，导致 `0 >= 0` 恒触发 `QUOTA_EXCEEDED`。ACL 层 `can_use_device` 已对 `is_admin` 放行，无问题。
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 脚本修复 | fix_device_display_names.py 自动扫描优先使用 --map 新名称；apply 先改类型再改设备 | ✅ |
+| 测试 | tests/test_fix_device_display_names.py 3 例 passed | ✅ |
+| 提交 | 独立新 commit（未 amend） | ✅ |
 
 ## 本轮工作
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 配额门禁 | `apply()` 仅在 `not auth.is_admin` 时检查 `count_active_leases >= principal.quota`；admin 直接进入 ACL/分配 | ✅ |
-| 第二处门禁排查 | 全仓 grep `count_active_leases` / `quota`：仅 `leasing.apply()` 为门禁；`mcp/server.py` 的 `res_whoami` 只读展示；无第二处需豁免 | ✅ |
-| seed 语义 | admin `quota=0` 保留，仅修正注释（admin 不占配额，租约入口豁免） | ✅ |
-| 单测 | `tests/test_quota.py` 新增 admin quota=0 连续租 2 台；原有普通用户超额用例保留 | ✅ |
-| 本机服务 | 重启 `quamm-tres`/`quamm-worker`，`/api/health` = ok / 0.54.12 | ✅ |
-| 实测 | admin Bearer token：`dev_080989bb98` → GRANTED `L-f39793a0a2` → RELEASED；复核 active_leases=0、设备 available | ✅ |
-| 201 部署 | 本机无 SSH 通道，未执行；交付写明离线 bundle + `scripts/deploy-git.sh` | N/A |
+| device_naming.py | resolve_device_display_name：显式 > note > 机型展示名（≠type_code）> 兜底 type-position；normalize/128 截断 | ✅ |
+| catalog.device_register | display_name 参数；新建统一解析；已有设备仅显式名覆盖；返回 display_name/source | ✅ |
+| router.py | /devices/register 透传 display_name；product-types POST/PUT 加 name_warning | ✅ |
+| mcp/server.py | res_device_register 可选 display_name + docstring | ✅ |
+| wirelog.py | 串口建机同规则：显式 > 机型展示名 > COM@node 兜底 | ✅ |
+| App.vue | 「备注」→「名称（可选）」+ 默认名提示；类型对话框防呆提示；name_warning 弹窗 | ✅ |
+| fix 脚本 | scripts/fix_device_display_names.py（dry-run 默认、--apply 导出 JSON 备份） | ✅ |
+| 测试 | tests/test_device_naming.py 15 例全过；全量 359 passed，7 失败为基线既有 | ✅ |
+| VERSION | 0.54.8 + CHANGELOG | ✅ |
+| 构建 | npm run build 成功，dist 未提交（gitignore） | ✅ |
+| 提交 | `bf5be79` fix(tres): 0.54.8 ... (#8436)；`18a59f9` docs 证据 | ✅ |
+| push/部署 | 未 push / 未合并 / 未部署 | ✅ |
 
-## 测试结果
+## 待办（数据修正，另行执行）
 
-- `tests/test_quota.py tests/test_device_acl.py tests/test_credentials_role.py`：`16 passed`（退出码 0）
-- `tests/test_apply_flow.py`：`2 passed, 2 failed`；失败为 v0.17 起 `PRODUCT_TYPES=[]` 导致的既有用例过期（断言 5 个预置机型），与本改动无关
-- 四文件合并：`18 passed, 2 failed`（同上）
-
-## 备注 / 风险
-
-- 未提交、未 push、未部署 201、未改前端/数据库既有记录。
-- `test_apply_flow.py` 的两个产品字典用例在未改动的 HEAD 上同样失败（`seed_product_types` 无预置数据），建议另立任务清理，本次未扩大范围。
+- 201 生产库：`python scripts/fix_device_display_names.py --db <201.db> --map esl2_skw=彩屏价签_V2`（先 dry-run 核对，再 --apply）
+- 之后 esl2_skw 新建设备不填名称即得 彩屏价签_V2

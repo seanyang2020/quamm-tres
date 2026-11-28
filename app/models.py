@@ -348,9 +348,10 @@ class Contact(Base):
 
 
 class FlashJob(Base):
-    """固件刷机任务（v0.14）：异步执行，状态落库，进程重启可查历史。
+    """固件刷机任务（v0.14 / v0.54）：异步执行，状态落库，进程重启可查历史。
 
-    status: QUEUED / RUNNING / SUCCEEDED / FAILED
+    status: QUEUED / RUNNING / WAITING_AGENT / SUCCEEDED / FAILED
+    executor: server（201+dbxostest）/ agent（本地）/ build_server（编译机 SSH）
     """
 
     __tablename__ = "flash_job"
@@ -367,6 +368,16 @@ class FlashJob(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime())
     started_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    # v0.54：镜像来源 / Agent 上报
+    executor: Mapped[str] = mapped_column(
+        String(16), default="server", server_default="server", nullable=False
+    )
+    image_meta: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    runner_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    progress: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
+    reported_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
     __table_args__ = (
         Index("ix_flash_job_lease", "lease_id", "status"),

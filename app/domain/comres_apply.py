@@ -21,7 +21,7 @@ from app.utils import hash_token, new_id, new_token, token_prefix, utcnow
 
 SETTING_AUTO_APPROVE = "comres_auto_approve"
 # 与 COMRes 节点心跳缺省一致（契约 §2.7）
-HEARTBEAT_INTERVAL_S = 3600
+HEARTBEAT_INTERVAL_S = 60
 
 # 简易内存限流：每 IP 每分钟最多 N 次 apply / 轮询
 _RATE_LIMIT = 60

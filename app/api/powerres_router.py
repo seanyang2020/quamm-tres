@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app import web_auth
 from app.db import get_session
-from app.domain import powerreboot, powerres, wirelog
+from app.domain import powerres, wirelog
+from app.domain import powerreboot
 from app.domain.catalog import DomainError
 
 router = APIRouter(prefix="/powerres", tags=["powerres"])
@@ -160,6 +161,28 @@ def channel_action(
     )
 
 
+@router.post("/sync")
+def sync(
+    authorization: str | None = Header(default=None),
+    payload: dict = Body(...),
+    session: Session = Depends(get_session),
+):
+    """节点上报电源 inventory；node_id 缺省用 token 对应节点。"""
+    token = _bearer(authorization)
+
+    def _run():
+        node = wirelog._auth_node(session, token)
+        node_id = (payload.get("node_id") or "").strip() or node.node_id
+        if node_id != node.node_id:
+            raise DomainError(
+                "POWERRES_NODE_MISMATCH",
+                f"payload.node_id={node_id} 与 token 节点 {node.node_id} 不一致",
+            )
+        devices = payload.get("devices") or []
+        return powerres.sync_inventory(session, node_id, devices)
+
+    return _domain_http(_run)
+
 @router.post("/reboot-test", status_code=202)
 def reboot_test(
     payload: dict = Body(...),
@@ -191,26 +214,3 @@ def reboot_test_status(
     _id=Depends(web_auth.require_login),
 ):
     return _domain_http(powerreboot.status)
-
-
-@router.post("/sync")
-def sync(
-    authorization: str | None = Header(default=None),
-    payload: dict = Body(...),
-    session: Session = Depends(get_session),
-):
-    """节点上报电源 inventory；node_id 缺省用 token 对应节点。"""
-    token = _bearer(authorization)
-
-    def _run():
-        node = wirelog._auth_node(session, token)
-        node_id = (payload.get("node_id") or "").strip() or node.node_id
-        if node_id != node.node_id:
-            raise DomainError(
-                "POWERRES_NODE_MISMATCH",
-                f"payload.node_id={node_id} 与 token 节点 {node.node_id} 不一致",
-            )
-        devices = payload.get("devices") or []
-        return powerres.sync_inventory(session, node_id, devices)
-
-    return _domain_http(_run)

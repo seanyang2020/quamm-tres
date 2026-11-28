@@ -229,9 +229,9 @@ def run_worker() -> None:
         _cache_prune_job, "interval",
         hours=max(1, settings.cache_prune_interval_hours), id="cache_prune",
     )
-    # t942：COMRes 无效资源清理（默认每小时）
+    # t942：COMRes 无效资源清理（默认 60s；scheduler 最小 30s）
     if getattr(settings, "comres_prune_enabled", True):
-        interval_s = max(60, int(getattr(settings, "comres_prune_interval_s", 3600) or 3600))
+        interval_s = max(30, int(getattr(settings, "comres_prune_interval_s", 60) or 60))
         scheduler.add_job(
             _comres_prune_job, "interval", seconds=interval_s, id="comres_prune",
         )

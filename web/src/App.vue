@@ -1,6 +1,6 @@
 <script setup>
-import { ref, reactive, computed, watch, onMounted, h } from 'vue'
-import { ElMessage, ElMessageBox, ElInput, ElSelect, ElOption } from 'element-plus'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   SLOT_MAX as PR_SLOT_MAX,
   collectModelClasses,
@@ -369,7 +369,7 @@ const deviceAddProbing = ref(false)
 const deviceAddSaving = ref(false)
 const deviceAddForm = ref({ ip: '', port: 5555, hint_model: '' })
 const deviceAddProbe = ref(null)
-const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] })
+const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', display_name: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] })
 // v0.29.2 指定名单「允许 Agent」：按邮箱从有效凭据拉取可选项
 const deviceAddAgentInfo = ref({})
 const deviceAddAgentSeen = ref(new Set())
@@ -394,7 +394,7 @@ function openDeviceAdd(presetModel) {
   deviceAddMode.value = 'ip'
   deviceAddProbe.value = null
   deviceAddForm.value = { ip: '', port: 5555, hint_model: preset }
-  deviceAddConfirm.value = { position_code: '', owner: '', model_class: preset, note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
+  deviceAddConfirm.value = { position_code: '', owner: '', model_class: preset, display_name: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
   deviceAddAgentInfo.value = {}
   deviceAddAgentSeen.value = new Set()
   deviceAddAgentAuto.value = new Set()
@@ -494,7 +494,7 @@ function pickSerialResource(row) {
   }
   const model = enabledProductTypes.value.some((t) => t.type_code === id.model) ? id.model : ''
   deviceAddConfirm.value = {
-    position_code: '', owner: '', model_class: model,
+    position_code: '', owner: '', model_class: model, display_name: '',
     note: (row.com_name || row.tty_name || ('COM' + row.slot)) + '@' + (row.node_name || row.node_id),
     share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [],
   }
@@ -531,6 +531,7 @@ function pickDiscovered(row) {
     position_code: '',
     owner: '',
     model_class: row.probe?.model || '',
+    display_name: '',
     note: '',
     share_scope: 'shared',
     allowed_emails: [],
@@ -582,7 +583,7 @@ async function submitSerialDevice() {
       body: JSON.stringify({
         owner: deviceAddConfirm.value.owner,
         position_code: deviceAddConfirm.value.position_code,
-        display_name: deviceAddConfirm.value.note || null,
+        display_name: deviceAddConfirm.value.display_name || null,
         model_class: deviceAddConfirm.value.model_class || null,
         mac: id.mac || null, sn: id.sn || null, ip: id.ip || null,
         share_scope: deviceAddConfirm.value.share_scope || 'shared',
@@ -611,6 +612,7 @@ async function submitDeviceRegister() {
         position_code: deviceAddConfirm.value.position_code,
         owner: deviceAddConfirm.value.owner,
         model_class: deviceAddConfirm.value.model_class || null,
+        display_name: deviceAddConfirm.value.display_name || null,
         note: deviceAddConfirm.value.note || null,
         share_scope: deviceAddConfirm.value.share_scope,
         allowed_emails: deviceAddConfirm.value.allowed_emails,
@@ -883,7 +885,7 @@ watch(
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
-const ptEditRow = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555, model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', db_project_name: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '' })
+const ptEditRow = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555, model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '' })
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
@@ -895,8 +897,7 @@ const ptCreateSaving = ref(false)
 const ptCreateRow = ref({
   type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
   adb_port: 5555, model_pattern: '',
-  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '',
-  db_project_name: '', notes: '',
+  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
   chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
 })
 const ptCreateTitle = ref('新增机型')
@@ -997,6 +998,28 @@ function formatRelative(iso) {
   if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`
   if (sec < 86400 * 30) return `${Math.floor(sec / 86400)} 天前`
   return formatLocal(iso)
+}
+/** COMRes 心跳年龄：38 秒前 / 4 分钟前 / 1 小时前 */
+function formatHeartbeatAge(row) {
+  let sec = row && row.heartbeat_age_s
+  if (sec == null && row && row.last_heartbeat_at) {
+    const d = parseUtcDate(row.last_heartbeat_at)
+    if (d) sec = Math.max(0, Math.floor((Date.now() - d.getTime()) / 1000))
+  }
+  if (sec == null || Number.isNaN(sec)) return '—'
+  sec = Math.max(0, Math.floor(sec))
+  if (sec < 60) return `${sec} 秒前`
+  if (sec < 3600) return `${Math.floor(sec / 60)} 分钟前`
+  if (sec < 86400) return `${Math.floor(sec / 3600)} 小时前`
+  return `${Math.floor(sec / 86400)} 天前`
+}
+function wlHeartbeatTimedOut(row) {
+  if (!row) return false
+  if (row.status === 'stale' || row.status === 'offline') return true
+  if (row.heartbeat_age_s != null && row.heartbeat_timeout_s != null) {
+    return Number(row.heartbeat_age_s) > Number(row.heartbeat_timeout_s)
+  }
+  return false
 }
 function deviceProbeAt(row) {
   return (row && row.last_probe_at) || null
@@ -4227,6 +4250,10 @@ function jumpToDevice(deviceId) {
   loadDevices()
 }
 
+function isBoundDeviceRetired(row) {
+  return !!(row && row.bound_device && row.bound_device.status === 'retired')
+}
+
 function jumpToWlNode(nodeId) {
   ctrlresCard.value = 'comres'
   comresTab.value = 'nodes'
@@ -4266,7 +4293,6 @@ function switchPage(key) {
   if (key === 'devices') {
     goDevices()
     loadDevices()
-    loadLeases()
     loadDashboard()
     loadComresResources()
   }
@@ -4316,18 +4342,15 @@ async function boot() {
       active.value = 'devices'
       loadDashboard()
       loadDevices()
-      loadLeases()
       loadComresResources()
     } else if (active.value === 'ctrlres') {
       // 深链进 CtrlRes 时仍需设备列表（PowerRes 绑定下拉）
       if (!(devices.value || []).length) loadDevices()
     } else if (active.value === 'device') {
       if (!(devices.value || []).length) loadDevices()
-      loadLeases()
     } else if (active.value === 'devices') {
       loadDashboard()
       loadDevices()
-      loadLeases()
       loadComresResources()
     }
   } else {
@@ -4580,134 +4603,6 @@ async function forceReleaseLease(leaseId) {
     ElMessage.success('已强制回收'); loadLeases(); loadDevices()
   } catch (e) { if (e !== 'cancel') ElMessage.error(e.message || '操作失败') }
 }
-
-/** 当前用户在某设备上的活跃租约（依赖 loadLeases） */
-function myLeaseForDevice(deviceId) {
-  if (!me.value || !deviceId) return null
-  const email = me.value.email
-  return (leases.value || []).find(l => l.device_id === deviceId && l.email === email) || null
-}
-function canApplyDevice(row) {
-  return !!(me.value && row && row.claimable && row.status !== 'occupied')
-}
-function isMyOccupiedDevice(row) {
-  return !!(me.value && row && row.holder_email && row.holder_email === me.value.email)
-}
-function holderDisplay(row) {
-  if (!row || !row.holder_email) return ''
-  if (me.value && row.holder_email === me.value.email) return '我占用'
-  const name = (row.holder_name || (contacts.value || []).find(c => c.email === row.holder_email)?.name) || ''
-  return name ? (name + ' · ' + row.holder_email) : row.holder_email
-}
-async function refreshDevicesAndLeases() {
-  await Promise.all([loadDevices(), loadLeases()])
-  if (active.value === 'device' && devicePageId.value) await refreshDevicePage()
-}
-async function applyDeviceLease(row) {
-  if (!row || !canApplyDevice(row)) return
-  const purpose = ref('人工测试')
-  const minutes = ref(120)
-  try {
-    await ElMessageBox({
-      title: '申请设备 ' + (row.display_name || row.device_id),
-      message: () => h('div', { style: 'display:flex;flex-direction:column;gap:12px;min-width:280px' }, [
-        h('div', [
-          h('div', { style: 'margin-bottom:6px;font-size:13px;color:#606266' }, '用途'),
-          h(ElInput, {
-            modelValue: purpose.value,
-            'onUpdate:modelValue': (v) => { purpose.value = v },
-            placeholder: '人工测试',
-          }),
-        ]),
-        h('div', [
-          h('div', { style: 'margin-bottom:6px;font-size:13px;color:#606266' }, '时长（分钟）'),
-          h(ElSelect, {
-            modelValue: minutes.value,
-            'onUpdate:modelValue': (v) => { minutes.value = v },
-            style: 'width:100%',
-          }, () => [30, 60, 120, 240].map(m =>
-            h(ElOption, { key: m, label: m + ' 分钟', value: m }),
-          )),
-        ]),
-      ]),
-      showCancelButton: true,
-      confirmButtonText: '申请',
-      cancelButtonText: '取消',
-      closeOnClickModal: false,
-    })
-    const r = await api('/api/leases/apply', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        device_id: row.device_id,
-        purpose: (purpose.value || '').trim() || '人工测试',
-        expected_minutes: Number(minutes.value) || 120,
-      }),
-    })
-    if (r.state === 'GRANTED') {
-      const lease = r.lease || {}
-      ElMessage.success(
-        '已申请：' + (lease.adb_address || row.device_id)
-        + (lease.expires_at ? '，到期 ' + formatLocal(lease.expires_at) : ''),
-      )
-      await refreshDevicesAndLeases()
-    } else if (r.state === 'QUEUED') {
-      ElMessage.warning(
-        '已排队 ticket=' + (r.ticket_id || '—')
-        + (r.position != null ? '，位次 ' + r.position : ''),
-      )
-      loadQueue()
-      await refreshDevicesAndLeases()
-    } else {
-      ElMessage.info(r.state || '已提交')
-      await refreshDevicesAndLeases()
-    }
-  } catch (e) {
-    if (e !== 'cancel') ElMessage.error(e.message || '申请失败')
-  }
-}
-async function releaseDeviceLease(row) {
-  const lease = myLeaseForDevice(row && row.device_id)
-  if (!lease) {
-    ElMessage.warning('未找到你在该设备上的租约，请到「资源调度」查看')
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      '确认释放设备「' + (row.display_name || row.device_id) + '」？释放后 Agent 可再申请。',
-      '释放租约',
-      { type: 'warning', confirmButtonText: '释放', cancelButtonText: '取消' },
-    )
-    await api('/api/leases/' + encodeURIComponent(lease.lease_id) + '/release', { method: 'POST' })
-    ElMessage.success('已释放')
-    await refreshDevicesAndLeases()
-  } catch (e) {
-    if (e !== 'cancel') ElMessage.error(e.message || '释放失败')
-  }
-}
-async function renewDeviceLease(row) {
-  const lease = myLeaseForDevice(row && row.device_id)
-  if (!lease) {
-    ElMessage.warning('未找到你在该设备上的租约')
-    return
-  }
-  try {
-    await ElMessageBox.confirm(
-      '为「' + (row.display_name || row.device_id) + '」续租 30 分钟？',
-      '续租',
-      { confirmButtonText: '续租', cancelButtonText: '取消' },
-    )
-    const r = await api('/api/leases/' + encodeURIComponent(lease.lease_id) + '/renew', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ extra_minutes: 30 }),
-    })
-    ElMessage.success('已续租' + (r.expires_at ? '，到期 ' + formatLocal(r.expires_at) : ''))
-    await refreshDevicesAndLeases()
-  } catch (e) {
-    if (e !== 'cancel') ElMessage.error(e.message || '续租失败')
-  }
-}
 async function renewCredential(id) {
   await api('/api/credentials/renew', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4779,6 +4674,14 @@ async function enableProductType(code) {
 }
 const enabledProductTypes = computed(() => productTypes.value.filter(p => p.enabled))
 const disabledProductTypes = computed(() => productTypes.value.filter(p => !p.enabled))
+// v0.54.8（#8436）：新增设备留空名称时将采用的默认名（机型展示名优先）
+const deviceAddDefaultName = computed(() => {
+  const mc = deviceAddConfirm.value.model_class
+  if (!mc) return ''
+  const t = productTypes.value.find((p) => p.type_code === mc)
+  const name = (t && t.display_name || '').trim()
+  return name && name !== mc ? name : ''
+})
 function openPtEdit(row) {
   ptEditRow.value = {
     type_code: row.type_code, display_name: row.display_name || '',
@@ -4787,8 +4690,7 @@ function openPtEdit(row) {
     adb_port: row.adb_port || 5555, model_pattern: row.model_pattern || '',
     defconfig: row.defconfig || '', sdk_repo_cmd: row.sdk_repo_cmd || '',
     build_cmd: row.build_cmd || '', image_path: row.image_path || '',
-    jenkins_url: row.jenkins_url || '', db_project_name: row.db_project_name || '',
-    notes: row.notes || '',
+    jenkins_url: row.jenkins_url || '', notes: row.notes || '',
     chip_model: row.chip_model || '', float_abi: row.float_abi || 'auto', has_fpu: !!row.has_fpu,
     build_server_id: row.build_server_id || null,
     new_type_code: row.type_code,
@@ -4809,8 +4711,7 @@ async function savePtEdit() {
         model_pattern: ptEditRow.value.model_pattern,
         defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
-        jenkins_url: ptEditRow.value.jenkins_url, db_project_name: ptEditRow.value.db_project_name,
-        notes: ptEditRow.value.notes,
+        jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
         chip_model: ptEditRow.value.chip_model, float_abi: ptEditRow.value.float_abi,
         has_fpu: ptEditRow.value.has_fpu, build_server_id: ptEditRow.value.build_server_id,
       }),
@@ -4827,6 +4728,7 @@ async function savePtEdit() {
         ? ('已保存（' + r.complete_label + '），type_code 已改为 ' + r.type_code + '，同步调整 ' + movedParts.join('、'))
         : ('已保存（' + r.complete_label + '）')
     )
+    if (r && r.name_warning) { ElMessage.warning(r.name_warning) }
     ptEditDialog.value = false
     loadProductTypes(); loadSettings()
     if (movedDev) { loadDevices() }
@@ -4848,8 +4750,7 @@ function resetPtCreate() {
   ptCreateRow.value = {
     type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
     adb_port: 5555, model_pattern: '',
-    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '',
-    db_project_name: '', notes: '',
+    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
     chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
   }
   ptAllowIncomplete.value = false
@@ -4884,8 +4785,7 @@ async function openPtDerive(row, fromDevice) {
     adb_port: tpl.adb_port || 5555, model_pattern: tpl.model_pattern || '',
     defconfig: tpl.defconfig || '', sdk_repo_cmd: tpl.sdk_repo_cmd || '',
     build_cmd: tpl.build_cmd || '', image_path: tpl.image_path || '',
-    jenkins_url: tpl.jenkins_url || '', db_project_name: tpl.db_project_name || '',
-    notes: tpl.notes || '',
+    jenkins_url: tpl.jenkins_url || '', notes: tpl.notes || '',
     chip_model: tpl.chip_model || '', float_abi: tpl.float_abi || 'auto',
     has_fpu: !!tpl.has_fpu, build_server_id: tpl.build_server_id || null,
     copy_from: code,
@@ -4913,20 +4813,18 @@ async function submitPtCreate() {
         adb_port: row.adb_port, model_pattern: row.model_pattern,
         copy_from: row.copy_from || null,
         defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
-        image_path: row.image_path, jenkins_url: row.jenkins_url,
-        db_project_name: row.db_project_name, notes: row.notes,
+        image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
         chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
         build_server_id: row.build_server_id,
       }),
-    })
+    }).then((r) => { if (r && r.name_warning) { ElMessage.warning(r.name_warning) } })
     // 派生：后端已在一次请求里整行复制（含工程字段），不用再 PUT；普通新增仍走两步。
     if (!row.copy_from) {
       await api('/api/product-types/' + encodeURIComponent(code), {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
-          image_path: row.image_path, jenkins_url: row.jenkins_url,
-          db_project_name: row.db_project_name, notes: row.notes,
+          image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
           chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
           build_server_id: row.build_server_id,
         }),
@@ -5158,14 +5056,8 @@ const legendRole = [
           </div>
           <div class="device-table-wrap">
           <el-table v-if="detailFilteredDevices.length" :data="detailDevices" border size="small" class="device-table" height="min(70vh, 640px)" style="min-width: 1600px" @sort-change="onDeviceSortChange">
-            <el-table-column label="操作" width="280">
+            <el-table-column label="操作" width="200">
               <template #default="{ row }">
-                <el-button v-if="canApplyDevice(row)" type="primary" size="small"
-                  @click.stop="applyDeviceLease(row)">申请</el-button>
-                <el-button v-if="isMyOccupiedDevice(row)" type="warning" size="small"
-                  @click.stop="releaseDeviceLease(row)">释放</el-button>
-                <el-button v-if="isMyOccupiedDevice(row) && myLeaseForDevice(row.device_id)" size="small"
-                  @click.stop="renewDeviceLease(row)">续租</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small"
                   :loading="probeBusy === row.device_id" @click="probeOne(row)">探测</el-button>
                 <el-button v-if="canEditDevice(row)" link type="primary" size="small" @click="openDeviceEdit(row)">编辑</el-button>
@@ -5348,7 +5240,7 @@ const legendRole = [
             </el-table-column>
             <el-table-column label="占用者" width="135" show-overflow-tooltip>
               <template #default="{ row }">
-                <span v-if="row.holder_email">{{ holderDisplay(row) }}</span>
+                <span v-if="row.holder_email">{{ row.holder_email }}</span>
                 <span v-else style="color: #c0c4cc">-</span>
               </template>
             </el-table-column>
@@ -5414,9 +5306,6 @@ const legendRole = [
               <el-tag size="small" :type="statusTag[devicePage.status] || 'info'">{{ devicePage.status }}</el-tag>
               <el-tag size="small" type="info">健康 {{ devicePage.health_level || '—' }}</el-tag>
               <el-tag v-if="devicePageNodeName" size="small" effect="plain">{{ devicePageNodeName }}</el-tag>
-              <el-tag v-if="devicePage.holder_email" size="small" :type="isMyOccupiedDevice(devicePage) ? 'warning' : 'info'">
-                {{ holderDisplay(devicePage) }}
-              </el-tag>
               <span class="dev-owner">责任人 {{ devicePage.owner || '—' }}</span>
             </template>
             <template v-else-if="!devicePageLoading">
@@ -5425,12 +5314,6 @@ const legendRole = [
             </template>
           </div>
           <div v-if="devicePage" class="dev-head-actions">
-            <el-button v-if="canApplyDevice(devicePage)" type="primary" size="small"
-              @click="applyDeviceLease(devicePage)">申请</el-button>
-            <el-button v-if="isMyOccupiedDevice(devicePage)" type="warning" size="small"
-              @click="releaseDeviceLease(devicePage)">释放</el-button>
-            <el-button v-if="isMyOccupiedDevice(devicePage) && myLeaseForDevice(devicePage.device_id)" size="small"
-              @click="renewDeviceLease(devicePage)">续租</el-button>
             <el-button v-if="canEditDevice(devicePage)" size="small" type="primary"
               :loading="probeBusy === devicePage.device_id" @click="probeOne(devicePage)">探测</el-button>
             <el-button v-if="me.role === 'admin'" size="small"
@@ -6185,7 +6068,15 @@ const legendRole = [
             </el-table-column>
             <el-table-column prop="model_class" label="机型" width="110" />
             <el-table-column prop="sw_version" label="版本" width="90" />
-            <el-table-column label="最近心跳" min-width="190"><template #default="{ row }">{{ formatLocal(row.last_heartbeat_at) }}</template></el-table-column>
+            <el-table-column label="最近心跳" min-width="260">
+              <template #default="{ row }">
+                <span :style="wlHeartbeatTimedOut(row) ? 'color:var(--el-color-danger)' : ''">
+                  {{ formatLocal(row.last_heartbeat_at) }}
+                  <span v-if="row.last_heartbeat_at" class="comres-muted">（{{ formatHeartbeatAge(row) }}）</span>
+                </span>
+                <el-tag v-if="wlHeartbeatTimedOut(row)" size="small" type="danger" style="margin-left:6px">超时</el-tag>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="150" fixed="right">
               <template #default="{ row }">
                 <el-button v-if="row.status !== 'retired'" size="small"
@@ -6223,7 +6114,17 @@ const legendRole = [
                          :disabled="!wlDetail.node_token"
                          @click="copyNodeToken">复制</el-button>
             </el-descriptions-item>
-            <el-descriptions-item label="最近心跳">{{ wlDetail.last_heartbeat_at }}</el-descriptions-item>
+            <el-descriptions-item label="最近心跳">
+              <span :style="wlHeartbeatTimedOut(wlDetail) ? 'color:var(--el-color-danger)' : ''">
+                {{ wlDetail.last_heartbeat_at || '—' }}
+                <span v-if="wlDetail.last_heartbeat_at" class="comres-muted">（{{ formatHeartbeatAge(wlDetail) }}）</span>
+              </span>
+              <el-tag v-if="wlHeartbeatTimedOut(wlDetail)" size="small" type="danger" style="margin-left:6px">超时</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="心跳间隔">
+              {{ wlDetail.heartbeat_interval_s != null ? wlDetail.heartbeat_interval_s + ' 秒' : '—' }}
+            </el-descriptions-item>
+            <el-descriptions-item label="心跳年龄">{{ formatHeartbeatAge(wlDetail) }}</el-descriptions-item>
             <el-descriptions-item label="在线端口数">{{ wlOnlinePortCount(wlDetail.node_id) }}</el-descriptions-item>
           </el-descriptions>
           <el-alert type="info" :closable="false" show-icon style="margin:12px 0 0"
@@ -6265,13 +6166,19 @@ const legendRole = [
             <el-table-column label="接入设备" min-width="230">
               <template #default="{ row }">
                 <template v-if="row.bound_device_id">
-                  <el-button size="small" link type="primary"
-                             @click="jumpToDevice(row.bound_device_id)">
-                    {{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}
-                  </el-button>
-                  <el-tag v-if="row.bound_device && row.bound_device.status" size="small"
-                          :type="row.bound_device.status === 'online' ? 'success' : 'info'"
-                          style="margin-left:4px">{{ row.bound_device.status }}</el-tag>
+                  <template v-if="isBoundDeviceRetired(row)">
+                    <span>{{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}</span>
+                    <el-tag type="info" size="small" style="margin-left:4px">已退役</el-tag>
+                  </template>
+                  <template v-else>
+                    <el-button size="small" link type="primary"
+                               @click="jumpToDevice(row.bound_device_id)">
+                      {{ row.bound_device ? (row.bound_device.name || row.bound_device_id) : row.bound_device_id }}
+                    </el-button>
+                    <el-tag v-if="row.bound_device && row.bound_device.status" size="small"
+                            :type="row.bound_device.status === 'online' ? 'success' : 'info'"
+                            style="margin-left:4px">{{ row.bound_device.status }}</el-tag>
+                  </template>
                   <div class="wl-com-sub">
                     <span v-if="row.bound_device && row.bound_device.model">
                       {{ row.bound_device.model }}{{ row.bound_device.project ? ' / ' + row.bound_device.project : '' }} ·
@@ -6428,10 +6335,16 @@ const legendRole = [
             </el-table-column>
             <el-table-column label="接入设备" min-width="210">
               <template #default="{ row }">
-                <el-button v-if="row.bound_device_id || row.device_id" size="small" link type="primary"
-                           @click="jumpToDevice(row.bound_device_id || row.device_id)">
-                  {{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}
-                </el-button>
+                <template v-if="row.bound_device_id || row.device_id">
+                  <template v-if="isBoundDeviceRetired(row)">
+                    <span>{{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}</span>
+                    <el-tag type="info" size="small" style="margin-left:4px">已退役</el-tag>
+                  </template>
+                  <el-button v-else size="small" link type="primary"
+                             @click="jumpToDevice(row.bound_device_id || row.device_id)">
+                    {{ row.bound_device ? (row.bound_device.name || row.bound_device_id || row.device_id) : (row.bound_device_id || row.device_id) }}
+                  </el-button>
+                </template>
                 <el-tag v-else size="small" type="info">未绑定</el-tag>
                 <div class="wl-com-sub">{{ row.mac || '无 MAC' }}</div>
               </template>
@@ -7351,9 +7264,6 @@ const legendRole = [
               <el-table-column prop="type_code" label="type_code" width="150" />
               <el-table-column prop="display_name" label="名称" width="140" />
               <el-table-column prop="defconfig" label="defconfig" width="200" show-overflow-tooltip />
-              <el-table-column label="DB 路径" width="140" show-overflow-tooltip>
-                <template #default="{ row }">{{ row.db_project_name || '-' }}</template>
-              </el-table-column>
               <el-table-column label="完整度" width="110">
                 <template #default="{ row }"><el-tag :type="row.complete ? 'success' : 'warning'">{{ row.complete_label }}</el-tag></template>
               </el-table-column>
@@ -7587,7 +7497,10 @@ const legendRole = [
             <el-form-item label="type_code">
               <el-input v-model="ptEditRow.new_type_code" placeholder="机型主键，可直接修改（会同步已有设备的机型）" />
             </el-form-item>
-            <el-form-item label="名称"><el-input v-model="ptEditRow.display_name" placeholder="展示名（给人看），留空则用 type_code" /></el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="ptEditRow.display_name" placeholder="展示名（给人看），留空则用 type_code" />
+              <div class="form-hint">该名称会作为新建设备的默认名称，建议使用人类可读名称，不要与 type_code 相同。</div>
+            </el-form-item>
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
             <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
             <el-form-item label="有屏"><el-switch v-model="ptEditRow.has_screen" /></el-form-item>
@@ -7602,7 +7515,6 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="SDK 获取命令" class="pt-full"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" class="pt-full"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
-            <el-form-item label="DB 路径"><el-input v-model="ptEditRow.db_project_name" placeholder="Daily/XOS 下的工程名，如 esl2 / moto_ld；不要填完整 URL" /></el-form-item>
             <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接"><el-input v-model="ptEditRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="浮点 ABI">
@@ -7847,8 +7759,11 @@ const legendRole = [
                 <div class="form-hint">根据所选用户的有效 token 自动列出；只有一个 Agent 时已自动填入。</div>
               </el-form-item>
             </template>
-            <el-form-item label="备注">
-              <el-input v-model="deviceAddConfirm.note" type="textarea" :rows="2" />
+            <el-form-item label="名称（可选）">
+              <el-input v-model="deviceAddConfirm.display_name" maxlength="128" placeholder="留空自动使用设备类型名称" />
+              <div class="form-hint">
+                {{ deviceAddDefaultName ? ('留空时默认名称：' + deviceAddDefaultName) : '留空且所选机型无可读名称时，将使用 机型-位置 作为默认名。' }}
+              </div>
             </el-form-item>
           </el-form>
         </template>
@@ -8070,7 +7985,10 @@ const legendRole = [
             :title="'已从模板 ' + ptCreateRow.copy_from + ' 完整复制配置（工程命令 / 镜像路径 / 芯片浮点 / 编译服务器 / 固件策略），只需修改有差异的项'" />
           <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="96px" class="pt-grid">
             <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
-            <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" />
+              <div class="form-hint">该名称会作为新建设备的默认名称，建议使用人类可读名称，不要与 type_code 相同。</div>
+            </el-form-item>
             <el-form-item label="有屏"><el-switch v-model="ptCreateRow.has_screen" /></el-form-item>
             <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
             <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>
@@ -8092,7 +8010,6 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd" class="pt-full"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" prop="build_cmd" class="pt-full"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
-            <el-form-item label="DB 路径"><el-input v-model="ptCreateRow.db_project_name" placeholder="Daily/XOS 下的工程名，如 esl2 / moto_ld；不要填完整 URL" /></el-form-item>
             <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
             <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
             <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>

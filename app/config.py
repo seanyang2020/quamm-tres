@@ -78,17 +78,25 @@ class Settings(BaseSettings):
     # v0.28.3：默认取当前用户 ~/bin/dbxostest.py，换机器部署不用改代码（env 可覆盖）
     dbxostest_path: str = str(Path.home() / "bin" / "dbxostest.py")  # 下载 + 刷写编排器
     python_bin: str = "python3"
-    flash_work_dir: str = "./var/flash"                  # dbxostest 的 cwd（downloads/tmp 落此）
-    flash_log_dir: str = "./var/flash/logs"              # 每个 job 一份日志
+    flash_work_dir: str = "./var/flash"                  # 刷机根目录；单 job cwd 为 jobs/<job_id>/
+    flash_log_dir: str = "./var/flash/logs"              # 每个 job 一份日志（不随 job 目录删除）
     flash_http_timeout: int = 8                          # 版本目录列表 HTTP 超时
     flash_timeout_seconds: int = 1800                    # 单次刷机子进程上限（5-15 分钟）
+    # source=local：Agent 须在此时间内 res_flash_report，否则 job 标 FAILED
+    flash_agent_timeout_seconds: int = 1800
 
     # 缓存回收（v0.28.3）：DB 源包/解压缓存与刷机缓存都必须回收，否则无限膨胀
     db_source_keep_days: int = 1          # var/db_source 下超过 N 天未改动即删
     db_source_keep_per_label: int = 1     # 每个 label 目录只保留最新 N 个包
-    flash_cache_keep_days: int = 1        # var/flash/downloads 超过 N 天即删
+    flash_cache_keep_days: int = 1        # var/flash/downloads 超过 N 天即删（遗留全局目录）
     flash_log_keep_days: int = 30         # var/flash/logs 与 test_report 保留天数
-    flash_cache_prune_after_job: bool = True  # 单个刷机 job 结束即删它本次下载的镜像
+    # 兼容保留：v0.53.2 起刷机改为 per-job 工作目录，job 结束整目录删除，本开关不再参与刷机清理
+    flash_cache_prune_after_job: bool = True
+    # 异常退出残留的 jobs/<id>/：按 mtime 清理。6h >> flash_timeout_seconds(默认 1800s)，
+    # 正常 job 会在 finally 删掉自己的目录；超期清理只兜底崩溃残留，不会误伤仍在跑的刷机。
+    flash_job_keep_hours: int = 6
+    # dbxostest 异常退出可能在 /tmp 留下 dbxos_* 目录；同样 6h 兜底（仅目录、仅有权限的）
+    tmp_dbxos_keep_hours: int = 6
     cache_prune_interval_hours: int = 6   # worker 定时清理周期
 
     # 通知（一期只落库，不真正发信）
@@ -115,12 +123,12 @@ class Settings(BaseSettings):
     # 发凭据邮件里 MCP 配置对外暴露的地址
     mcp_public_url: str = "http://172.16.10.25:9100/mcp/"
 
-    # COMRes 无效资源清理（t942）：worker 定时 prune；默认每小时
+    # COMRes 无效资源清理（t942）：worker 定时 prune；默认 60s（60s 心跳节点约 3min 落 offline）
     comres_prune_enabled: bool = True
-    comres_prune_interval_s: int = 3600
-    # online 心跳超时 → offline+stale：max(3*heartbeat, floor)
-    comres_heartbeat_interval_s: int = 3600
-    comres_stale_floor_s: int = 1800
+    comres_prune_interval_s: int = 60
+    # online 心跳超时 → offline+stale：max(3*node_interval, floor)；无上报时 interval 兜底 60
+    comres_heartbeat_interval_s: int = 60
+    comres_stale_floor_s: int = 180
     # offline 连续超过此时长 → 端口移出池、节点 dormant
     comres_offline_dormant_s: int = 24 * 3600
     # enrolled 从未心跳超过此时长 → retired

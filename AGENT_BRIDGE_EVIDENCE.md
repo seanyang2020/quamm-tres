@@ -1,65 +1,75 @@
 ---
-task_id: inner-4405
+task_id: t8436
 ---
 
-# inner-4405 验收证据（TRES 租约配额门禁：admin 豁免）
+# t8436：新建设备默认名使用设备类型展示名（0.54.8，Redmine #8436）
+
+## 侧车追加（2026-11-27）：fix 脚本 --map 与自动扫描联动
+
+- 问题：--map TYPE=NEW 时自动扫描仍用库内旧 display_name，dry-run 不列出应随类型改名的设备。
+- 修复：scripts/fix_device_display_names.py 扫描优先取 --map 新名称（未给 map 的类型仍用库内值）；apply 顺序天然为「先类型后设备」（changes 列表按类型→精确改名→自动扫描构建）。
+- 测试：新增 tests/test_fix_device_display_names.py 3 例（dry-run 列出新名候选、apply 类型+设备一起改且自定义名不动、无 map 时维持跳过），`3 passed in 0.46s`。
+- 提交：见 `git log -1 --oneline`（docs 之后的 fix 脚本回归 commit）。
 
 ## a. 编译/构建
 
-- 命令：`.venv/bin/python -m py_compile app/domain/leasing.py app/seed.py tests/test_quota.py`
+- 命令：`python -m pytest tests/test_device_naming.py -q`
 - 退出码：`0`
-- 关键结果：三个改动文件语法编译通过，无输出。
+- 关键结果：`15 passed in 1.40s`（新增用例全部通过）
+
+- 命令：`python -m pytest tests/ -q --ignore=tests/smoke_comres.py --ignore=tests/smoke_wirelog.py`
+- 退出码：`0`
+- 关键结果：`7 failed, 359 passed in 99.74s`；7 个失败（test_apply_flow×2、test_mcp_http×2、test_queue×1、test_registration×2）在基线 58c0f25（`git stash` 后复跑）同样失败，属既有失败（seed 不再预置机型），与本改无关。
+
+- 命令：`cd web && npm install && npm run build`
+- 退出码：`0`
+- 关键结果：`✓ built in 6.62s`；产物 `web/dist/index.html`、`web/dist/assets/index-CNOHFqDM.js`、`web/dist/assets/index-BzwBFL8y.css`；`web/dist` 已被 gitignore，未提交。
 
 ## b. 改动文件清单
 
-- `app/domain/leasing.py` — `apply()` 配额门禁改为 `if not auth.is_admin:` 才检查 `count_active_leases` / `principal.quota`；admin 直接进入 ACL 与分配流程，普通用户行为不变。
-- `app/seed.py` — `seed_admin()` 的 `quota=0` 语义保留，仅修正注释：说明 admin 不占配额、租约入口对 `is_admin` 豁免门禁。
-- `tests/test_quota.py` — 新增 `test_admin_can_lease_with_zero_quota`：admin（quota=0）连续租 2 台均 GRANTED，`active_leases` 正常计数且 quota 仍为 0；原有 `test_quota_exceeded` 继续覆盖普通用户超额被 `QUOTA_EXCEEDED` 拒绝。
-- `AGENT_BRIDGE_EVIDENCE.md`、`AGENT_BRIDGE_PROGRESS.md` — 本任务证据/进度。
-
-未改：数据库既有记录、web/前端、其他模块、未跟踪的 evidence/powerres 文件。
+- `app/domain/device_naming.py` — 新增：`resolve_device_display_name` / `normalize` / `name_warning_for_type`
+- `app/domain/catalog.py` — `device_register` 增加 `display_name` 参数；新建用统一解析；已有设备仅显式名覆盖；返回 `display_name`/`display_name_source`
+- `app/api/router.py` — `/devices/register` 透传 `display_name`；POST/PUT `/product-types` 响应加 `name_warning`
+- `app/mcp/server.py` — `res_device_register` 增加可选 `display_name` 并透传（docstring 说明）
+- `app/domain/wirelog.py` — `create_device_from_binding` 用同一解析：显式名 > 机型展示名 > COM@node 兜底
+- `web/src/App.vue` — deviceAddConfirm 加 `display_name`；表单「备注」→「名称（可选）」+ 默认名提示；submitDeviceRegister/submitSerialDevice 提交 display_name；机型选择默认名提示；类型新增/编辑名称防呆提示；保存后 name_warning 弹 warning
+- `scripts/fix_device_display_names.py` — 新增：--dry-run 默认 / --apply / --map / --rename / 自动扫描 / JSON 备份
+- `tests/test_device_naming.py` — 新增 15 例（纯函数 9 + 防呆 1 + 集成 5）
+- `VERSION` — 0.54.7 → 0.54.8
+- `CHANGELOG.md` — 0.54.8 条目
 
 ## c. 版本/提交证据
 
-- `git log -1 --oneline`：`e927470 fix(tres): 重启测试运行中 elapsed_s 实时刷新`
-- `git status --short`（本任务相关）：
-  - `M AGENT_BRIDGE_EVIDENCE.md`
-  - `M AGENT_BRIDGE_PROGRESS.md`
-  - `M app/domain/leasing.py`
-  - `M app/seed.py`
-  - `M tests/test_quota.py`
-  - 其余为任务前既有的未跟踪文件（powerres.py、docs、db.bak、历史测试等），未触碰。
-- `git diff --stat`：`app/domain/leasing.py | 17 +++++---`、`app/seed.py | 4 +++-`、`tests/test_quota.py | 33 ++++++++++`（另有证据文件自身 diff）
-- 未 push、未提交、未合并；VERSION 保持 `0.54.12`。
-- Gerrit change：无/不适用。
+- `git log -1 --oneline`：`bf5be79 fix(tres): 0.54.8 default device name uses product display name (#8436)`
+- `git status --short`：（空，工作区干净）
+- `git diff --stat`（HEAD~1..HEAD）：
+
+```
+ CHANGELOG.md                     |  22 +++++++
+ VERSION                          |   2 +-
+ app/api/router.py                |  19 ++++++-
+ app/domain/catalog.py            |  36 ++++++++++--
+ app/domain/device_naming.py      |  82 ++++++++++++++++++++++++
+ app/domain/wirelog.py            |  20 ++++++-
+ app/mcp/server.py                |   6 ++-
+ scripts/fix_device_display_names.py | 160 +++++++++++++++++++++++++++++++
+ tests/test_device_naming.py      | 213 +++++++++++++++++++++++++++++++++++++++
+ web/src/App.vue                  |  46 ++++++++++---
+ 10 files changed, 584 insertions(+), 15 deletions(-)
+```
+
+- 分支：`fix/8436-device-default-name`（基线 main / release-0.54.7 `58c0f25`）
+- 未 push / 未合并 main / 未部署
 
 ## d. 验证/自测
 
-1. 定向 pytest（门禁相关全部通过）
-   - 命令：`timeout 180 .venv/bin/python -m pytest tests/test_quota.py tests/test_device_acl.py tests/test_credentials_role.py -q`
-   - 退出码：`0` → `16 passed, 7 warnings`
-2. `tests/test_apply_flow.py`
-   - 命令：`timeout 200 .venv/bin/python -m pytest tests/test_apply_flow.py -q`
-   - 退出码：`1` → `2 passed, 2 failed`
-   - 通过：`test_apply_renew_release`、`test_whoami_admin_flag`
-   - 失败：`test_list_products_and_whoami`、`test_product_metadata_completeness_and_stats`，均为既有历史失败：`app/seed.py` 自 v0.17 起 `PRODUCT_TYPES = []`（有意移除 mock 机型预置），用例仍断言 5 个预置机型，与本门禁改动无关。
-3. 合并跑（四文件）：`timeout 300 .venv/bin/python -m pytest tests/test_quota.py tests/test_apply_flow.py tests/test_credentials_role.py tests/test_device_acl.py -q` → 退出码 `1`，`18 passed, 2 failed`（失败同上，非本任务引入）。
-4. 服务回归（本机 10.25:9100）
-   - `systemctl --user restart quamm-tres.service quamm-worker.service` → 退出码 `0`，两服务 `active`
-   - `curl http://127.0.0.1:9100/api/health` → HTTP 200，`{"status":"ok","version":"0.54.12",...}`
-5. admin 真机实测（MCP `POST /mcp/`，`Authorization: Bearer <~/.config/quamm-tres/token>`）
-   - `res_whoami` → `email=admin@corp.com, is_admin=true, quota=0, active_leases=0`
-   - `res_apply(device_id=dev_080989bb98, agent_info=CodeBuddy/1.0-inner-4405-check, purpose=inner-4405 admin 配额门禁验证, expected_minutes=5)` → `state=GRANTED`，`lease_id=L-f39793a0a2`，`adb_address=172.16.60.249:5555`，`expires_at=2026-11-27T16:04:36`
-   - `res_release(lease_id=L-f39793a0a2, reason=inner-4405 验证结束释放)` → `state=RELEASED, ok=true`
-   - 复核 `res_whoami` → `active_leases=0`；`res_device_info(dev_080989bb98)` → `status=available, holder_email=null, locked=false`，无遗留占用。
-
-## 201 生产部署方式（本次未执行）
-
-本机无 201 SSH 通道，未部署。交付后在能访问 201 的跳板执行：
-
-1. 本机导出离线 bundle（含本修复提交后）：
-   `git bundle create ~/quamm-tres.bundle main`
-2. 将 bundle 传到 201（scp/内网文件通道），在 201 仓库根执行：
-   `bash scripts/deploy-git.sh /path/to/quamm-tres.bundle`
-   （脚本会 `git fetch bundle` → `checkout -f -B main bundle/main` → 重启 `quamm-tres.service`/`quamm-worker.service` → 打印 health 与 VERSION）
-3. 若 web 产物有更新需另行同步/构建；本任务未改前端。
+- `pytest tests/test_device_naming.py -q` → 15 passed
+- 全量 `pytest tests/ -q`（除 smoke）→ 359 passed；7 个既有失败与基线一致（`git stash` 复跑核实）
+- `npm run build` → 成功（见 a）
+- 关键行为验证（集成用例）：
+  - 显式 display_name → 完全采用，source=explicit
+  - 未填 → 机型展示名（如 彩屏价签_V2），source=product_display
+  - 旧客户端 note → 仍生效，source=legacy_note
+  - 类型展示名 == type_code → 回退 `esl2_skw-302-R2-05`，source=fallback
+  - 已有设备重复注册：note/空名不覆盖自定义名（source=kept）；显式名才更新
+  - name_warning：display_name 空或等于 type_code 时返回提示，否则 None

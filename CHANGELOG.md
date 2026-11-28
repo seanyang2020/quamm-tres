@@ -3,72 +3,145 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
-## [0.54.5] - 2026-11-27
+## [0.54.9] - 2026-11-27
 
 ### 变更：普通用户可添加设备
 - 放开 `POST /api/devices/probe`、`/api/devices/register`、`/api/devices/discover` 至已登录用户（`require_login`），普通用户可自助登记设备。
 - 设备类型（机型）增删改仍仅限管理员；截图、批量探测、删除设备等其它 admin 接口保持不变。
 - Web 端设备中心／空态／品类详情页去掉「需管理员」占位按钮，所有已登录用户可见可点。
 
-## [0.54.4] - 2026-11-26
+## [0.54.8] - 2026-11-27
 
-### 新增：管理员可调整凭据（token）权限
-- 管理员可在凭据页把 user 凭据提升为 admin，也可反向降级；`credential.role` 鉴权即时生效，无需重新登录或重新发 token。
-- 新增 `POST /api/credentials/{id}/role`（仅 admin）；自降级当前登录凭据禁止（`SELF_DEMOTE_FORBIDDEN`）；写审计 `set_credential_role`。
+### 修复：新建设备默认名改用设备类型可读展示名（#8436）
+- 现象：esl2_skw 类型下新建设备，名称默认为 `esl2_skw-技术部` 这类技术代号，
+  而不是同类型设备在用的可读名（如 彩屏价签_V2）。
+- 根因：注册链路 `display_name = note or f"{model}-{position}"`，从未使用机型字典
+  的展示名；Web 表单也把「备注」当名称提交。
+- 修复：新增 `app/domain/device_naming.py` 集中解析，优先级
+  显式名称 > 旧 note > 机型展示名（非空且不等于 type_code）> 兜底 `type-position`；
+  `device_register`、MCP `res_device_register`、串口建机 `create_device_from_binding`
+  统一走该解析；已有设备仅显式传名时才覆盖，空值/旧 note 不动自定义名。
+- 返回值增加 `display_name` 与 `display_name_source`（explicit/legacy_note/
+  product_display/fallback/kept）便于追溯。
+- 前端：新增设备表单「备注」改为「名称（可选）」，留空提示将使用的默认名；
+  设备类型新增/编辑对话框加名称防呆提示；POST/PUT /product-types 响应新增
+  `name_warning`（display_name 为空或等于 type_code 时提示，不拒绝请求）。
+- 新增 `scripts/fix_device_display_names.py` 存量数据修正（默认 dry-run，
+  `--apply` 前自动导出 JSON 备份）。
+- 测试：新增 tests/test_device_naming.py（15 例）；数据修正需在 201 库另行执行。
 
-## [0.54.3] - 2026-11-26
+## [0.54.7] - 2026-11-27
 
-### 变更：能力模型修正（电源/模式不再伪装串口；只读约束收紧）
-- `role=power|mode` 不再产出 `serial.io`，消除电源通道在串口区的假 `NO_BINDING` 卡。
-- `constraints.read_only` 仅反映真实写约束（`role=log` 或显式 ro）；`source=observed` 不再视为只读。
+### 修复：res_db_upgrade 因 deleted_count 缺失在升级前置阶段失败
+- 现象：`var/db_source` 不存在时调用 `res_db_upgrade`，服务端抛 `KeyError('deleted_count')`，
+  板端未收到升级。
+- 根因：`cache_prune.prune_db_source()` 在根目录不存在时早退，返回体缺少 `deleted_count`；
+  `db_source.prune_work_root()` 直接按下标读取该字段。
+- 修复：早退返回补 `deleted_count=0`，统一 `prune_db_source()` 所有返回路径的契约；
+  `prune_work_root()` 改用防御性 `.get()` 读取。
+- `res_db_upgrade` 的升级前缓存清理改为 best-effort：清理异常只告警降级，继续执行
+  版本发现/下载/升级，不再阻塞真正的 DB 升级。
+- 测试：新增缓存清理返回契约与升级降级用例，覆盖目录不存在、空目录与清理异常场景。
+
+## [0.54.5] - 2026-11-26
+
+### 合并：0.54.4 功能合入 0.54.3 热修基线
+- 以 `fix/comres-heartbeat` @ `5defef0`（0.54.3）为基线，仅合入 quamm-res
+  `feat/capabilities` 工作树相对 `62cce60` 的功能增量；保留 0.54.1–0.54.3
+  已上线热修（COMRes 心跳、刷机 isolation/sources/watchdog、retired unbind），
+  不回退 `flash.py` / `comres.py`。
+
+### 新增：凭据 role 升降级
+- `POST /api/credentials/{id}/role`（仅 admin）：user ↔ admin 即时生效；
+  禁止自降级当前登录凭据（`SELF_DEMOTE_FORBIDDEN`）；写审计 `set_credential_role`。
 
 ### 新增：浏览器内 ADB 命令执行
-- 新增 `POST /api/devices/{id}/adb/exec`：admin 或持设备租约可执行 adb shell；
-  破坏性命令需 confirm；输出截断 64KB；写审计事件。
+- `POST /api/devices/{id}/adb/exec`：admin 或租约持有者可执行 adb shell；
+  危险命令需 confirm；输出截断；写审计。
+
+### 新增：PowerRes 资源域与通道动作
+- PowerRes inventory / binding / overview；`POST /api/powerres/action` 通道开/关/重启/查询；
+  `restart_hold_ms` 跟随端侧；`enabled=false` 拒绝电源动作；幂等建表/补列。
 
 ### 变更：设备页信息架构整合
-- 能力区 ADB / 串口 / 电源三卡一排，操作留在卡内。
-- 「电源配置」仅 admin 且默认折叠、去掉开关列；非 admin 只读摘要。
-- 删除底部串口表；串口卡内增加控制台入口与 health / holder。
+- 能力区 ADB / 串口 / 电源三卡一排；电源配置默认折叠（admin）；
+  串口卡内控制台入口；能力模型修正（power/mode 不再伪装串口）。
 
-## [0.54.2] - 2026-11-26
+## [0.54.3] - 2026-11-25
 
-### 变更：PowerRes 卡片开关合并与重启间隔跟随
-- PowerRes 卡片「开/关」合并为单个 `el-switch`，跟随端侧上报 `state`；未知态禁用并提示等待上报。
-- inventory 增加 `restart_hold_ms`（hub `/api/powerres/sync` 透传）；已注册通道重启强制用注册值，
-  前端 hold 输入只读并标注「跟随端侧」；手工通道仍可编辑 hold（500–30000 夹紧）。
+### 修复：无配置节点默认 60s 心跳
+- 全局 `comres_heartbeat_interval_s` 默认由 3600 改为 60；新建/未带
+  `heartbeat_interval_s` 的节点 register/heartbeat 返回并持久化 60。
+- `comres_apply` 审批响应中的 `heartbeat_interval_s` 同步为 60。
+- 仍保留 0.54.2 优先级与范围校验；显式上报 3600 合法且照常生效。
 
-## [0.54.1] - 2026-11-26
+## [0.54.2] - 2026-11-25
 
-### 新增：PowerRes 通道级动作（管理员直控）
-- 新增 `POST /api/powerres/action`（admin）：未绑定通道也可直接开 / 关 / 重启 / 查询；
-  已绑定且 `enabled=false` 的通道仍拒绝；重启 hold 复用串口 5–30s 夹紧规则。
-- PowerRes 卡片操作列新增「查询」，用于读取端侧当前开关状态；动作写审计事件
-  `powerres_channel_action`。
+### 修复：COMRes 心跳间隔以节点上报为准
+- `register` / `heartbeat` 按节点上报的 `heartbeat_interval_s`（或
+  `config.heartbeat_interval_s`）生效并持久化到 `config_json`，响应返回生效值；
+  不再固定回写 3600；非法值返回 `COMRES_BAD_HEARTBEAT_INTERVAL`。
+- stale 判定改为逐节点 `max(3*interval, comres_stale_floor_s)`（floor 默认 180）；
+  `expire_allocations` 释放 auto 占用同步按节点超时；prune 默认周期 60s。
+- `list_nodes` / `get_node` 按心跳年龄只读返回 `stale`，并附带
+  `heartbeat_age_s` / `heartbeat_interval_s` / `heartbeat_timeout_s`；
+  `probe_reach` 跳过心跳已超时节点。页面「最近心跳」展示年龄与超时标记。
 
-## [0.54.0] - 2026-11-26
+## [0.54.1] - 2026-11-25
 
-### 新增：PowerRes 资源域
-- 新增 PowerRes inventory / binding / overview 与手工登记；按节点同步电源设备与通道，
-  支持将通道绑定到目标设备并写入串口 power 端口。
-- 绑定行与 inventory 携带 location / driver，便于在 Web 与 deskserialhub 侧对照物理位置。
+### 修复：Agent watchdog 覆盖 RUNNING 失联
+- `_agent_watchdog` 改为周期性检查（约 45s 一轮）：仅 `executor=agent`；
+  终态立即退出；对 `WAITING_AGENT`/`RUNNING` 取 `reported_at`/`started_at`/
+  `created_at` 最新为 last_activity，超时标 FAILED（`Agent 超过 N 秒未上报`）。
+- 避免 Agent 上报 RUNNING 后失联导致 job 永久占用租约；查询异常只记日志。
+- 测试：stale RUNNING → FAILED；SUCCEEDED 后 watchdog 不改状态。
 
-### 新增：PowerRes 卡片电源动作
-- CtrlRes PowerRes 卡片支持对已绑定通道执行开 / 关 / 重启，重启可配置 hold_ms。
-- 串口 steps 统一 data/encoding 表达，并兼容旧 hex 载荷。
+## [0.54.0] - 2026-11-25
 
-### 新增：设备独立页与能力只读接口
-- 新增设备独立页 `#/device/{id}`，聚合指纹、能力、串口与电源绑定。
-- `GET /api/devices/{id}/capabilities` 返回只读能力快照；绑定对话框支持机型过滤与搜索。
+### 新增：刷机镜像来源 local / build_server
+- `res_flash` 新增可选参数：`source`（`db`|`local`|`build_server`）、`build_server_id`、
+  `image_mode`（`script`|`partition`）、`script_ini` / `partition` / `file_path`、
+  `image_name` / `image_sha256`；默认 `source=db` 保持原行为。
+- `source=local`：创建 `WAITING_AGENT` 任务（`executor=agent`），返回 `command_argv` /
+  `command` / `report_hint`，由 Agent 本机执行 `xosadb2update`；TRES 不校验本地路径。
+- 新增 `res_flash_report`：Agent 上报 `RUNNING`/`SUCCEEDED`/`FAILED`；终态重复幂等，
+  冲突返回 `JOB_ALREADY_FINISHED`；非租约持有人 `FORBIDDEN`。
+- `source=build_server`：经已登记 `BuildServer` SSH 在编译机执行，镜像不经 201；
+  预检 `xosadb2update`（缺则 `RUNNER_TOOL_MISSING`）、绝对路径且 realpath 落在
+  `~/work_root`（否则 `IMAGE_PATH_OUTSIDE_WORK_ROOT` / `IMAGE_NOT_FOUND`）。
+- `FlashJob` 增列：`executor` / `image_meta` / `runner_id` / `progress` / `reported_at`
+  （幂等 ALTER）；`_ACTIVE_JOB_STATES` 含 `WAITING_AGENT`。
+- 配置 `flash_agent_timeout_seconds`（默认 1800）：local 超时未上报则标 FAILED。
+- `res_flash_status` 补充 `mode` / `executor` / `runner_id` / `image` / `progress` /
+  `reported_at`。返回值与日志不包含 SSH secret。
 
-### 变更：电源动作安全闸与绑定权限
-- 电源动作：hold 限制 5–30s；`power_off` / `power_cycle` 强制 confirm；尊重 binding.enabled。
-- 绑定 / 解绑 / inventory 写操作仅 admin；控制权跟随设备（admin 直控，他人需持租约）。
+## [0.53.2] - 2026-11-25
 
-### 变更：设备中心电源能力入口
-- 设备中心列表新增「电源」列（`serial.power_n`），点击展开通道与开/关/重启；截图与截图历史
-  从列表移入设备详情页。
-- `serial_flags` / `GET /devices` 轻量附带 `power_n` / `log_n`，不改 MCP 既有字段语义。
+### 修复：刷机 per-job 工作目录隔离
+- 每个 flash job 使用 `var/flash/jobs/<job_id>/` 作为 dbxostest cwd，隔离
+  `downloads/`、`tmp/`、`test_report/`，避免同机型不同 lease 并发时互删包。
+- job 结束（成功/失败/异常）在 finally 删除该工作目录；`var/flash/logs/<job_id>.log`
+  保留。清理失败只记 warning，不改任务终态。
+- 移除刷机流程中的全局 downloads 快照 + `prune_flash_job_delta`；
+  `flash_cache_prune_after_job` 不再参与刷机清理。
+- 定时清理增加：过期 `jobs/` 目录（默认 6h）、`/tmp/dbxos_*` 残留目录（默认 6h）。
+
+## [0.53.1] - 2026-11-25
+
+
+### 修复：退设备自动释放串口绑定
+- `_retire_device` / `device_unregister` 在设备进入 retired 时立即释放其持有的全部
+  `WireLogPortBinding`（清空 `bound_device_id` 与 `allocated_*`），串口回到资源池，
+  避免长期显示「已绑定未分配」。
+- 释放明细写入 `unregister` 审计 `released_bindings`（保留原 binding_id / node_id /
+  slot / com_name / endpoint / previous_device_id）；若同时释放位置则与
+  `released_position` 合并到同一 detail。
+- 新增一次性清理函数 `release_bindings_of_retired_devices`（运维脚本显式调用，
+  不自动启动）：扫描已 retired 仍占绑定的设备，写审计
+  `retired_bindings_released`；幂等。
+- 前端串口资源页 / 节点端口表：`bound_device.status === 'retired'` 时不再跳转设备页，
+  显示「已退役」标签（防历史/竞态残留）。
+- 测试：新增 `tests/test_retired_unbind.py`。
 
 ## [0.53.0] - 2026-11-25
 

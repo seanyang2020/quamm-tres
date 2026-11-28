@@ -25,6 +25,9 @@ required_minor / required_patch，device 补 firmware_version；flash_job 为全
 
 0.24.0 引入：截图元数据表 screenshot_record 为全新表（create_all 自动建，无需
 ALTER）。此处仅做幂等兜底：inspect 判表，缺表则补建；老库升级不丢任何数据。
+
+0.54.0 引入：flash_job 补 executor / image_meta / runner_id / progress / reported_at
+（本地 Agent / 编译机镜像来源）。只用 ALTER TABLE ADD COLUMN，不重建表。
 """
 from __future__ import annotations
 
@@ -97,6 +100,15 @@ _PRODUCT_TYPE_CHIP_COLUMNS = {
     "chip_model": "VARCHAR(128)",
     "float_abi": "VARCHAR(16) DEFAULT 'auto'",
     "has_fpu": "BOOLEAN NOT NULL DEFAULT 0",
+}
+
+# flash_job 表新增列（v0.54 镜像来源 / Agent 上报）-> DDL 片段
+_FLASH_JOB_SOURCE_COLUMNS = {
+    "executor": "VARCHAR(16) NOT NULL DEFAULT 'server'",
+    "image_meta": "JSON",
+    "runner_id": "VARCHAR(32)",
+    "progress": "INTEGER NOT NULL DEFAULT 0",
+    "reported_at": "DATETIME",
 }
 
 # product_type 表新增列（v0.25 编译服务器引用，可空）-> DDL 片段
@@ -189,6 +201,8 @@ def migrate(session: Session) -> None:
     _ensure_wl_client_apply_table(session)
     _ensure_columns(session, "wl_client_apply", _WL_CLIENT_APPLY_COLUMNS)
     _ensure_wl_package_table(session)
+    if "flash_job" in inspect(session.get_bind()).get_table_names():
+        _ensure_columns(session, "flash_job", _FLASH_JOB_SOURCE_COLUMNS)
     _ensure_powerres_tables(session)
     _ensure_columns(session, "power_res_inventory", _POWERRES_INV_COLUMNS)
 
