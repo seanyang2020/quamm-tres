@@ -33,6 +33,35 @@ def _shell_write_access(session, node: WireLogNode) -> tuple[bool, str, str]:
         return True, "rw", "节点已授权，默认读写"
     return False, "ro", "节点未授权，只读"
 
+
+def _shell_lease_write_access(
+    session, binding: WireLogPortBinding | None, ident: dict | None
+) -> tuple[bool, str, str]:
+    """若 binding 绑了设备：必须持有该设备活跃租约才能写（admin 也不直通）。
+
+    未绑定设备时不做租约门禁（COMRes 节点页直开串口仍走节点授权口径）。
+    """
+    if binding is None or not (binding.bound_device_id or "").strip():
+        return True, "rw", ""
+    device_id = binding.bound_device_id
+    email = (ident or {}).get("email") or ""
+    from app.constants import LeaseState
+    from app.models import Lease
+
+    lease = (
+        session.query(Lease)
+        .filter(Lease.device_id == device_id, Lease.state.in_(LeaseState.ACTIVE))
+        .first()
+    )
+    if lease is None:
+        return False, "ro", (
+            f"设备 {device_id} 无活跃租约；请先在 Web 申请短租后再写串口"
+        )
+    holder = lease.principal.email if lease.principal else None
+    if holder and holder != email:
+        return False, "ro", f"设备已被 {holder} 租用，不可写串口"
+    return True, "rw", "持有设备租约，可写"
+
 router = APIRouter(prefix="/wirelog")
 
 
@@ -266,6 +295,11 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
 
     sock = None
     reach_fail = None
+    can_write = False
+    write_mode = "ro"
+    write_reason = ""
+    bound_device_id = ""
+    shell_user_email = ""
     session = SessionLocal()
     try:
         ident = _ws_identity(session, ws)
@@ -273,6 +307,7 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
             await send({"type": "error", "message": "未登录或会话已失效，请重新登录"})
             await ws.close(code=4401)
             return
+        shell_user_email = (ident or {}).get("email") or ""
         node = session.get(WireLogNode, node_id)
         if node is None or not node.ip:
             await send({"type": "error", "message": "日志机不存在或未上报 IP"})
@@ -286,7 +321,16 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
         tty = binding.tty_name if binding is not None else None
         baud = binding.baud if binding is not None else None
         com_name = binding.com_name if binding is not None else None
-        can_write, write_mode, write_reason = _shell_write_access(session, node)
+        node_ok, write_mode, write_reason = _shell_write_access(session, node)
+        lease_ok, lease_mode, lease_reason = _shell_lease_write_access(
+            session, binding, ident
+        )
+        can_write = bool(node_ok and lease_ok)
+        if not lease_ok:
+            write_mode, write_reason = lease_mode, lease_reason
+        bound_device_id = (
+            (binding.bound_device_id or "").strip() if binding is not None else ""
+        )
         node_name = node.display_name or node.node_id
         # t969：打开前先做 TRES→endpoint 可达性探测，避免等 TCP 超时才报错
         reach = comres.probe_reach(
@@ -407,10 +451,35 @@ async def node_port_shell(ws: WebSocket, node_id: str, slot: int):
                 msg = {"type": "data", "data": raw}
             kind = msg.get("type")
             if kind == "data":
-                if not can_write:
+                # 每次写前再验：节点授权 +（若绑了设备）活跃租约持有人
+                allow = can_write
+                deny_reason = write_reason
+                if bound_device_id:
+                    s2 = SessionLocal()
+                    try:
+                        node2 = s2.get(WireLogNode, node_id)
+                        binding2 = (s2.query(WireLogPortBinding)
+                                    .filter_by(node_id=node_id, slot=int(slot))
+                                    .one_or_none())
+                        ok_node, _, reason_node = (
+                            _shell_write_access(s2, node2)
+                            if node2 is not None
+                            else (False, "ro", "节点不存在")
+                        )
+                        ok_lease, _, reason_lease = _shell_lease_write_access(
+                            s2, binding2, {"email": shell_user_email},
+                        )
+                        allow = bool(ok_node and ok_lease)
+                        deny_reason = (
+                            reason_lease if not ok_lease
+                            else (reason_node if not ok_node else "")
+                        )
+                    finally:
+                        s2.close()
+                if not allow:
                     await send({"type": "status", "state": "ready",
                                 "can_write": False, "write_mode": "ro",
-                                "message": write_reason})
+                                "message": deny_reason or "只读"})
                     continue
                 payload = str(msg.get("data") or "")
                 if payload:

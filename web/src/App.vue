@@ -1,5 +1,5 @@
 <script setup>
-import { ref, reactive, computed, watch, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted, onUnmounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   SLOT_MAX as PR_SLOT_MAX,
@@ -2578,19 +2578,20 @@ function prIsAdmin() {
   return !!(me.value && me.value.role === 'admin')
 }
 
-/** 绑定目标设备的占用者 email（对照 me.email） */
+/** 绑定目标设备的占用者 email（对照 me.email；只用真实 holder_email） */
 function prBoundDeviceHolder(row) {
   const did = prBoundDeviceId(row)
   if (!did) return ''
   const d = (devices.value || []).find((x) => x && x.device_id === did)
-  return (d && (d.holder_email || d.owner)) || ''
+  return (d && d.holder_email) || ''
 }
 
-/** 非 admin 且绑定目标设备不归自己 → 电源动作按钮禁用（后端 check_access 兜底） */
+/** 绑定目标设备被他人租用 → 电源动作禁用（admin 也不直通） */
 function prActionLeaseBlocked(row) {
   if (!prRowBound(row)) return false
-  if (prIsAdmin()) return false
-  return prBoundDeviceHolder(row) !== (me.value && me.value.email)
+  const holder = prBoundDeviceHolder(row)
+  if (!holder) return false
+  return holder !== (me.value && me.value.email)
 }
 
 /** 来源：driver + com 组合，如 bull-gn315 · COM29 */
@@ -2606,19 +2607,187 @@ function prLocationText(row) {
   return (row && row.location) || '—'
 }
 
-/** 设备详情页电源卡：非 admin 且当前设备不归自己 → 电源动作禁用 */
+/** 详情页：他人持有租约 → 禁操作；无租约可点（点击时 ensureDeviceLease）；admin 不直通 */
 function devicePowerLeaseBlocked() {
-  if (prIsAdmin()) return false
   const d = devicePage.value
-  const holder = (d && (d.holder_email || d.owner)) || ''
-  return holder !== (me.value && me.value.email)
+  if (!d) return false
+  const holder = d.holder_email || ''
+  if (!holder) return false
+  return !d.lease_is_mine
 }
 
-/** 设备中心列表电源 popover：非 admin 且该行设备不归自己 → 动作禁用 */
+/** 列表电源：他人持有 → 禁；无租约可点；admin 不直通 */
 function listPowerLeaseBlocked(row) {
-  if (prIsAdmin()) return false
-  const holder = (row && (row.holder_email || row.owner)) || ''
-  return holder !== (me.value && me.value.email)
+  if (!row) return false
+  const holder = row.holder_email || ''
+  if (!holder) return false
+  return !row.lease_is_mine
+}
+
+// ---- Web 短租：能力卡三态 + 点击自动申请 5 分钟 ----
+const leaseNowMs = ref(Date.now())
+const leaseApplyBusy = ref(false)
+let leaseTickTimer = null
+
+function deviceLeaseRemainMs(d) {
+  if (!d || !d.lease_expires_at) return 0
+  const t = parseUtcDate(d.lease_expires_at)
+  if (!t) return 0
+  return Math.max(0, t.getTime() - leaseNowMs.value)
+}
+
+function deviceLeaseRemainText(d) {
+  const ms = deviceLeaseRemainMs(d)
+  const sec = Math.ceil(ms / 1000)
+  if (sec <= 0) return '0 分钟'
+  if (sec < 60) return sec + ' 秒'
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return s ? (m + ' 分 ' + s + ' 秒') : (m + ' 分钟')
+}
+
+function deviceLeaseBanner() {
+  const d = devicePage.value
+  if (!d) return null
+  void leaseNowMs.value
+  if (d.holder_email && !d.lease_is_mine) {
+    return {
+      kind: 'other',
+      text: '已被 ' + d.holder_email + ' 租用 · 剩 ' + deviceLeaseRemainText(d),
+    }
+  }
+  if (d.lease_is_mine && d.lease_id) {
+    return {
+      kind: 'mine',
+      text: '已租用（你）· 剩 ' + deviceLeaseRemainText(d),
+      leaseId: d.lease_id,
+    }
+  }
+  return { kind: 'none', text: '操作前将自动申请 5 分钟短租' }
+}
+
+async function refreshDeviceLeaseFields(deviceId) {
+  const id = String(deviceId || devicePageId.value || '').trim()
+  if (!id) return null
+  try {
+    const row = await api('/api/devices/' + encodeURIComponent(id))
+    if (devicePage.value && devicePage.value.device_id === id) {
+      devicePage.value = {
+        ...devicePage.value,
+        holder_email: row.holder_email,
+        lease_id: row.lease_id,
+        lease_expires_at: row.lease_expires_at,
+        lease_state: row.lease_state,
+        lease_is_mine: row.lease_is_mine,
+        status: row.status,
+      }
+    }
+    // 同步列表行，避免列表电源 popover 过期
+    const idx = (devices.value || []).findIndex((x) => x && x.device_id === id)
+    if (idx >= 0) {
+      devices.value[idx] = {
+        ...devices.value[idx],
+        holder_email: row.holder_email,
+        lease_id: row.lease_id,
+        lease_expires_at: row.lease_expires_at,
+        lease_state: row.lease_state,
+        lease_is_mine: row.lease_is_mine,
+        status: row.status,
+      }
+    }
+    return row
+  } catch (e) {
+    return null
+  }
+}
+
+async function ensureDeviceLease(deviceId) {
+  const id = String(deviceId || devicePageId.value || '').trim()
+  if (!id) throw new Error('缺少设备 ID')
+  await refreshDeviceLeaseFields(id)
+  const d = (devicePage.value && devicePage.value.device_id === id)
+    ? devicePage.value
+    : (devices.value || []).find((x) => x && x.device_id === id)
+  if (d && d.lease_is_mine && d.lease_id && deviceLeaseRemainMs(d) > 0) {
+    return d
+  }
+  if (d && d.holder_email && !d.lease_is_mine) {
+    const tip = '设备已被 ' + d.holder_email + ' 租用，暂不可操作'
+    ElMessage.error(tip)
+    const err = new Error(tip)
+    err.status = 409
+    err.code = 'DEVICE_BUSY'
+    err.detail = { holder: d.holder_email, expires_at: d.lease_expires_at }
+    throw err
+  }
+  if (leaseApplyBusy.value) {
+    throw new Error('正在申请租约，请稍候')
+  }
+  leaseApplyBusy.value = true
+  try {
+    const out = await api('/api/leases/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ device_id: id, ttl_minutes: 5, purpose: 'WebUI 操作' }),
+    })
+    await refreshDeviceLeaseFields(id)
+    ElMessage.success('已申请 5 分钟短租')
+    return out
+  } catch (e) {
+    if (e && (e.status === 409 || e.code === 'DEVICE_BUSY')) {
+      const holder = (e.detail && e.detail.holder) || ''
+      ElMessage.error(holder ? ('设备已被 ' + holder + ' 租用') : (e.apiMessage || e.message || '设备已被租用'))
+      await refreshDeviceLeaseFields(id)
+    }
+    throw e
+  } finally {
+    leaseApplyBusy.value = false
+  }
+}
+
+async function releaseMyDeviceLease() {
+  const d = devicePage.value
+  if (!d || !d.lease_id || !d.lease_is_mine) return
+  try {
+    await api('/api/leases/' + encodeURIComponent(d.lease_id) + '/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    })
+    ElMessage.success('已释放租约')
+    await refreshDeviceLeaseFields(d.device_id)
+  } catch (e) {
+    ElMessage.error(String((e && e.message) || e))
+  }
+}
+
+async function maybeAutoReleaseExpiredLease() {
+  const d = devicePage.value
+  if (!d || !d.lease_is_mine || !d.lease_id) return
+  if (deviceLeaseRemainMs(d) > 0) return
+  try {
+    await api('/api/leases/' + encodeURIComponent(d.lease_id) + '/release', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'ttl_elapsed' }),
+    })
+  } catch (e) { /* 幂等 */ }
+  await refreshDeviceLeaseFields(d.device_id)
+}
+
+function startLeaseTick() {
+  if (leaseTickTimer) return
+  leaseTickTimer = setInterval(() => {
+    leaseNowMs.value = Date.now()
+    maybeAutoReleaseExpiredLease()
+  }, 1000)
+}
+
+function stopLeaseTick() {
+  if (leaseTickTimer) {
+    clearInterval(leaseTickTimer)
+    leaseTickTimer = null
+  }
 }
 
 function listPowerN(row) {
@@ -2682,6 +2851,14 @@ function listPowerItemTitle(it) {
 async function doListCapPower(row, item, actionKey) {
   const id = row && row.device_id
   if (!id) return
+  if (listPowerLeaseBlocked(row)) {
+    const holder = (row && row.holder_email) || '他人'
+    ElMessage.error('设备已被 ' + holder + ' 租用，暂不可操作')
+    return
+  }
+  try {
+    await ensureDeviceLease(id)
+  } catch (e) { return }
   const scope = 'list:' + id + ':' + ((item && item.id) || 'cap')
   if (actionKey === 'power_cycle') {
     try {
@@ -3343,12 +3520,19 @@ function capSerialConsoleTarget(item) {
   return null
 }
 
-function openCapSerialConsole(item) {
+async function openCapSerialConsole(item) {
   const target = capSerialConsoleTarget(item)
   if (!target) {
     ElMessage.warning('该端口未绑定节点')
     return
   }
+  if (devicePowerLeaseBlocked()) {
+    ElMessage.error('设备已被他人租用，暂不可打开串口控制台')
+    return
+  }
+  try {
+    await ensureDeviceLease(devicePageId.value)
+  } catch (e) { return }
   if (target.mode === 'wl') openWlShell(target.row)
   else openPortConsole(target.row)
 }
@@ -3438,6 +3622,13 @@ async function runDeviceSerialAction(deviceId, actionKey, opts) {
 async function doDeviceCapPower(item, actionKey) {
   const id = devicePageId.value
   if (!id) return
+  if (devicePowerLeaseBlocked()) {
+    ElMessage.error('设备已被他人租用，暂不可操作电源')
+    return
+  }
+  try {
+    await ensureDeviceLease(id)
+  } catch (e) { return }
   const scope = (item && item.id) || 'cap'
   const holdMs = capRestartHoldMs(item)
   const holdForAction = holdMs != null ? holdMs : (Number(deviceHoldMs.value) || 3000)
@@ -3462,9 +3653,19 @@ async function doDeviceCapAction(item, action) {
     return
   }
   if (key === 'adb_shell' || (action && action.exec_mode === 'adb_exec') || (item && item.kind === 'adb')) {
+    if (devicePowerLeaseBlocked()) {
+      ElMessage.error('设备已被他人租用，暂不可操作')
+      return
+    }
+    try { await ensureDeviceLease(id) } catch (e) { return }
     adbPanelOpen.value = true
     return
   }
+  if (devicePowerLeaseBlocked()) {
+    ElMessage.error('设备已被他人租用，暂不可操作')
+    return
+  }
+  try { await ensureDeviceLease(id) } catch (e) { return }
   await runDeviceSerialAction(id, key, {
     scope: (item && item.id) || key,
     okText: action.display_name || key,
@@ -3483,6 +3684,13 @@ async function runDeviceAdbExec(opts) {
     return
   }
   if (adbBusy.value) return
+  if (devicePowerLeaseBlocked()) {
+    ElMessage.error('设备已被他人租用，暂不可执行 ADB')
+    return
+  }
+  try {
+    await ensureDeviceLease(id)
+  } catch (e) { return }
   adbBusy.value = true
   adbErr.value = ''
   try {
@@ -3514,8 +3722,8 @@ async function runDeviceAdbExec(opts) {
       return
     }
     if (code === 'ADB_NOT_ALLOWED' || (e && e.status === 403)) {
-      adbErr.value = '需 admin 或设备租约'
-      ElMessage.error('需 admin 或设备租约')
+      adbErr.value = '需要先持有该设备租约'
+      ElMessage.error('需要先持有该设备租约')
       return
     }
     adbErr.value = String((e && e.message) || e)
@@ -4453,11 +4661,15 @@ async function boot() {
 }
 onMounted(() => {
   boot()
+  startLeaseTick()
   window.addEventListener('hashchange', () => { resolveLegacyRoute() })
   // 回到窗口/切回设备中心时刷新一次串口统计，避免页面长时间挂着显示旧值
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden && me.value) loadComresResources(0)
   })
+})
+onUnmounted(() => {
+  stopLeaseTick()
 })
 watch(active, (v) => {
   if (v === 'devices' && me.value) loadComresResources(0)
@@ -5279,7 +5491,7 @@ const legendRole = [
                             <el-tag size="small" :type="capStatusTagType(it)">{{ capStatusLabel(it) }}</el-tag>
                           </div>
                           <el-tooltip
-                            content="需持有目标设备租约"
+                            :content="row.holder_email ? ('已被 ' + row.holder_email + ' 租用，不可操作') : '需持有目标设备租约'"
                             :disabled="!listPowerLeaseBlocked(row)"
                             placement="top"
                           >
@@ -5494,14 +5706,30 @@ const legendRole = [
               </template>
               <el-empty v-if="deviceCaps.enabled === false" description="能力开关已关闭" :image-size="64" />
               <el-empty v-else-if="!(deviceCapsFlat || []).length" description="暂无能力项" :image-size="64" />
-              <el-row v-else :gutter="12" class="cap-row">
+              <template v-else>
+              <div v-if="deviceLeaseBanner()" class="cap-lease-bar" :class="'cap-lease-bar--' + deviceLeaseBanner().kind">
+                <span>{{ deviceLeaseBanner().text }}</span>
+                <el-button
+                  v-if="deviceLeaseBanner().kind === 'mine'"
+                  size="small" type="danger" plain
+                  :loading="leaseApplyBusy"
+                  @click="releaseMyDeviceLease"
+                >释放</el-button>
+              </div>
+              <el-row :gutter="12" class="cap-row">
                 <el-col
                   v-for="it in deviceCapsFlat"
                   :key="it.id || (it.kind + '-' + (it.label || ''))"
-                  :xs="24" :sm="12" :md="8" :lg="8"
+                  :xs="24" :sm="8" :md="8" :lg="8"
                   class="cap-col"
                 >
-                  <div class="cap-card cap-card--stretch" :class="{ 'cap-card--dim': !capActionsEnabled(it) }">
+                  <div
+                    class="cap-card cap-card--stretch"
+                    :class="{
+                      'cap-card--dim': !capActionsEnabled(it) || devicePowerLeaseBlocked(),
+                      'cap-card--lease-blocked': devicePowerLeaseBlocked(),
+                    }"
+                  >
                     <div class="cap-card-head">
                       <span class="cap-card-name">{{ it.label || it.name || it.id || '—' }}</span>
                       <div class="cap-card-tags">
@@ -5595,7 +5823,7 @@ const legendRole = [
                         >
                           <span>
                             <el-button size="small" type="primary"
-                              :disabled="!capSerialConsoleTarget(it)"
+                              :disabled="!capSerialConsoleTarget(it) || devicePowerLeaseBlocked()"
                               @click="openCapSerialConsole(it)">控制台</el-button>
                           </span>
                         </el-tooltip>
@@ -5606,7 +5834,7 @@ const legendRole = [
                     <template v-else-if="it.kind === 'adb'">
                       <div class="cap-card-actions">
                         <el-button size="small" type="primary"
-                          :disabled="!capActionsEnabled(it)"
+                          :disabled="!capActionsEnabled(it) || devicePowerLeaseBlocked()"
                           @click="adbPanelOpen = !adbPanelOpen">{{ adbPanelOpen ? '收起调试' : 'ADB 调试' }}</el-button>
                       </div>
                       <div v-if="adbPanelOpen" class="adb-debug">
@@ -5638,13 +5866,14 @@ const legendRole = [
                       <div v-if="capKindActions(it).length" class="cap-card-actions">
                         <el-button v-for="act in capKindActions(it)" :key="act.action_key" size="small"
                           :loading="deviceIsActionBusy(it.id, '*')"
-                          :disabled="!capActionsEnabled(it) || deviceIsActionBusy(it.id, '*')"
+                          :disabled="!capActionsEnabled(it) || deviceIsActionBusy(it.id, '*') || devicePowerLeaseBlocked()"
                           @click="doDeviceCapAction(it, act)">{{ act.display_name || act.action_key }}</el-button>
                       </div>
                     </template>
                   </div>
                 </el-col>
               </el-row>
+              </template>
             </el-card>
 
             <!-- 非 admin：电源绑定只读摘要 -->
@@ -8484,36 +8713,59 @@ const legendRole = [
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
 }
-.cap-row { align-items: stretch; }
+.cap-lease-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 12px; margin-bottom: 10px; padding: 6px 10px; border-radius: 6px;
+}
+.cap-lease-bar--other { background: #fef0f0; color: #c45656; }
+.cap-lease-bar--mine { background: #f0f9eb; color: #67c23a; }
+.cap-lease-bar--none { background: #f4f4f5; color: #909399; }
+.cap-row {
+  align-items: stretch;
+  overflow-x: hidden;
+  flex-wrap: wrap;
+}
 .cap-col {
   display: flex;
   margin-bottom: 12px;
+  min-width: 0;
 }
 .cap-card {
   border: 1px solid var(--el-border-color-lighter, #ebeef5);
   border-radius: 8px;
   padding: 10px 12px;
   background: #fff;
+  min-width: 0;
 }
 .cap-card--stretch {
   width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
 .cap-card--dim { opacity: 0.65; }
+.cap-card--lease-blocked { pointer-events: none; }
 .cap-card-head {
   display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; margin-bottom: 8px;
+  gap: 8px; margin-bottom: 8px; min-width: 0;
 }
 .cap-card-tags { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.cap-card-name { font-weight: 600; font-size: 13px; }
+.cap-card-name {
+  font-weight: 600; font-size: 13px;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .cap-card-row {
   display: flex; align-items: center; gap: 8px;
   font-size: 12px; margin-bottom: 4px;
+  min-width: 0;
 }
 .cap-ep {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .cap-card-actions {
   display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
