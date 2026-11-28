@@ -369,7 +369,7 @@ const deviceAddProbing = ref(false)
 const deviceAddSaving = ref(false)
 const deviceAddForm = ref({ ip: '', port: 5555, hint_model: '' })
 const deviceAddProbe = ref(null)
-const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] })
+const deviceAddConfirm = ref({ position_code: '', owner: '', model_class: '', display_name: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] })
 // v0.29.2 指定名单「允许 Agent」：按邮箱从有效凭据拉取可选项
 const deviceAddAgentInfo = ref({})
 const deviceAddAgentSeen = ref(new Set())
@@ -394,7 +394,7 @@ function openDeviceAdd(presetModel) {
   deviceAddMode.value = 'ip'
   deviceAddProbe.value = null
   deviceAddForm.value = { ip: '', port: 5555, hint_model: preset }
-  deviceAddConfirm.value = { position_code: '', owner: '', model_class: preset, note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
+  deviceAddConfirm.value = { position_code: '', owner: '', model_class: preset, display_name: '', note: '', share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [] }
   deviceAddAgentInfo.value = {}
   deviceAddAgentSeen.value = new Set()
   deviceAddAgentAuto.value = new Set()
@@ -494,7 +494,7 @@ function pickSerialResource(row) {
   }
   const model = enabledProductTypes.value.some((t) => t.type_code === id.model) ? id.model : ''
   deviceAddConfirm.value = {
-    position_code: '', owner: '', model_class: model,
+    position_code: '', owner: '', model_class: model, display_name: '',
     note: (row.com_name || row.tty_name || ('COM' + row.slot)) + '@' + (row.node_name || row.node_id),
     share_scope: 'shared', allowed_emails: [], allowed_agent_labels: [],
   }
@@ -531,6 +531,7 @@ function pickDiscovered(row) {
     position_code: '',
     owner: '',
     model_class: row.probe?.model || '',
+    display_name: '',
     note: '',
     share_scope: 'shared',
     allowed_emails: [],
@@ -582,7 +583,7 @@ async function submitSerialDevice() {
       body: JSON.stringify({
         owner: deviceAddConfirm.value.owner,
         position_code: deviceAddConfirm.value.position_code,
-        display_name: deviceAddConfirm.value.note || null,
+        display_name: deviceAddConfirm.value.display_name || null,
         model_class: deviceAddConfirm.value.model_class || null,
         mac: id.mac || null, sn: id.sn || null, ip: id.ip || null,
         share_scope: deviceAddConfirm.value.share_scope || 'shared',
@@ -611,6 +612,7 @@ async function submitDeviceRegister() {
         position_code: deviceAddConfirm.value.position_code,
         owner: deviceAddConfirm.value.owner,
         model_class: deviceAddConfirm.value.model_class || null,
+        display_name: deviceAddConfirm.value.display_name || null,
         note: deviceAddConfirm.value.note || null,
         share_scope: deviceAddConfirm.value.share_scope,
         allowed_emails: deviceAddConfirm.value.allowed_emails,
@@ -2328,6 +2330,64 @@ const prBindDlg = reactive({
 })
 /** 当前节点 powerres bindings 按 device_id 聚合的已绑数 */
 const prBindPowerCounts = ref({})
+/** 通道级「重启测试」对话框（进程内单例：同一时刻只允许一条） */
+const prRebootDlg = reactive({
+  visible: false,
+  row: null,
+  power_dev: '',
+  channel: null,
+  node_id: '',
+  hold_ms: 3000,
+  interval_s: 5,
+  repeat: 10,
+  status: null,
+  starting: false,
+  stopping: false,
+})
+let prRebootPollTimer = null
+function stopPrRebootPoll() {
+  if (prRebootPollTimer) {
+    clearInterval(prRebootPollTimer)
+    prRebootPollTimer = null
+  }
+}
+function startPrRebootPoll() {
+  stopPrRebootPoll()
+  prRebootPollTimer = setInterval(async () => {
+    try {
+      const st = await api('/api/powerres/reboot-test/status')
+      prRebootDlg.status = st
+      if (!st || !st.running) stopPrRebootPoll()
+    } catch (e) {
+      stopPrRebootPoll()
+    }
+  }, 2000)
+}
+const prRebootEstimatedS = computed(() => {
+  const n = Number(prRebootDlg.repeat) || 0
+  const itv = Number(prRebootDlg.interval_s) || 0
+  const hold = (Number(prRebootDlg.hold_ms) || 0) / 1000
+  return Math.round(n * (hold + 2 + itv))
+})
+const prRebootEstimatedText = computed(() => {
+  const t = prRebootEstimatedS.value
+  if (!t) return '—'
+  const m = Math.floor(t / 60)
+  const s = t % 60
+  return m > 0 ? (m + ' 分 ' + s + ' 秒') : (s + ' 秒')
+})
+const prRebootStatusText = computed(() => {
+  const st = prRebootDlg.status
+  if (!st) return ''
+  const round = st.round || 0
+  const total = st.total_rounds || 0
+  const elapsed = st.elapsed_s || 0
+  let tail = '等待首轮结果'
+  if (st.last_result === 'ok') tail = '最近一次 OK'
+  else if (st.last_result === 'failed') tail = '失败：' + (st.last_error || '未知原因')
+  else if (!st.running && total) tail = st.cancelled ? '已停止' : '已结束'
+  return '第 ' + round + '/' + total + ' 次 · 已用 ' + elapsed + ' 秒 · ' + tail
+})
 const prAddDlg = reactive({
   visible: false,
   busy: false,
@@ -3721,6 +3781,106 @@ async function doPrPowerQuery(row) {
   await runPrChannelAction(row, 'power_query')
 }
 
+/** PT：通道级重启测试（admin）——间隔 / 次数 / 起停 */
+function openPrRebootDlg(row) {
+  if (!prIsAdmin() || !row) return
+  if (!prBindingEnabled(row)) {
+    ElMessage.warning('该通道已停用')
+    return
+  }
+  prRebootDlg.row = row
+  prRebootDlg.power_dev = row.power_dev || ''
+  prRebootDlg.channel = row.channel
+  prRebootDlg.node_id = prNodeId.value
+  prRebootDlg.hold_ms = prGetHoldMs(row)
+  prRebootDlg.interval_s = 5
+  prRebootDlg.repeat = 10
+  prRebootDlg.status = null
+  prRebootDlg.visible = true
+  // 打开即读取一次当前状态：单例 runner 可能已在别处运行
+  api('/api/powerres/reboot-test/status')
+    .then((st) => {
+      prRebootDlg.status = st
+      if (st && st.running) startPrRebootPoll()
+    })
+    .catch(() => {})
+}
+
+function closePrRebootDlg() {
+  prRebootDlg.visible = false
+  stopPrRebootPoll()
+}
+
+async function startPrRebootTest() {
+  const row = prRebootDlg.row
+  if (!row || !prRebootDlg.node_id) return
+  const repeat = Number(prRebootDlg.repeat) || 0
+  const interval = Number(prRebootDlg.interval_s) || 0
+  if (repeat < 1 || interval < 1) {
+    ElMessage.warning('间隔与次数需 ≥ 1')
+    return
+  }
+  let confirm = false
+  if (repeat > 100) {
+    try {
+      await ElMessageBox.confirm(
+        `次数 ${repeat} 超过 100，将连续多轮断电重启，确认开始？`,
+        '重启测试确认',
+        { type: 'warning', confirmButtonText: '开始', cancelButtonText: '取消' },
+      )
+    } catch (e) {
+      return
+    }
+    confirm = true
+  }
+  prRebootDlg.starting = true
+  try {
+    const out = await api('/api/powerres/reboot-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        node_id: prRebootDlg.node_id,
+        power_dev: row.power_dev,
+        channel: row.channel,
+        interval_s: interval,
+        repeat,
+        hold_ms: prRebootDlg.hold_ms,
+        confirm,
+      }),
+    })
+    prRebootDlg.status = out
+    startPrRebootPoll()
+    ElMessage.success('重启测试已启动')
+  } catch (e) {
+    if (e && e.code === 'FLOW_BUSY') {
+      const st = e.detail && e.detail.status
+      if (st) prRebootDlg.status = st
+      ElMessage.error('已有重启测试在运行')
+    } else if (e && e.code === 'TOO_LONG') {
+      ElMessage.error('预计耗时超过 1 小时，请减少次数或间隔')
+    } else if (e && e.code === 'NEED_CONFIRM') {
+      ElMessage.error('次数超过 100，需二次确认')
+    } else {
+      ElMessage.error(String((e && (e.apiMessage || e.message)) || e))
+    }
+  } finally {
+    prRebootDlg.starting = false
+  }
+}
+
+async function stopPrRebootTest() {
+  prRebootDlg.stopping = true
+  try {
+    const out = await api('/api/powerres/reboot-test/stop', { method: 'POST' })
+    prRebootDlg.status = out
+    if (out && !out.running) stopPrRebootPoll()
+  } catch (e) {
+    ElMessage.error(String((e && (e.apiMessage || e.message)) || e))
+  } finally {
+    prRebootDlg.stopping = false
+  }
+}
+
 async function enterPowerRes() {
   if (!(devices.value || []).length) loadDevices()
   await loadPowerResOverview()
@@ -4514,6 +4674,14 @@ async function enableProductType(code) {
 }
 const enabledProductTypes = computed(() => productTypes.value.filter(p => p.enabled))
 const disabledProductTypes = computed(() => productTypes.value.filter(p => !p.enabled))
+// v0.54.8（#8436）：新增设备留空名称时将采用的默认名（机型展示名优先）
+const deviceAddDefaultName = computed(() => {
+  const mc = deviceAddConfirm.value.model_class
+  if (!mc) return ''
+  const t = productTypes.value.find((p) => p.type_code === mc)
+  const name = (t && t.display_name || '').trim()
+  return name && name !== mc ? name : ''
+})
 function openPtEdit(row) {
   ptEditRow.value = {
     type_code: row.type_code, display_name: row.display_name || '',
@@ -4560,6 +4728,7 @@ async function savePtEdit() {
         ? ('已保存（' + r.complete_label + '），type_code 已改为 ' + r.type_code + '，同步调整 ' + movedParts.join('、'))
         : ('已保存（' + r.complete_label + '）')
     )
+    if (r && r.name_warning) { ElMessage.warning(r.name_warning) }
     ptEditDialog.value = false
     loadProductTypes(); loadSettings()
     if (movedDev) { loadDevices() }
@@ -4648,7 +4817,7 @@ async function submitPtCreate() {
         chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
         build_server_id: row.build_server_id,
       }),
-    })
+    }).then((r) => { if (r && r.name_warning) { ElMessage.warning(r.name_warning) } })
     // 派生：后端已在一次请求里整行复制（含工程字段），不用再 PUT；普通新增仍走两步。
     if (!row.copy_from) {
       await api('/api/product-types/' + encodeURIComponent(code), {
@@ -4833,8 +5002,7 @@ const legendRole = [
               <h2 style="margin: 0">设备中心</h2>
               <span style="color: #909399; font-size: 12px">登记新设备：探测 → 确认注册（两步）</span>
             </div>
-            <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
-            <el-button v-else type="primary" plain disabled style="cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
+            <el-button type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
           </div>
 
           <p style="color: #909399; margin: 12px 0 8px">共 {{ deviceOverview.length }} 个品类，点击卡片或上方机型 chip 查看明细。</p>
@@ -4855,8 +5023,7 @@ const legendRole = [
             </el-col>
           </el-row>
           <el-empty v-if="!deviceOverview.length" description="还没有设备，先登记一台吧">
-            <el-button v-if="me.role === 'admin'" type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
-            <span v-else style="color: #909399; font-size: 12px">添加设备需要管理员权限，请联系管理员登记</span>
+            <el-button type="primary" @click="openDeviceAdd('')">＋ 添加设备</el-button>
           </el-empty>
         </div>
 
@@ -4867,9 +5034,8 @@ const legendRole = [
             <h2 style="margin: 0">{{ detailTitle }}</h2>
             <el-tag size="small" type="info">共 {{ detailCounts.all }} 台</el-tag>
             <el-button size="small" plain :loading="cfgAuditBusy" @click="showConfigAudit">配置体检</el-button>
-            <el-button v-if="me.role === 'admin'" type="primary" style="margin-left: auto"
+            <el-button type="primary" style="margin-left: auto"
               @click="openDeviceAdd(prefillType)">＋ 添加 {{ detailTitle }} 设备</el-button>
-            <el-button v-else type="primary" plain disabled style="margin-left: auto; cursor: not-allowed">＋ 添加设备（需管理员）</el-button>
           </div>
           <div style="display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin: 10px 0">
             <el-tabs v-model="detailStatusTab" style="flex: 1; min-width: 280px" @tab-change="onDetailStatusTabChange">
@@ -5109,7 +5275,7 @@ const legendRole = [
                 @click="showAllInDetail"
               >查看全部 {{ detailCounts.all }} 台</el-button>
               <el-button
-                v-if="me.role === 'admin' && !detailCounts.all"
+                v-if="!detailCounts.all"
                 type="primary"
                 style="margin-left: 8px"
                 @click="openDeviceAdd(prefillType)"
@@ -6793,6 +6959,12 @@ const legendRole = [
                         @click="doPrPowerQuery(row)"
                       >查询</el-button>
                       <el-button
+                        v-if="me.role === 'admin'"
+                        size="small"
+                        :disabled="prIsActionBusy(row) || !prBindingEnabled(row)"
+                        @click="openPrRebootDlg(row)"
+                      >重启测试</el-button>
+                      <el-button
                         v-if="prFailPhase(row) === 'power_on'"
                         size="small"
                         type="danger"
@@ -6957,6 +7129,55 @@ const legendRole = [
           <template #footer>
             <el-button @click="prAddDlg.visible = false">取消</el-button>
             <el-button type="primary" :loading="prAddDlg.busy" @click="submitPrAdd">登记</el-button>
+          </template>
+        </el-dialog>
+
+        <el-dialog
+          v-model="prRebootDlg.visible"
+          :title="'重启测试 · ' + prRebootDlg.power_dev + ' CH' + prRebootDlg.channel"
+          width="520px"
+          append-to-body
+          @close="stopPrRebootPoll"
+        >
+          <el-form label-width="90px" size="small">
+            <el-form-item label="间隔">
+              <el-input-number v-model="prRebootDlg.interval_s" :min="1" :max="3600" />
+              <span class="comres-muted" style="margin-left:8px">秒</span>
+            </el-form-item>
+            <el-form-item label="次数">
+              <el-input-number v-model="prRebootDlg.repeat" :min="1" :max="1000" />
+              <span class="comres-muted" style="margin-left:8px">次</span>
+            </el-form-item>
+            <el-form-item label="预计耗时">
+              <span>{{ prRebootEstimatedText }}</span>
+            </el-form-item>
+          </el-form>
+          <div
+            v-if="prRebootDlg.status"
+            style="margin:8px 0;padding:8px;background:#f5f7fa;border-radius:4px;font-size:13px"
+          >
+            <el-tag v-if="prRebootDlg.status.running" size="small" type="warning">运行中</el-tag>
+            <el-tag v-else size="small" type="info">{{ prRebootDlg.status.cancelled ? '已停止' : '已结束' }}</el-tag>
+            <span style="margin-left:8px">{{ prRebootStatusText }}</span>
+          </div>
+          <div class="comres-muted" style="font-size:12px">
+            一轮 = 断电→保持({{ prRebootDlg.hold_ms }}ms)→上电，然后等待间隔秒。
+          </div>
+          <template #footer>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="prRebootDlg.starting"
+              :disabled="prRebootDlg.status && prRebootDlg.status.running"
+              @click="startPrRebootTest"
+            >开始</el-button>
+            <el-button
+              size="small"
+              :loading="prRebootDlg.stopping"
+              :disabled="!(prRebootDlg.status && prRebootDlg.status.running)"
+              @click="stopPrRebootTest"
+            >停止</el-button>
+            <el-button size="small" @click="closePrRebootDlg">关闭</el-button>
           </template>
         </el-dialog>
           </el-tab-pane>
@@ -7276,7 +7497,10 @@ const legendRole = [
             <el-form-item label="type_code">
               <el-input v-model="ptEditRow.new_type_code" placeholder="机型主键，可直接修改（会同步已有设备的机型）" />
             </el-form-item>
-            <el-form-item label="名称"><el-input v-model="ptEditRow.display_name" placeholder="展示名（给人看），留空则用 type_code" /></el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="ptEditRow.display_name" placeholder="展示名（给人看），留空则用 type_code" />
+              <div class="form-hint">该名称会作为新建设备的默认名称，建议使用人类可读名称，不要与 type_code 相同。</div>
+            </el-form-item>
             <el-form-item label="defconfig"><el-input v-model="ptEditRow.defconfig" placeholder="project_moto_ld_defconfig" /></el-form-item>
             <el-form-item label="主芯片型号"><el-input v-model="ptEditRow.chip_model" placeholder="如 Cortex-A7（探测可自动回填）" /></el-form-item>
             <el-form-item label="有屏"><el-switch v-model="ptEditRow.has_screen" /></el-form-item>
@@ -7535,8 +7759,11 @@ const legendRole = [
                 <div class="form-hint">根据所选用户的有效 token 自动列出；只有一个 Agent 时已自动填入。</div>
               </el-form-item>
             </template>
-            <el-form-item label="备注">
-              <el-input v-model="deviceAddConfirm.note" type="textarea" :rows="2" />
+            <el-form-item label="名称（可选）">
+              <el-input v-model="deviceAddConfirm.display_name" maxlength="128" placeholder="留空自动使用设备类型名称" />
+              <div class="form-hint">
+                {{ deviceAddDefaultName ? ('留空时默认名称：' + deviceAddDefaultName) : '留空且所选机型无可读名称时，将使用 机型-位置 作为默认名。' }}
+              </div>
             </el-form-item>
           </el-form>
         </template>
@@ -7758,7 +7985,10 @@ const legendRole = [
             :title="'已从模板 ' + ptCreateRow.copy_from + ' 完整复制配置（工程命令 / 镜像路径 / 芯片浮点 / 编译服务器 / 固件策略），只需修改有差异的项'" />
           <el-form ref="ptCreateForm" :model="ptCreateRow" :rules="ptCreateRules" label-width="96px" class="pt-grid">
             <el-form-item label="type_code" prop="type_code"><el-input v-model="ptCreateRow.type_code" placeholder="如 moto_ld" /></el-form-item>
-            <el-form-item label="名称"><el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" /></el-form-item>
+            <el-form-item label="名称">
+              <el-input v-model="ptCreateRow.display_name" placeholder="展示名，留空则用 type_code" />
+              <div class="form-hint">该名称会作为新建设备的默认名称，建议使用人类可读名称，不要与 type_code 相同。</div>
+            </el-form-item>
             <el-form-item label="有屏"><el-switch v-model="ptCreateRow.has_screen" /></el-form-item>
             <el-form-item label="有灯"><el-switch v-model="ptCreateRow.has_led" /></el-form-item>
             <el-form-item label="串口数"><el-input-number v-model="ptCreateRow.serial_count" :min="0" /></el-form-item>

@@ -22,6 +22,10 @@ from app.constants import (
 )
 import json
 from app.domain import audit, device_acl
+from app.domain.device_naming import (
+    SOURCE_EXPLICIT,
+    resolve_device_display_name,
+)
 from app.domain.notices import notify_device_unregistered
 from app.domain.probe import probe_device
 from app.models import Device, Lease, ProductType, QueueEntry, WireLogPortBinding
@@ -390,6 +394,9 @@ def _public_device(
                 "allowed_agent_labels": device_acl.allowed_agent_labels(d),
                 "locked_by": d.locked_by,
                 "locked_reason": d.locked_reason,
+                # v0.54.10 (Redmine #8437): Web 视图返回真实 IP/端口，供编辑弹窗回填，避免空值回写
+                "ip": d.ip,
+                "adb_port": d.adb_port,
                 "eng_config": _eng_config_dict(d),
             }
         )
@@ -755,6 +762,7 @@ def device_register(
     share_scope: str | None = None,
     allowed_emails: list[str] | None = None,
     allowed_agent_labels: list[str] | None = None,
+    display_name: str | None = None,
 ) -> dict:
     form = form_store.get(form_id)
     if form is None:
@@ -800,6 +808,14 @@ def device_register(
     else:
         final_model = "unknown_model"
 
+    # v0.54.8（#8436）：新建设备默认名优先用机型字典的可读展示名，
+    # 不再把技术 type_code-position 当首选默认名。
+    product_display = None
+    if final_model != "unknown_model":
+        pt_row = session.get(ProductType, final_model)
+        if pt_row is not None:
+            product_display = (pt_row.display_name or "").strip() or None
+
     # 身份强锚比对（MAC/SN/asset_tag）先算出来：
     # 重复注册同一台设备时，position_code 本来就属于它自己，不能按“位置重复”拒绝。
     existing = _match_existing(session, probe)
@@ -833,6 +849,14 @@ def device_register(
         if final_model != "unknown_model":
             device.model_class = final_model
         matched_as = "existing"
+        # 已有设备：仅显式 display_name 非空时更新名称，空值/旧 note 不覆盖用户自定义名。
+        explicit_name = (display_name or "").strip()[:128]
+        if explicit_name:
+            device.display_name = explicit_name
+            name_source = SOURCE_EXPLICIT
+        else:
+            name_source = "kept"
+        resolved_name = device.display_name
     else:
         # 新建：生产只落 real/serial；mock 仅 allow_mock_probe=True 的开发/测试可落
         if form_source == ProbeSource.MOCK:
@@ -845,9 +869,16 @@ def device_register(
                 f"新建设备 source 只能是 real/serial，拒绝 {form_source!r}",
                 {"source": form_source},
             )
+        resolved_name, name_source = resolve_device_display_name(
+            explicit_display_name=display_name,
+            legacy_note=note,
+            product_display_name=product_display,
+            model_class=final_model,
+            position_code=position_code,
+        )
         device = Device(
             device_id=new_device_id(),
-            display_name=note or f"{final_model}-{position_code}",
+            display_name=resolved_name,
             model_class=final_model if final_model != "unknown_model" else None,
             mac=probe.get("mac"),
             sn=probe.get("sn"),
@@ -904,6 +935,8 @@ def device_register(
         "device_id": device.device_id,
         "status": device.status,
         "matched_as": matched_as,
+        "display_name": resolved_name,
+        "display_name_source": name_source,
         "agent_info": agent_info,
         "warnings": warnings,
         "next": "设备已受理；可用 res_list_devices 查询。若为 L3 已入池，申请用 res_apply 指定 device_id 或机型",

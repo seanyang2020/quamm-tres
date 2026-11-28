@@ -21,3 +21,4 @@ dist.prev*/
 
 # 构建依赖符号链接/目录（仅本机）
 web/node_modules
+devices_display_names_backup_*.json

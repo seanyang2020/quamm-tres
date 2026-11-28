@@ -1,63 +1,75 @@
 ---
-task_id: t1060
+task_id: t8436
 ---
 
-# t1060：COMRes 心跳间隔以节点上报为准（0.54.2）
+# t8436：新建设备默认名使用设备类型展示名（0.54.8，Redmine #8436）
+
+## 侧车追加（2026-11-27）：fix 脚本 --map 与自动扫描联动
+
+- 问题：--map TYPE=NEW 时自动扫描仍用库内旧 display_name，dry-run 不列出应随类型改名的设备。
+- 修复：scripts/fix_device_display_names.py 扫描优先取 --map 新名称（未给 map 的类型仍用库内值）；apply 顺序天然为「先类型后设备」（changes 列表按类型→精确改名→自动扫描构建）。
+- 测试：新增 tests/test_fix_device_display_names.py 3 例（dry-run 列出新名候选、apply 类型+设备一起改且自定义名不动、无 map 时维持跳过），`3 passed in 0.46s`。
+- 提交：见 `git log -1 --oneline`（docs 之后的 fix 脚本回归 commit）。
 
 ## a. 编译/构建
 
-- 命令：`timeout 30s /home/scm/github_gitee/quamm-res/.venv/bin/python -m py_compile app/config.py app/domain/comres.py app/domain/comres_prune.py app/domain/wirelog.py app/workers/main.py tests/test_comres_heartbeat.py`
+- 命令：`python -m pytest tests/test_device_naming.py -q`
 - 退出码：`0`
-- 关键结果：语法编译通过（无独立前端构建步骤）
+- 关键结果：`15 passed in 1.40s`（新增用例全部通过）
 
-- 命令：`timeout 180s /home/scm/github_gitee/quamm-res/.venv/bin/python -m pytest tests/test_comres*.py tests/test_wirelog*.py -q --tb=line`
+- 命令：`python -m pytest tests/ -q --ignore=tests/smoke_comres.py --ignore=tests/smoke_wirelog.py`
 - 退出码：`0`
-- 关键结果：`65 passed in 14.34s`（含新增 `tests/test_comres_heartbeat.py` 8 例）
+- 关键结果：`7 failed, 359 passed in 99.74s`；7 个失败（test_apply_flow×2、test_mcp_http×2、test_queue×1、test_registration×2）在基线 58c0f25（`git stash` 后复跑）同样失败，属既有失败（seed 不再预置机型），与本改无关。
+
+- 命令：`cd web && npm install && npm run build`
+- 退出码：`0`
+- 关键结果：`✓ built in 6.62s`；产物 `web/dist/index.html`、`web/dist/assets/index-CNOHFqDM.js`、`web/dist/assets/index-BzwBFL8y.css`；`web/dist` 已被 gitignore，未提交。
 
 ## b. 改动文件清单
 
-- `VERSION` — 0.54.1 → 0.54.2
-- `CHANGELOG.md` — 0.54.2 中文说明
-- `app/config.py` — `comres_prune_interval_s=60`；`comres_stale_floor_s=180`
-- `app/domain/comres.py` — 解析/持久化节点心跳间隔；expire/probe 按节点超时
-- `app/domain/comres_prune.py` — `node_heartbeat_interval_s` / `node_stale_timeout_s` / `node_effectively_online`；audit 逐节点
-- `app/domain/wirelog.py` — `_node_brief` 只读 stale + age/interval/timeout 字段
-- `app/workers/main.py` — prune scheduler 默认 60、最小 30
-- `web/src/App.vue` — 心跳年龄与超时展示
-- `tests/test_comres_heartbeat.py` — 新增覆盖
-- `tests/smoke_comres.py` — 按上报值断言 interval；stale 用 helper 阈值
-- `AGENT_BRIDGE_PROGRESS.md` / `AGENT_BRIDGE_EVIDENCE.md` — 本任务证据
-- （域内未改）`tests/test_comres_prune.py` — 既有用例仍通过
+- `app/domain/device_naming.py` — 新增：`resolve_device_display_name` / `normalize` / `name_warning_for_type`
+- `app/domain/catalog.py` — `device_register` 增加 `display_name` 参数；新建用统一解析；已有设备仅显式名覆盖；返回 `display_name`/`display_name_source`
+- `app/api/router.py` — `/devices/register` 透传 `display_name`；POST/PUT `/product-types` 响应加 `name_warning`
+- `app/mcp/server.py` — `res_device_register` 增加可选 `display_name` 并透传（docstring 说明）
+- `app/domain/wirelog.py` — `create_device_from_binding` 用同一解析：显式名 > 机型展示名 > COM@node 兜底
+- `web/src/App.vue` — deviceAddConfirm 加 `display_name`；表单「备注」→「名称（可选）」+ 默认名提示；submitDeviceRegister/submitSerialDevice 提交 display_name；机型选择默认名提示；类型新增/编辑名称防呆提示；保存后 name_warning 弹 warning
+- `scripts/fix_device_display_names.py` — 新增：--dry-run 默认 / --apply / --map / --rename / 自动扫描 / JSON 备份
+- `tests/test_device_naming.py` — 新增 15 例（纯函数 9 + 防呆 1 + 集成 5）
+- `VERSION` — 0.54.7 → 0.54.8
+- `CHANGELOG.md` — 0.54.8 条目
 
 ## c. 版本/提交证据
 
-改动文件内容 hash + ISO 时间戳（`sha256sum` + `stat` mtime UTC）：
+- `git log -1 --oneline`：`bf5be79 fix(tres): 0.54.8 default device name uses product display name (#8436)`
+- `git status --short`：（空，工作区干净）
+- `git diff --stat`（HEAD~1..HEAD）：
 
-| path | sha256 | mtime (UTC) |
-|------|--------|-------------|
-| VERSION | 9344871e852c4b6d582f8213b8f4d1b4beaad33182507c831972528b48577861 | 2026-11-25T15:11:44Z |
-| CHANGELOG.md | db8b2ce903113d089168c2ed89fa96dc0c376f80c2ff238d9296f73af618554e | 2026-11-25T15:11:48Z |
-| app/config.py | e7faca1431a7dba46fc43104fff0e4ea93b3296eb0a2d3bb8a9e484028875579 | 2026-11-25T15:09:59Z |
-| app/domain/comres.py | 076d53520014f5b51f04b62eb3be79977e280b02be2530cfe4669c9e21aab60c | 2026-11-25T15:11:06Z |
-| app/domain/comres_prune.py | 5a29114c8a7422e007f3489ceb22f42c9cbfce78b1207021b9f99c2b4944d4a2 | 2026-11-25T15:10:12Z |
-| app/domain/wirelog.py | 764ac060d716c4403f9cd8c84701d697e66ec58e3954bc6e6281e82e608738bb | 2026-11-25T15:11:19Z |
-| app/workers/main.py | 61eecd3869b24b3f25220c7949b2dcb97db0fae8268c61596c5022a907d62a75 | 2026-11-25T15:10:14Z |
-| web/src/App.vue | 0fcda8aa64672c8bf84bd53a844db7513e50bb739def4503164978b0c0d3db9e | 2026-11-25T15:11:33Z |
-| tests/test_comres_heartbeat.py | 32fdc9b9ed94e55bd16d313bab1f4b9aab4bf877c7f2e5a717590651268500a7 | 2026-11-25T15:12:26Z |
-| tests/smoke_comres.py | 817ad7923692a093431baecc5be8ae254d58c771481735a43938a05d63f58a33 | 2026-11-25T15:12:01Z |
+```
+ CHANGELOG.md                     |  22 +++++++
+ VERSION                          |   2 +-
+ app/api/router.py                |  19 ++++++-
+ app/domain/catalog.py            |  36 ++++++++++--
+ app/domain/device_naming.py      |  82 ++++++++++++++++++++++++
+ app/domain/wirelog.py            |  20 ++++++-
+ app/mcp/server.py                |   6 ++-
+ scripts/fix_device_display_names.py | 160 +++++++++++++++++++++++++++++++
+ tests/test_device_naming.py      | 213 +++++++++++++++++++++++++++++++++++++++
+ web/src/App.vue                  |  46 ++++++++++---
+ 10 files changed, 584 insertions(+), 15 deletions(-)
+```
 
-- 提交：`5677478707b5d0555bbcff8d8f09942749c0815d` — `fix(comres): honor node heartbeat interval (0.54.2)`
-- 分支：`fix/comres-heartbeat`（基线 `4fb12e2` / 0.54.1）
-- 未 push / 未部署
-- 禁止项：未做基线快照存储、自动回滚、git init
+- 分支：`fix/8436-device-default-name`（基线 main / release-0.54.7 `58c0f25`）
+- 未 push / 未合并 main / 未部署
 
 ## d. 验证/自测
 
-- `timeout 180s … pytest tests/test_comres*.py tests/test_wirelog*.py -q --tb=line` → 退出码 `0`，`65 passed`
-- 关键行为：
-  - 上报 `heartbeat_interval_s=60` → 响应 60 且写入 `config_json`
-  - 无上报 → 兜底 3600；非法 0/99999 → `COMRES_BAD_HEARTBEAT_INTERVAL`
-  - 60s 节点心跳回拨 4min → prune offline+端口 stale；3600s 节点同龄不 offline
-  - `expire_allocations`：60s 节点 >180s 释放 auto；3600s 不误放
-  - `list_nodes` 超时只读返回 `stale` + `heartbeat_age_s`
-- `tests/smoke_comres.py`：本改相关断言（按上报 interval）已更新；脚本另有**既有**失败（端点独占双节点 count=1；F6 auto `allocated=false`；miss 用例 NoResultFound），与本任务无关
+- `pytest tests/test_device_naming.py -q` → 15 passed
+- 全量 `pytest tests/ -q`（除 smoke）→ 359 passed；7 个既有失败与基线一致（`git stash` 复跑核实）
+- `npm run build` → 成功（见 a）
+- 关键行为验证（集成用例）：
+  - 显式 display_name → 完全采用，source=explicit
+  - 未填 → 机型展示名（如 彩屏价签_V2），source=product_display
+  - 旧客户端 note → 仍生效，source=legacy_note
+  - 类型展示名 == type_code → 回退 `esl2_skw-302-R2-05`，source=fallback
+  - 已有设备重复注册：note/空名不覆盖自定义名（source=kept）；显式名才更新
+  - name_warning：display_name 空或等于 type_code 时返回提示，否则 None

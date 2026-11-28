@@ -36,6 +36,7 @@ from app import discovery
 from app.domain.queueing import position as queue_position
 from app.domain import build_servers as buildsvc
 from app.domain.catalog import DomainError
+from app.domain.device_naming import name_warning_for_type
 from app import sdk_build
 from app.models import (
     AuditEvent,
@@ -415,7 +416,7 @@ def delete_device_route(
 @router.post("/devices/probe")
 def web_device_probe(
     payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
     """Web 手工添加设备第一步：按 IP/端口探测，返回 form_id 与探测结果。"""
@@ -482,7 +483,7 @@ def web_device_probe_batch(
 @router.post("/devices/register")
 def web_device_register(
     payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
     """Web 手工添加设备第二步：确认位置/负责人/机型后入库。"""
@@ -498,6 +499,7 @@ def web_device_register(
             actor_email=identity.email,
             model_class=(str(payload.get("model_class") or "").strip() or None),
             note=(str(payload.get("note") or "").strip() or None),
+            display_name=(str(payload.get("display_name") or "").strip() or None),
             agent_info="web-console",
             share_scope=(str(payload.get("share_scope") or "").strip() or None),
             allowed_emails=payload.get("allowed_emails") or None,
@@ -510,7 +512,7 @@ def web_device_register(
 @router.post("/devices/discover")
 def web_device_discover(
     payload: dict = Body(...),
-    identity: web_auth.WebIdentity = Depends(web_auth.require_admin),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
     session: Session = Depends(get_session),
 ):
     """设备发现模式：扫描网段（可指定 networks，缺省自动探测本机 /24），返回可注册设备。"""
@@ -1451,6 +1453,7 @@ def update_product_type(
             synchronize_session=False
         )
     session.commit()
+    final_pt = session.get(ProductType, new_code or previous_code)
     return {
         "type_code": new_code or previous_code,
         "previous_type_code": previous_code,
@@ -1461,6 +1464,11 @@ def update_product_type(
         "complete": complete_now,
         "complete_label": "完整" if complete_now else "信息不全",
         "enabled": enabled_now,
+        # v0.54.8（#8436）：名称防呆提示，仅提示不拒绝
+        "name_warning": (
+            name_warning_for_type(final_pt.type_code, final_pt.display_name)
+            if final_pt is not None else None
+        ),
     }
 
 
@@ -1500,12 +1508,14 @@ def add_product_type(
             "display_name": derived.display_name,
             "enabled": True,
             "derived_from": copy_from,
+            "name_warning": name_warning_for_type(derived.type_code, derived.display_name),
         }
     fa = str(payload.get("float_abi") or "auto").strip().lower()
     fa = fa if fa in ("hard", "soft", "auto") else "auto"
     hf = payload.get("has_fpu")
     has_fpu = hf if isinstance(hf, bool) else str(hf or "").strip().lower() in ("1", "true", "yes", "on")
     chip_model = payload.get("chip_model")
+    db_project_name = payload.get("db_project_name")
     pt = ProductType(
         type_code=code,
         display_name=payload.get("display_name") or code,
@@ -1516,13 +1526,19 @@ def add_product_type(
         enabled=True,
         model_pattern=payload.get("model_pattern"),
         chip_model=(str(chip_model).strip() or None) if chip_model is not None else None,
+        db_project_name=(str(db_project_name).strip() or None) if db_project_name is not None else None,
         float_abi=fa,
         has_fpu=has_fpu,
         created_at=utcnow(),
     )
     session.add(pt)
     session.commit()
-    return {"type_code": code, "display_name": pt.display_name, "enabled": True}
+    return {
+        "type_code": code,
+        "display_name": pt.display_name,
+        "enabled": True,
+        "name_warning": name_warning_for_type(pt.type_code, pt.display_name),
+    }
 
 
 @router.post("/product-types/{type_code}/disable")

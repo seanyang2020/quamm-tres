@@ -3,6 +3,33 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.9] - 2026-11-27
+
+### 变更：普通用户可添加设备
+- 放开 `POST /api/devices/probe`、`/api/devices/register`、`/api/devices/discover` 至已登录用户（`require_login`），普通用户可自助登记设备。
+- 设备类型（机型）增删改仍仅限管理员；截图、批量探测、删除设备等其它 admin 接口保持不变。
+- Web 端设备中心／空态／品类详情页去掉「需管理员」占位按钮，所有已登录用户可见可点。
+
+## [0.54.8] - 2026-11-27
+
+### 修复：新建设备默认名改用设备类型可读展示名（#8436）
+- 现象：esl2_skw 类型下新建设备，名称默认为 `esl2_skw-技术部` 这类技术代号，
+  而不是同类型设备在用的可读名（如 彩屏价签_V2）。
+- 根因：注册链路 `display_name = note or f"{model}-{position}"`，从未使用机型字典
+  的展示名；Web 表单也把「备注」当名称提交。
+- 修复：新增 `app/domain/device_naming.py` 集中解析，优先级
+  显式名称 > 旧 note > 机型展示名（非空且不等于 type_code）> 兜底 `type-position`；
+  `device_register`、MCP `res_device_register`、串口建机 `create_device_from_binding`
+  统一走该解析；已有设备仅显式传名时才覆盖，空值/旧 note 不动自定义名。
+- 返回值增加 `display_name` 与 `display_name_source`（explicit/legacy_note/
+  product_display/fallback/kept）便于追溯。
+- 前端：新增设备表单「备注」改为「名称（可选）」，留空提示将使用的默认名；
+  设备类型新增/编辑对话框加名称防呆提示；POST/PUT /product-types 响应新增
+  `name_warning`（display_name 为空或等于 type_code 时提示，不拒绝请求）。
+- 新增 `scripts/fix_device_display_names.py` 存量数据修正（默认 dry-run，
+  `--apply` 前自动导出 JSON 备份）。
+- 测试：新增 tests/test_device_naming.py（15 例）；数据修正需在 201 库另行执行。
+
 ## [0.54.7] - 2026-11-27
 
 ### 修复：res_db_upgrade 因 deleted_count 缺失在升级前置阶段失败

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app import web_auth
 from app.db import get_session
 from app.domain import powerres, wirelog
+from app.domain import powerreboot
 from app.domain.catalog import DomainError
 
 router = APIRouter(prefix="/powerres", tags=["powerres"])
@@ -181,3 +182,35 @@ def sync(
         return powerres.sync_inventory(session, node_id, devices)
 
     return _domain_http(_run)
+
+@router.post("/reboot-test", status_code=202)
+def reboot_test(
+    payload: dict = Body(...),
+    identity=Depends(web_auth.require_admin),
+):
+    """通道级重启测试：间隔/次数/停止由进程内单例 runner 执行。"""
+    return _domain_http(
+        powerreboot.start,
+        payload.get("node_id"),
+        payload.get("power_dev"),
+        payload.get("channel"),
+        payload.get("interval_s"),
+        payload.get("repeat"),
+        hold_ms=payload.get("hold_ms"),
+        by=f"web:{identity.email}",
+        confirm=bool(payload.get("confirm")),
+    )
+
+
+@router.post("/reboot-test/stop")
+def reboot_test_stop(
+    _id=Depends(web_auth.require_admin),
+):
+    return _domain_http(powerreboot.stop)
+
+
+@router.get("/reboot-test/status")
+def reboot_test_status(
+    _id=Depends(web_auth.require_login),
+):
+    return _domain_http(powerreboot.status)

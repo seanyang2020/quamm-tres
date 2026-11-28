@@ -524,8 +524,12 @@ def res_device_register(
     share_scope: str | None = None,
     allowed_emails: list[str] | None = None,
     allowed_agent_labels: list[str] | None = None,
+    display_name: str | None = None,
 ) -> dict:
     """提交注册表（两段式第二步，agent_info 为必填）。位置编号与责任人缺失会拒绝。
+
+    display_name（可选）：设备名称；不填则使用设备类型（机型字典）的可读展示名，
+    类型展示名也不可用时回退为 type_code-position_code。建议填人类可读名称。
 
     可选共享设置：share_scope=shared（默认公共）/private（个人独享）/restricted（指定名单）；
     restricted 时用 allowed_emails（用户邮箱）与 allowed_agent_labels（Agent 名）给出允许名单。
@@ -543,7 +547,7 @@ def res_device_register(
             session, form_id, position_code, owner,
             actor_email=auth.email, model_class=model_class, note=note, agent_info=agent_info,
             share_scope=share_scope, allowed_emails=allowed_emails,
-            allowed_agent_labels=allowed_agent_labels,
+            allowed_agent_labels=allowed_agent_labels, display_name=display_name,
         )
         # 用解析后的 agent_info（可能回退自 probe 暂存）回写凭据，避免显式入参为空时漏写。
         resolved_label = str(result.get("agent_info") or "").strip()[:128] or None

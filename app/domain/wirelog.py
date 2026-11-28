@@ -27,6 +27,7 @@ from app.models import (
 from app.secret_crypto import decrypt_secret, encrypt_secret
 from app.utils import hash_token, new_id, new_device_id, new_token, token_prefix, utcnow
 from app.domain.catalog import DomainError, _apply_share
+from app.domain.device_naming import resolve_device_display_name
 from app.constants import DeviceStatus, HealthLevel, RegisterChannel
 
 HEARTBEAT_INTERVAL_S = 60
@@ -999,8 +1000,20 @@ def create_device_from_binding(session, node_id, slot, owner=None,
                 "identity": {"mac": existing.mac, "sn": existing.sn,
                              "ip": existing.ip}}
 
-    name = display_name or (
-        f"{binding.com_name or binding.tty_name or ('slot' + str(slot))}@{node_id}"
+    # v0.54.8（#8436）：串口建机默认名同样优先机型展示名，COM@node 仅兜底。
+    product_display = None
+    if mc:
+        pt_row = session.get(ProductType, mc)
+        if pt_row is not None:
+            product_display = (pt_row.display_name or "").strip() or None
+    name, _name_source = resolve_device_display_name(
+        explicit_display_name=display_name,
+        product_display_name=product_display,
+        model_class=mc,
+        position_code=position_code,
+        fallback=(
+            f"{binding.com_name or binding.tty_name or ('slot' + str(slot))}@{node_id}"
+        ),
     )
     device = Device(
         device_id=new_device_id(),
