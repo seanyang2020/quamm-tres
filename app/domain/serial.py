@@ -1092,8 +1092,13 @@ def check_access(
     is_admin: bool,
     action_key: str | None = None,
     confirm: bool = False,
+    allow_admin_bypass: bool = True,
 ) -> None:
-    """执行类操作的权限：admin 或该设备活跃租约持有人；EDL 额外要求 admin + confirm。"""
+    """执行类操作的权限：活跃租约持有人；可选 admin 直通；EDL 额外要求 admin + confirm。
+
+    allow_admin_bypass=True（默认，MCP/历史路径）：admin 无需租约即可操作。
+    allow_admin_bypass=False（Web 执行路径）：admin 同样必须持有该设备活跃租约。
+    """
     from app.constants import LeaseState
     from app.models import Lease
 
@@ -1107,7 +1112,7 @@ def check_access(
                 "CONFIRM_REQUIRED", "mode_edl 需要 confirm=true 二次确认",
                 {"action_key": action_key},
             )
-    if is_admin:
+    if is_admin and allow_admin_bypass:
         return
     lease = (
         session.query(Lease)

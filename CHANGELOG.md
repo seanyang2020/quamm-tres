@@ -3,6 +3,16 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.21] - 2026-11-28
+
+### 功能：Web 人工短租 + 执行路径强制租约门禁
+- 新增 `leasing.web_apply`：他人持有返回 `DEVICE_BUSY`（409）且不建 QueueEntry；
+  TTL 严格 `min(ttl, lease_max)`（不做 1.5×）；己租幂等；`agent_label` 固定 `WebUI/` 前缀。
+- 抽 `_grant_if_free`，agent `apply` 与 web 短租共用发租内核。
+- API：`POST /api/leases/apply`、`/{id}/release`、`/{id}/renew`。
+- Web 执行路径（ADB exec / 串口 action·read·probe·release）`allow_admin_bypass=False`，
+  admin 也必须持租约；force-release / 配置类仍走 admin 豁免。
+
 ## [0.54.20] - 2026-11-28
 
 ### 修复：0.54.19 引入的 retired 唯一索引冲突导致 comres 心跳 500

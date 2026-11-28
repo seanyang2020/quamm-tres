@@ -512,6 +512,189 @@ def _reclaim(session: Session, lease: Lease, new_state: str, end_reason: str, ac
         logger.warning("serial token revoke failed for %s (%s)", lease.lease_id, lease.device_id)
 
 
+def _grant_if_free(
+    session: Session,
+    *,
+    device: Device,
+    principal: Principal,
+    credential_id: int,
+    purpose: str | None,
+    ttl: int,
+    agent_info: str | None = None,
+) -> Lease:
+    """设备空闲时签发 GRANTED 租约；调用方负责 commit / IntegrityError 回退。"""
+    now = utcnow()
+    lease = Lease(
+        lease_id=new_lease_id(),
+        device_id=device.device_id,
+        principal_id=principal.id,
+        credential_id=credential_id,
+        purpose=purpose,
+        ttl_minutes=ttl,
+        state=LeaseState.GRANTED,
+        granted_at=now,
+        expires_at=now + timedelta(minutes=ttl),
+        adb_address=device.adb_address,
+        created_at=now,
+        last_heartbeat_at=now,
+    )
+    device.status = DeviceStatus.OCCUPIED
+    if agent_info:
+        device.register_agent = agent_info
+    session.add(lease)
+    audit.record(
+        session,
+        actor=principal.email,
+        action="apply",
+        device_id=device.device_id,
+        lease_id=lease.lease_id,
+        detail={"purpose": purpose},
+    )
+    return lease
+
+
+def web_apply(
+    session: Session,
+    auth: AuthContext,
+    device_id: str,
+    *,
+    ttl_minutes: int = 5,
+    purpose: str | None = None,
+) -> dict:
+    """Web 人工短租：他人持有 → DEVICE_BUSY(409) 且不建 QueueEntry；TTL 严格夹 max。
+
+    与 agent ``apply`` 不同：忙设备不入队；TTL 不做 1.5× 放大；agent_label 固定 WebUI/ 前缀。
+    """
+    principal = auth.principal
+    if auth.credential is None:
+        raise DomainError("UNAUTHORIZED", "Web 申请需要有效凭据会话")
+    credential_id = auth.credential.id
+
+    agent_info = _clean_agent_info(f"WebUI/{principal.email}") or f"WebUI/{principal.email}"
+    auth.credential.agent_label = agent_info
+
+    device = session.get(Device, device_id)
+    if device is None:
+        raise DomainError("NOT_FOUND", f"设备 {device_id} 不存在")
+
+    # 幂等：自己已持有该设备活跃租约 → 直接返回
+    existing = (
+        session.query(Lease)
+        .filter(
+            Lease.principal_id == principal.id,
+            Lease.device_id == device_id,
+            Lease.state.in_(LeaseState.ACTIVE),
+        )
+        .first()
+    )
+    if existing is not None:
+        return {"state": "GRANTED", "lease": _lease_dict(existing, device)}
+
+    # 他人持有 → 409，绝不建 QueueEntry
+    other = (
+        session.query(Lease)
+        .filter(Lease.device_id == device_id, Lease.state.in_(LeaseState.ACTIVE))
+        .first()
+    )
+    if other is not None:
+        holder = other.principal.email if other.principal else None
+        raise DomainError(
+            "DEVICE_BUSY",
+            f"设备 {device_id} 已被 {holder or '他人'} 租用",
+            {
+                "holder": holder,
+                "expires_at": other.expires_at.isoformat() if other.expires_at else None,
+                "lease_id": other.lease_id,
+            },
+        )
+
+    if not device_acl.can_use_device(
+        session, device, principal.email, agent_info, auth.is_admin
+    ):
+        raise DomainError(
+            "ACCESS_DENIED",
+            f"设备 {device.device_id} 当前为 "
+            f"{device.share_scope or 'shared'} 模式，你不在允许名单内，无法申请",
+            device_acl.serialize_acl(device),
+        )
+    if bool(device.locked):
+        raise DomainError(
+            "DEVICE_LOCKED",
+            f"设备 {device.device_id} 已被手动锁定，暂不参与分配，"
+            "请联系设备注册人或管理员解锁",
+            {
+                "device_id": device.device_id,
+                "locked_by": device.locked_by,
+                "reason": device.locked_reason,
+            },
+        )
+
+    # 配额：admin 豁免；自己已持有的幂等分支已提前返回
+    active = count_active_leases(session, principal.id)
+    if not auth.is_admin and active >= principal.quota:
+        raise DomainError(
+            "QUOTA_EXCEEDED",
+            f"已占用 {active}/{principal.quota} 台，达到配额上限",
+            {"active": active, "quota": principal.quota},
+        )
+
+    if not (
+        device.status == DeviceStatus.AVAILABLE
+        and device.health_level == HealthLevel.L3
+    ):
+        _try_recover_for_apply(session, device, principal, agent_info)
+        session.refresh(device)
+        if not (
+            device.status == DeviceStatus.AVAILABLE
+            and device.health_level == HealthLevel.L3
+        ):
+            raise DomainError(
+                "DEVICE_NOT_READY",
+                f"设备 {device_id} 当前不可申请（status={device.status}, "
+                f"health={device.health_level}）",
+                {"device_id": device_id, "status": device.status,
+                 "health_level": device.health_level},
+            )
+
+    lease_max = int(get_runtime_value(session, "lease_max_minutes"))
+    try:
+        ttl_raw = int(ttl_minutes)
+    except (TypeError, ValueError) as e:
+        raise DomainError("BAD_TTL", f"ttl_minutes 非法: {ttl_minutes!r}") from e
+    # 严格 TTL：min(请求, max)，不做 1.5×
+    ttl = max(1, min(ttl_raw, lease_max))
+
+    try:
+        lease = _grant_if_free(
+            session,
+            device=device,
+            principal=principal,
+            credential_id=credential_id,
+            purpose=purpose,
+            ttl=ttl,
+            agent_info=agent_info,
+        )
+        session.commit()
+        return {"state": "GRANTED", "lease": _lease_dict(lease, device)}
+    except IntegrityError:
+        session.rollback()
+        raced = (
+            session.query(Lease)
+            .filter(Lease.device_id == device_id, Lease.state.in_(LeaseState.ACTIVE))
+            .first()
+        )
+        holder = raced.principal.email if (raced and raced.principal) else None
+        raise DomainError(
+            "DEVICE_BUSY",
+            f"设备 {device_id} 刚被 {holder or '他人'} 租用",
+            {
+                "holder": holder,
+                "expires_at": raced.expires_at.isoformat() if (raced and raced.expires_at) else None,
+                "lease_id": raced.lease_id if raced else None,
+            },
+        )
+
+
 def apply(
     session: Session,
     auth: AuthContext,
@@ -641,28 +824,16 @@ def apply(
     if device is not None:
         ttl = _ttl_minutes(session, expected_minutes)
         now = utcnow()
-        lease = Lease(
-            lease_id=new_lease_id(),
-            device_id=device.device_id,
-            principal_id=principal.id,
-            credential_id=credential_id,
-            purpose=purpose,
-            ttl_minutes=ttl,
-            state=LeaseState.GRANTED,
-            granted_at=now,
-            expires_at=now + timedelta(minutes=ttl),
-            adb_address=device.adb_address,
-            created_at=now,
-            last_heartbeat_at=now,
-        )
-        device.status = DeviceStatus.OCCUPIED
-        device.register_agent = agent_info
-        session.add(lease)
-        audit.record(
-            session, actor=principal.email, action="apply",
-            device_id=device.device_id, lease_id=lease.lease_id, detail={"purpose": purpose},
-        )
         try:
+            lease = _grant_if_free(
+                session,
+                device=device,
+                principal=principal,
+                credential_id=credential_id,
+                purpose=purpose,
+                ttl=ttl,
+                agent_info=agent_info,
+            )
             session.commit()
             lease_dict = _lease_dict(lease, device)
             # v0.30：租约级串口派生票（best-effort；写不进日志机则标 pending，worker 重试）

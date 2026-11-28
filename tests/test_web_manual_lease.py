@@ -8,7 +8,7 @@ from app import web_auth
 from app.constants import DeviceStatus, HealthLevel, LeaseState
 from app.mcp.server import res_apply
 from app.migrations import migrate
-from app.models import Credential, Device, Lease, Principal
+from app.models import Credential, Device, Lease, Principal, QueueEntry
 from app.utils import utcnow
 
 
@@ -205,3 +205,89 @@ def test_apply_requires_login(client, session):
     _add_device(session, "dev_web_lease_f", ip="10.0.9.56")
     r = client.post("/api/leases/apply", json={"device_id": "dev_web_lease_f"})
     assert r.status_code == 401
+
+
+def test_web_apply_busy_409_no_queue_entry(client, session, db):
+    """他人持有 → 409 DEVICE_BUSY，且不建 QueueEntry（与 agent apply 入队不同）。"""
+    _add_device(session, "dev_web_busy", ip="10.0.9.57")
+    cookies_a = _cookie(db, "user01@corp.com")
+    cookies_b = _cookie(db, "user02@corp.com")
+
+    r = client.post(
+        "/api/leases/apply",
+        cookies=cookies_a,
+        json={"device_id": "dev_web_busy", "ttl_minutes": 5},
+    )
+    assert r.status_code == 200, r.text
+
+    busy = client.post(
+        "/api/leases/apply",
+        cookies=cookies_b,
+        json={"device_id": "dev_web_busy"},
+    )
+    assert busy.status_code == 409, busy.text
+    detail = busy.json().get("detail") or {}
+    assert isinstance(detail, dict)
+    assert detail.get("code") == "DEVICE_BUSY"
+    inner = detail.get("detail") or {}
+    assert inner.get("holder") == "user01@corp.com"
+    assert inner.get("expires_at")
+
+    session.expire_all()
+    queued = (
+        session.query(QueueEntry)
+        .filter(
+            QueueEntry.target_type == "device",
+            QueueEntry.target_code == "dev_web_busy",
+        )
+        .count()
+    )
+    assert queued == 0
+
+
+def test_web_apply_ttl_strict_no_1_5x(client, session, db):
+    """Web TTL 严格 min(ttl, max)，5 分钟不得被 1.5× 放大成 7。"""
+    _add_device(session, "dev_web_ttl5", ip="10.0.9.58")
+    cookies = _cookie(db, "user01@corp.com")
+    r = client.post(
+        "/api/leases/apply",
+        cookies=cookies,
+        json={"device_id": "dev_web_ttl5", "ttl_minutes": 5},
+    )
+    assert r.status_code == 200, r.text
+    lease = r.json()["lease"]
+    assert lease["ttl_minutes"] == 5
+    assert lease["ttl_minutes"] != 7
+
+
+def test_web_apply_idempotent_own_lease(client, session, db):
+    """自己已持有 → 幂等返回原 lease，不新建。"""
+    _add_device(session, "dev_web_idem", ip="10.0.9.59")
+    cookies = _cookie(db, "user01@corp.com")
+    r1 = client.post(
+        "/api/leases/apply",
+        cookies=cookies,
+        json={"device_id": "dev_web_idem", "ttl_minutes": 5},
+    )
+    assert r1.status_code == 200, r1.text
+    lease_id = r1.json()["lease"]["lease_id"]
+
+    r2 = client.post(
+        "/api/leases/apply",
+        cookies=cookies,
+        json={"device_id": "dev_web_idem", "ttl_minutes": 5},
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["state"] == "GRANTED"
+    assert r2.json()["lease"]["lease_id"] == lease_id
+
+    session.expire_all()
+    active = (
+        session.query(Lease)
+        .filter(
+            Lease.device_id == "dev_web_idem",
+            Lease.state.in_(LeaseState.ACTIVE),
+        )
+        .count()
+    )
+    assert active == 1

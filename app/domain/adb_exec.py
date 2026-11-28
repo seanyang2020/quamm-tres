@@ -1,6 +1,7 @@
 """ADB 调试执行：adb connect + adb shell（人工调试，非命令白名单）。
 
-鉴权对齐 serial.check_access：admin 或设备活跃租约持有人。
+鉴权对齐 serial.check_access：默认 admin 或设备活跃租约持有人；
+Web 入口可传 allow_admin_bypass=False 强制要求租约。
 明显破坏性命令需 body.confirm=true，否则 ADB_CONFIRM_REQUIRED。
 """
 from __future__ import annotations
@@ -103,6 +104,7 @@ def _require_access(
     *,
     email: str,
     is_admin: bool,
+    allow_admin_bypass: bool = True,
 ) -> None:
     try:
         serial_svc.check_access(
@@ -110,12 +112,15 @@ def _require_access(
             device_id,
             email=email,
             is_admin=is_admin,
+            allow_admin_bypass=allow_admin_bypass,
         )
     except DomainError as e:
         if e.code in ("NO_LEASE", "FORBIDDEN", "ACCESS_DENIED"):
             raise DomainError(
                 "ADB_NOT_ALLOWED",
-                f"无权限在 {device_id} 上执行 ADB（需管理员或该设备活跃租约）",
+                f"无权限在 {device_id} 上执行 ADB（需该设备活跃租约"
+                + ("或管理员" if allow_admin_bypass else "")
+                + "）",
                 {"device_id": device_id, "cause": e.code},
             ) from e
         raise
@@ -158,6 +163,7 @@ def exec_shell(
     by: str,
     email: str,
     is_admin: bool,
+    allow_admin_bypass: bool = True,
 ) -> dict[str, Any]:
     """对设备执行 ``adb connect`` + ``adb -s <addr> shell <command>``。"""
     cmd = str(command or "").strip()
@@ -176,7 +182,13 @@ def exec_shell(
             {"device_id": device_id},
         )
 
-    _require_access(session, device_id, email=email, is_admin=is_admin)
+    _require_access(
+        session,
+        device_id,
+        email=email,
+        is_admin=is_admin,
+        allow_admin_bypass=allow_admin_bypass,
+    )
 
     if _requires_confirm(cmd) and not confirm:
         raise DomainError(

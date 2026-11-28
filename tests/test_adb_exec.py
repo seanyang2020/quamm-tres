@@ -107,6 +107,50 @@ def test_adb_not_allowed_non_admin_no_lease(client, session, db):
     assert code == "ADB_NOT_ALLOWED"
 
 
+def test_adb_admin_no_lease_rejected_on_web(client, session, db):
+    """Web 路径 allow_admin_bypass=False：admin 无租约也被拒。"""
+    _add_device(session, "dev_adb_admin_nolease", ip="10.0.9.91")
+    cookies, _ = _cookie(db, admin=True)
+    r = client.post(
+        "/api/devices/dev_adb_admin_nolease/adb/exec",
+        cookies=cookies,
+        json={"command": "id"},
+    )
+    assert r.status_code == 403, r.text
+    detail = r.json().get("detail") or {}
+    code = detail.get("code") if isinstance(detail, dict) else None
+    assert code == "ADB_NOT_ALLOWED"
+
+
+def test_adb_with_web_lease_ok(client, session, db, monkeypatch):
+    """持有 Web 租约后 adb exec 可通过（admin）。"""
+    _add_device(session, "dev_adb_leased", ip="10.0.9.92")
+    cookies, _ = _cookie(db, admin=True)
+
+    apply_r = client.post(
+        "/api/leases/apply",
+        cookies=cookies,
+        json={"device_id": "dev_adb_leased", "ttl_minutes": 5},
+    )
+    assert apply_r.status_code == 200, apply_r.text
+
+    def fake_run(args, timeout_s):
+        if args[:1] == ["connect"]:
+            return 0, "connected", ""
+        return 0, "uid=0(root)", ""
+
+    monkeypatch.setattr(adb_exec_svc, "_run_adb", fake_run)
+    r = client.post(
+        "/api/devices/dev_adb_leased/adb/exec",
+        cookies=cookies,
+        json={"command": "id"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body.get("result") == "ok"
+    assert "uid=0" in (body.get("stdout") or "")
+
+
 def test_adb_confirm_required_no_execute(session, monkeypatch):
     _add_device(session, "dev_adb_danger")
     calls: list[list[str]] = []

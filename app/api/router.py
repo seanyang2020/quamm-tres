@@ -736,6 +736,89 @@ def leases(
     ]
 
 
+def _auth_from_web(session: Session, identity: web_auth.WebIdentity):
+    """Web 会话 → AuthContext（leasing.apply/release/renew 需要 principal+credential）。"""
+    from app.security import AuthContext
+
+    principal = session.get(Principal, identity.principal_id)
+    credential = session.get(Credential, identity.credential_id)
+    if principal is None or credential is None:
+        raise HTTPException(status_code=401, detail="会话无效")
+    return AuthContext(
+        principal=principal,
+        credential=credential,
+        email=identity.email,
+        is_admin=(identity.role == "admin"),
+    )
+
+
+@router.post("/leases/apply")
+def web_lease_apply(
+    payload: dict = Body(...),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    """Web 人工短租：忙设备 409（不排队）；默认 TTL=5 分钟，严格夹 lease_max。"""
+    device_id = str(payload.get("device_id") or "").strip()
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id 必填")
+    ttl = payload.get("ttl_minutes")
+    if ttl is None:
+        ttl = payload.get("expected_minutes")
+    if ttl is None:
+        ttl = 5
+    try:
+        ttl_int = int(ttl)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ttl_minutes/expected_minutes 须为整数")
+    auth = _auth_from_web(session, identity)
+    try:
+        return leasing.web_apply(
+            session,
+            auth,
+            device_id,
+            ttl_minutes=ttl_int,
+            purpose=payload.get("purpose"),
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/leases/{lease_id}/release")
+def web_lease_release(
+    lease_id: str,
+    payload: dict = Body(default={}),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    auth = _auth_from_web(session, identity)
+    try:
+        return leasing.release(
+            session, auth, lease_id, reason=(payload or {}).get("reason")
+        )
+    except DomainError as e:
+        raise _domain_http(e)
+
+
+@router.post("/leases/{lease_id}/renew")
+def web_lease_renew(
+    lease_id: str,
+    payload: dict = Body(default={}),
+    identity: web_auth.WebIdentity = Depends(web_auth.require_login),
+    session: Session = Depends(get_session),
+):
+    auth = _auth_from_web(session, identity)
+    extra = (payload or {}).get("extra_minutes", 30)
+    try:
+        extra_int = int(extra)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="extra_minutes 须为整数")
+    try:
+        return leasing.renew(session, auth, lease_id, extra_minutes=extra_int)
+    except DomainError as e:
+        raise _domain_http(e)
+
+
 @router.post("/leases/{lease_id}/force-release")
 def force_release(
     lease_id: str,
@@ -2208,7 +2291,7 @@ def send_credentials(
 # ---- v0.25：编译服务器（账号级私有，一账号一台，自助配置 + 自动探测）----
 def _domain_http(exc: DomainError) -> HTTPException:
     code = getattr(exc, "code", "")
-    if code in ("FORBIDDEN", "ACCESS_DENIED", "ADB_NOT_ALLOWED"):
+    if code in ("FORBIDDEN", "ACCESS_DENIED", "ADB_NOT_ALLOWED", "NO_LEASE"):
         status = 403
     elif code == "NOT_FOUND":
         status = 404
@@ -2218,6 +2301,7 @@ def _domain_http(exc: DomainError) -> HTTPException:
         "BUILD_SERVER_ALREADY_EXISTS",
         "HAS_ACTIVE_LEASE",
         "ADB_CONFIRM_REQUIRED",
+        "DEVICE_BUSY",
     ):
         status = 409
     else:
@@ -2351,12 +2435,34 @@ def sdk_build_route(
 from app.domain import serial as serial_svc
 
 
-def _require_serial_lease(session, identity, device_id: str, action_key=None, confirm=False):
+def _require_device_lease(
+    session,
+    identity,
+    device_id: str,
+    *,
+    allow_admin_bypass: bool = False,
+    action_key=None,
+    confirm=False,
+):
+    """Web 执行路径租约门禁；默认关掉 admin 直通（force-release/配置类仍走 require_admin）。"""
     serial_svc.check_access(
         session,
         device_id,
         email=identity.email,
         is_admin=(identity.role == "admin"),
+        action_key=action_key,
+        confirm=confirm,
+        allow_admin_bypass=allow_admin_bypass,
+    )
+
+
+def _require_serial_lease(session, identity, device_id: str, action_key=None, confirm=False):
+    """兼容旧名：Web 串口动作统一 allow_admin_bypass=False。"""
+    _require_device_lease(
+        session,
+        identity,
+        device_id,
+        allow_admin_bypass=False,
         action_key=action_key,
         confirm=confirm,
     )
@@ -2454,6 +2560,7 @@ def post_adb_exec(
             by=f"web:{identity.email}",
             email=identity.email,
             is_admin=(identity.role == "admin"),
+            allow_admin_bypass=False,  # Web：admin 也必须持租约
         )
     except DomainError as e:
         raise _domain_http(e)
