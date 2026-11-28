@@ -976,10 +976,11 @@ def create_device_from_binding(session, node_id, slot, owner=None,
         raise DomainError("SERIAL_NOT_L3",
                           "串口未取到 MAC/SN/IP，无法达到 L3；请先手动探测或补身份")
 
-    # 同一台设备：按 MAC → SN → IP 命中现有记录就只挂串口，不重复建机。
+    # 同一台设备：按 MAC → SN → IP 命中非 retired 现有记录就只挂串口，不重复建机。
     # MAC 与 comres._mac_match_key 对齐（去冒号/横线/空白 → 12 位 hex），
     # 避免「a0:ac:…」与「A0-AC-…」在串口建机时又新建一条重复设备。
-    from app.domain.comres import _mac_match_key
+    # 非 retired 未命中时，再按同款规则复用唯一 retired（MAC/SN/唯一 IP）。
+    from app.domain.comres import _mac_match_key, _reuse_retired_by_identity
     existing = None
     if use_mac:
         mac_key = _mac_match_key(use_mac)
@@ -1002,6 +1003,10 @@ def create_device_from_binding(session, node_id, slot, owner=None,
         existing = (session.query(Device)
                     .filter(Device.ip == use_ip,
                             Device.status != DeviceStatus.RETIRED).first())
+    if existing is None:
+        existing = _reuse_retired_by_identity(
+            session, mac=use_mac, sn=use_sn, ip=use_ip,
+        )
 
     now = utcnow()
     if existing is not None:
@@ -1023,6 +1028,27 @@ def create_device_from_binding(session, node_id, slot, owner=None,
                 "display_name": existing.display_name,
                 "identity": {"mac": existing.mac, "sn": existing.sn,
                              "ip": existing.ip}}
+
+    # INSERT 前再防撞一次（含 retired）：同 mac/sn 已被占用则复用，避免唯一索引 500
+    collided = _reuse_retired_by_identity(
+        session, mac=use_mac, sn=use_sn, ip=None,
+    )
+    if collided is not None:
+        binding.bound_device_id = collided.device_id
+        if collided.ip is None and use_ip:
+            collided.ip = use_ip
+        if collided.model_class is None and mc:
+            collided.model_class = mc
+        _audit(session, node_id, "bind_serial_to_existing", actor=actor,
+               detail={"slot": slot, "device": collided.device_id,
+                       "matched_mac": use_mac, "matched_ip": use_ip,
+                       "basis": "collision_reuse_retired"})
+        session.commit()
+        return {"result": "existing", "device_id": collided.device_id,
+                "node_id": node_id, "slot": slot,
+                "display_name": collided.display_name,
+                "identity": {"mac": collided.mac, "sn": collided.sn,
+                             "ip": collided.ip}}
 
     # v0.54.8（#8436）：串口建机默认名同样优先机型展示名，COM@node 仅兜底。
     product_display = None

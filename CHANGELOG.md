@@ -3,6 +3,17 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.20] - 2026-11-28
+
+### 修复：0.54.19 引入的 retired 唯一索引冲突导致 comres 心跳 500
+- 现象：库中已有 status=retired 设备独占某 mac（或 sn），心跳 `_match_device` 排除
+  retired 后走新建，INSERT 撞 `uq_device_mac` / `uq_device_sn` → IntegrityError →
+  心跳每 60s 500 → 节点 offline。
+- 修复：新增 `_reuse_retired_by_identity`（MAC 归一化 / SN 精确 / IP 仅无 mac+sn
+  且全表唯一时才复活）；`_apply_auto_match` 在新建前复用 resurrect→pending；
+  `_create_device_from_port` 与 `wirelog.create_device_from_binding` INSERT 前防撞。
+  无 mac/sn 仅 IP 不复活（IP 回退已收紧）。
+
 ## [0.54.19] - 2026-11-28
 
 ### 修复：COMRes 指纹 MAC 归一化匹配 + 串口添加设备三项问题

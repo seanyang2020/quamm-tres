@@ -363,6 +363,67 @@ def _sn_taken_by_other(session: Session, sn: str, device: "Device") -> bool:
     return False
 
 
+def _revive_retired_device(device: "Device") -> "Device":
+    """复活 retired 设备：与 catalog 注册命中已有记录一致，落 pending 并清 retired_at。
+
+    不改 display_name / owner / register_channel / source / asset_tag 等业务字段。
+    """
+    device.status = DeviceStatus.PENDING
+    device.retired_at = None
+    return device
+
+
+def _reuse_retired_by_identity(
+    session: Session,
+    mac: str | None = None,
+    sn: str | None = None,
+    ip: str | None = None,
+) -> "Device | None":
+    """按 MAC / SN / IP 在含 retired 的全表中找唯一 retired 记录并复活。
+
+    - MAC：``_mac_match_key`` 归一化后比较；
+    - SN：精确匹配（strip）；
+    - IP：仅在既无 mac 又无 sn 时才用，且要求唯一命中（多条不采用）。
+      COMRes 心跳在无 sn/mac 时会提前 miss，不会走到本函数的 IP 分支；
+      wirelog 建机可显式走 IP 唯一复活。
+    命中唯一一条 retired → status=pending、retired_at=None；否则返回 None。
+    """
+    mac_key = _mac_match_key(mac)
+    if mac_key:
+        hits = [
+            d for d in session.query(Device)
+            .filter(Device.mac.isnot(None), Device.status == DeviceStatus.RETIRED)
+            .all()
+            if _mac_match_key(d.mac) == mac_key
+        ]
+        if len(hits) == 1:
+            return _revive_retired_device(hits[0])
+        if hits:
+            return None
+        # 无 retired MAC 命中：继续试 SN（调用方可能同时带了 sn）
+
+    sn_val = (sn or "").strip() or None
+    if sn_val:
+        hits = (
+            session.query(Device)
+            .filter(Device.sn == sn_val, Device.status == DeviceStatus.RETIRED)
+            .all()
+        )
+        if len(hits) == 1:
+            return _revive_retired_device(hits[0])
+        return None
+
+    # IP：仅既无 mac 又无 sn 时才用；全表唯一命中且为 retired 才复活，
+    # 多条不采用。COMRes 心跳在无 sn/mac 时提前 miss，不会走到此分支
+    # （test：仅 IP 相同不复活）；wirelog 建机可显式走唯一 IP 复活。
+    ip_val = (ip or "").strip() or None
+    if ip_val and not mac_key and not sn_val:
+        all_ip = session.query(Device).filter(Device.ip == ip_val).all()
+        if len(all_ip) == 1 and str(all_ip[0].status) == DeviceStatus.RETIRED:
+            return _revive_retired_device(all_ip[0])
+    return None
+
+
 def _match_device(session: Session, port: dict, local_ip: str | None):
     """按 MAC → SN → IP 优先级匹配 device。返回 (device|None, basis)。
 
@@ -808,10 +869,20 @@ def _create_device_from_port(session: Session, port: dict,
     """port 带设备身份（mac，或 fingerprint/device_sn 的 SN）时建档。
 
     ``port.sn`` 是 USB 适配器序列号，不算身份，避免造出 comres-<适配器SN> 这类假设备。
+    INSERT 前含 retired 查重：同 mac/sn 已被占用则复用（复活）该记录，避免
+    ``uq_device_mac`` / ``uq_device_sn`` 撞唯一索引导致心跳 500。
     """
     sn, mac, ip = _port_identity(port)
     if not sn and not mac:
         raise DomainError("COMRES_NO_IDENTITY", "自动建档需要 sn 或 mac")
+    # 兜底防撞：含 retired 的同 mac / 同 sn → 复用，不 INSERT
+    reused = _reuse_retired_by_identity(session, mac=mac, sn=sn, ip=None)
+    if reused is not None:
+        return reused
+    if mac:
+        existed_mac = _device_by_mac_key(session, _mac_match_key(mac))
+        if existed_mac is not None:
+            return existed_mac
     if sn:
         existed = _device_by_sn(session, sn)
         if existed is not None:
@@ -1010,6 +1081,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             return {"basis": "unknown_device", "device_id": None,
                     "allocated": False, "bound": False}
         if not sn and not mac:
+            # 无 mac/sn：不走 IP 复活（IP 回退已收紧），也不新建
             _audit(session, binding.node_id, "comres_match",
                    result="miss", detail={
                        "com": binding.com_name, "com_key": binding.com_key,
@@ -1019,23 +1091,31 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
             return {"basis": "miss", "device_id": None,
                     "allocated": False, "bound": False}
 
-        device = _create_device_from_port(session, port, actor=local_ip)
-        basis = "created"
-        binding.bound_device_id = device.device_id
-        _mark_allocated(binding, by=f"auto:{basis}")
-        _audit(session, binding.node_id, "comres_device_register",
-               result="ok", detail={
-                   "com": binding.com_name, "com_key": binding.com_key,
-                   "basis": basis, "device_id": device.device_id,
-                   "sn": device.sn, "mac": device.mac, "ip": device.ip,
-                   "allocated_by": binding.allocated_by,
-                   "allocated_expire": binding.allocated_expire.isoformat()
-                   if binding.allocated_expire else None,
-               })
-        return {"basis": basis, "device_id": device.device_id,
-                "allocated": False, "bound": True}
+        # 排除 retired 的 _match_device 未命中：先尝试复用唯一 retired
+        _, _, port_ip = _port_identity(port)
+        device = _reuse_retired_by_identity(
+            session, mac=mac, sn=sn, ip=port_ip,
+        )
+        if device is not None:
+            basis = "reused_retired"
+        else:
+            device = _create_device_from_port(session, port, actor=local_ip)
+            basis = "created"
+            binding.bound_device_id = device.device_id
+            _mark_allocated(binding, by=f"auto:{basis}")
+            _audit(session, binding.node_id, "comres_device_register",
+                   result="ok", detail={
+                       "com": binding.com_name, "com_key": binding.com_key,
+                       "basis": basis, "device_id": device.device_id,
+                       "sn": device.sn, "mac": device.mac, "ip": device.ip,
+                       "allocated_by": binding.allocated_by,
+                       "allocated_expire": binding.allocated_expire.isoformat()
+                       if binding.allocated_expire else None,
+                   })
+            return {"basis": basis, "device_id": device.device_id,
+                    "allocated": False, "bound": True}
 
-    # 已存在：回填缺失字段
+    # 已存在（含 reused_retired）：回填缺失字段
     filled = _fill_device_missing(session, device, port)
 
     # 冲突：该 device 已被其它端口绑定 → 本端口进池，不覆盖
@@ -1068,8 +1148,8 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
         _retire_superseded_placeholder(session, prev_device_id)
     _mark_allocated(binding, by=f"auto:{basis}")
     _retire_orphan_placeholders(session, port.get("usb_serial"))
-    # sn/mac 路径记 comres_device_register；纯 IP 命中仍走 comres_match
-    if basis in ("sn", "mac", "fp_sn", "fp_mac") or filled:
+    # sn/mac/复活路径记 comres_device_register；纯 IP 命中仍走 comres_match
+    if basis in ("sn", "mac", "fp_sn", "fp_mac", "reused_retired") or filled:
         _audit(session, binding.node_id, "comres_device_register",
                result="ok", detail={
                    "com": binding.com_name, "com_key": binding.com_key,
