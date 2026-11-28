@@ -28,6 +28,9 @@ ALTER）。此处仅做幂等兜底：inspect 判表，缺表则补建；老库�
 
 0.54.0 引入：flash_job 补 executor / image_meta / runner_id / progress / reported_at
 （本地 Agent / 编译机镜像来源）。只用 ALTER TABLE ADD COLUMN，不重建表。
+
+flash-unified：product_type 删 jenkins_url，补 flash_method / feature_filter
+（ALTER ADD + DROP COLUMN，幂等；旧库 jenkins_url 列存在才 DROP）。
 """
 from __future__ import annotations
 
@@ -64,18 +67,24 @@ _CREDENTIAL_COLUMNS = {
 }
 
 # product_type 表新增列（v0.12）-> DDL 片段（全部可空，缺任一即「信息不全」）
+# flash-unified：jenkins_url 已移除，不再 ADD；见 _migrate_product_type_flash_unified
 _PRODUCT_TYPE_COLUMNS = {
     "defconfig": "VARCHAR(255)",
     "sdk_repo_cmd": "VARCHAR(1024)",
     "build_cmd": "VARCHAR(1024)",
     "image_path": "VARCHAR(512)",
-    "jenkins_url": "VARCHAR(512)",
     "notes": "TEXT",
+}
+
+# product_type 升级链路统一（flash-unified）
+_PRODUCT_TYPE_FLASH_UNIFIED_COLUMNS = {
+    "flash_method": "VARCHAR(16) NOT NULL DEFAULT 'db'",
+    "feature_filter": "TEXT",
 }
 
 # product_type 表新增列（v0.14）-> DDL 片段
 _PRODUCT_TYPE_FIRMWARE_COLUMNS = {
-    "db_project_name": "VARCHAR(128)",
+    "db_project_name": "VARCHAR(512)",
     "required_major": "INTEGER NOT NULL DEFAULT 0",
     "required_minor": "INTEGER NOT NULL DEFAULT 0",
     "required_patch": "INTEGER NOT NULL DEFAULT 0",
@@ -205,6 +214,7 @@ def migrate(session: Session) -> None:
         _ensure_columns(session, "flash_job", _FLASH_JOB_SOURCE_COLUMNS)
     _ensure_powerres_tables(session)
     _ensure_columns(session, "power_res_inventory", _POWERRES_INV_COLUMNS)
+    _migrate_product_type_flash_unified(session)
 
 
 # PT5a / PT8-tres：电源 inventory 补充列（幂等 ADD COLUMN）
@@ -292,6 +302,60 @@ def _ensure_columns(session: Session, table: str, ddl_map: dict[str, str]) -> No
             added.append(name)
     if added:
         session.commit()
+
+
+def _migrate_product_type_flash_unified(session: Session) -> None:
+    """flash-unified：补 flash_method/feature_filter，幂等删 jenkins_url。
+
+    SQLite 3.35+ / PostgreSQL 均支持 ``ALTER TABLE ... DROP COLUMN``；
+    若 DROP 失败（极旧 SQLite），走表重建兜底（保留全部现有列数据）。
+    """
+    engine = session.get_bind()
+    if "product_type" not in inspect(engine).get_table_names():
+        return
+    _ensure_columns(session, "product_type", _PRODUCT_TYPE_FLASH_UNIFIED_COLUMNS)
+    cols = {c["name"] for c in inspect(engine).get_columns("product_type")}
+    if "jenkins_url" not in cols:
+        return
+    try:
+        session.execute(text("ALTER TABLE product_type DROP COLUMN jenkins_url"))
+        session.commit()
+        return
+    except Exception:
+        session.rollback()
+    _rebuild_product_type_drop_jenkins(session)
+
+
+def _rebuild_product_type_drop_jenkins(session: Session) -> None:
+    """SQLite 兜底：重建 product_type，去掉 jenkins_url，保留其余列与数据。"""
+    from app import models  # noqa: F401
+    from app.db import Base
+
+    engine = session.get_bind()
+    cols = [c["name"] for c in inspect(engine).get_columns("product_type")]
+    keep = [c for c in cols if c != "jenkins_url"]
+    if len(keep) == len(cols):
+        return
+    model_cols = {c.name for c in models.ProductType.__table__.columns}
+    copy_cols = [c for c in keep if c in model_cols]
+    col_list = ", ".join(copy_cols)
+    session.execute(text("PRAGMA foreign_keys=OFF"))
+    session.execute(text(
+        f"CREATE TABLE product_type__fu_bak AS SELECT {col_list} FROM product_type"
+    ))
+    session.execute(text("DROP TABLE product_type"))
+    session.commit()
+    Base.metadata.create_all(engine, tables=[models.ProductType.__table__])
+    # 新表列可能比 bak 多（flash_method 等已有默认值）；只回填交集列
+    new_cols = {c["name"] for c in inspect(engine).get_columns("product_type")}
+    insert_cols = [c for c in copy_cols if c in new_cols]
+    ins = ", ".join(insert_cols)
+    session.execute(text(
+        f"INSERT INTO product_type ({ins}) SELECT {ins} FROM product_type__fu_bak"
+    ))
+    session.execute(text("DROP TABLE product_type__fu_bak"))
+    session.execute(text("PRAGMA foreign_keys=ON"))
+    session.commit()
 
 
 def _ensure_comres_unique_index(session: Session) -> None:

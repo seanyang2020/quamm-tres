@@ -69,7 +69,7 @@ def test_product_metadata_completeness_and_stats(db):
     q = products["QM102V"]
     assert q["complete"] is False and q["complete_label"] == "信息不全"
     for f in ("leased", "queued", "defconfig", "sdk_repo_cmd", "build_cmd",
-              "image_path", "jenkins_url", "notes"):
+              "image_path", "notes", "flash_method", "feature_filter"):
         assert f in q
 
     dev = MockDevice(model="QM102V").start()

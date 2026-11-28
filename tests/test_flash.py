@@ -159,15 +159,18 @@ def test_flash_success_updates_device(db, monkeypatch):
 
     captured = {}
 
-    def fake_execute(cmd, log_path, timeout, cwd=None):
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        with open(log_path, "w", encoding="utf-8") as fh:
-            fh.write("download ok\nflash ok\n")
-        return 0, "ok"
+    def fake_upgrade(*, product, device_ip, version, preserve_data, log_path, job_cwd):
+        captured["product"] = product.type_code
+        captured["ip"] = device_ip
+        captured["version"] = version
+        captured["preserve_data"] = preserve_data
+        captured["cwd"] = job_cwd
+        if log_path:
+            Path(log_path).write_text("download ok\nflash ok\n", encoding="utf-8")
+        return True, "ok"
 
-    monkeypatch.setattr(flash, "_execute", fake_execute)
-    monkeypatch.setattr(flash, "read_firmware_version", lambda ip, port: "V1.00.01.130")
+    monkeypatch.setattr(flash, "_run_db_upgrade", fake_upgrade)
+    monkeypatch.setattr(flash, "_read_flashed_version", lambda ip, port: "V1.00.01.130")
 
     r = db.call("user01@corp.com", res_flash, lease_id=lease_id, version="130")
     assert r["job_id"] and r["status"] == "QUEUED"
@@ -178,13 +181,11 @@ def test_flash_success_updates_device(db, monkeypatch):
     assert done["log_tail"][-1] == "flash ok"
     assert done["error"] is None
 
-    # preserve_data 默认开：命令包含 -e data，且版本/工程正确
-    cmd = captured["cmd"]
-    assert cmd[cmd.index("-t") + 1] == "esl2"
-    assert cmd[cmd.index("-i") + 1] == "10.1.2.3"
-    assert cmd[cmd.index("-v") + 1] == "130"
-    update_arg = next(a for a in cmd if a.startswith("--update-args="))
-    assert update_arg == "--update-args=-f -a -e data"
+    # preserve_data 默认开；工程/版本/IP 正确
+    assert captured["product"] == "QM102V"
+    assert captured["ip"] == "10.1.2.3"
+    assert captured["version"] == "130"
+    assert captured["preserve_data"] is True
 
     session = db.session()
     try:
@@ -203,12 +204,11 @@ def test_flash_erase_requires_confirm_and_drops_e_data(db, monkeypatch):
 
     captured = {}
 
-    def fake_execute(cmd, log_path, timeout, cwd=None):
-        captured["cmd"] = cmd
-        return 0, ""
+    def fake_upgrade(*, product, device_ip, version, preserve_data, log_path, job_cwd):
+        captured["preserve_data"] = preserve_data
+        return True, ""
 
-    monkeypatch.setattr(flash, "_execute", fake_execute)
-    monkeypatch.setattr(flash, "read_firmware_version", lambda ip, port: None)
+    monkeypatch.setattr(flash, "_run_db_upgrade", fake_upgrade)
     monkeypatch.setattr(flash, "_read_flashed_version", lambda ip, port: None)
 
     r = db.call(
@@ -221,8 +221,7 @@ def test_flash_erase_requires_confirm_and_drops_e_data(db, monkeypatch):
     )
     done = _wait_status(db, "user01@corp.com", r["job_id"])
     assert done["status"] == "SUCCEEDED"
-    update_arg = next(a for a in captured["cmd"] if a.startswith("--update-args="))
-    assert "-e data" not in update_arg
+    assert captured["preserve_data"] is False
 
 
 def test_flash_failure_marks_failed(db, monkeypatch):
@@ -230,10 +229,10 @@ def test_flash_failure_marks_failed(db, monkeypatch):
     device_id = _make_device(db)
     lease_id = _grant_lease(db, "user01@corp.com", device_id)
 
-    def fake_execute(cmd, log_path, timeout, cwd=None):
-        return 1, "download failed\nHTTP 500"
+    def fake_upgrade(*, product, device_ip, version, preserve_data, log_path, job_cwd):
+        return False, "download failed\nHTTP 500"
 
-    monkeypatch.setattr(flash, "_execute", fake_execute)
+    monkeypatch.setattr(flash, "_run_db_upgrade", fake_upgrade)
 
     r = db.call("user01@corp.com", res_flash, lease_id=lease_id, version="130")
     done = _wait_status(db, "user01@corp.com", r["job_id"])
@@ -247,12 +246,12 @@ def test_flash_in_progress_blocks_duplicate(db, monkeypatch):
     lease_id = _grant_lease(db, "user01@corp.com", device_id)
     gate = threading.Event()
 
-    def blocking_execute(cmd, log_path, timeout, cwd=None):
+    def blocking_upgrade(*, product, device_ip, version, preserve_data, log_path, job_cwd):
         gate.wait(3)
-        return 0, ""
+        return True, ""
 
-    monkeypatch.setattr(flash, "_execute", blocking_execute)
-    monkeypatch.setattr(flash, "read_firmware_version", lambda ip, port: "1.0.1")
+    monkeypatch.setattr(flash, "_run_db_upgrade", blocking_upgrade)
+    monkeypatch.setattr(flash, "_read_flashed_version", lambda ip, port: "1.0.1")
 
     first = db.call("user01@corp.com", res_flash, lease_id=lease_id, version="130")
     second = db.call("user01@corp.com", res_flash, lease_id=lease_id, version="131")
@@ -429,19 +428,20 @@ def test_run_job_removes_workdir_keeps_log(db, tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_execute(cmd, log_path, timeout, cwd=None):
-        seen["cwd"] = Path(cwd) if cwd is not None else None
-        assert cwd is not None
-        cwd_path = Path(cwd)
+    def fake_upgrade(*, product, device_ip, version, preserve_data, log_path, job_cwd):
+        seen["cwd"] = Path(job_cwd) if job_cwd is not None else None
+        assert job_cwd is not None
+        cwd_path = Path(job_cwd)
         (cwd_path / "downloads").mkdir(parents=True, exist_ok=True)
         (cwd_path / "downloads" / "CURRENT.tar.gz").write_bytes(b"pkg")
         (cwd_path / "tmp").mkdir(exist_ok=True)
         (cwd_path / "test_report").mkdir(exist_ok=True)
-        Path(log_path).write_text("flash ok\n", encoding="utf-8")
+        if log_path:
+            Path(log_path).write_text("flash ok\n", encoding="utf-8")
         assert cwd_path.exists()
-        return 0, "ok"
+        return True, "ok"
 
-    monkeypatch.setattr(flash, "_execute", fake_execute)
+    monkeypatch.setattr(flash, "_run_db_upgrade", fake_upgrade)
     monkeypatch.setattr(flash, "_read_flashed_version", lambda ip, port: "V1.00.01.130")
 
     flash._run_job(job_id)
@@ -988,17 +988,18 @@ def test_flash_build_server_remote_failure(db, monkeypatch):
 
 
 def test_flash_db_source_returns_mode_server_db(db, monkeypatch):
-    """source=db 默认行为不回归，并补充 mode/executor。"""
+    """source=db / 缺省 source 走 DB 升级，并补充 mode/executor。"""
     _ensure_product(db, db_project_name="esl2")
     device_id = _make_device(db, firmware="1.0.0")
     lease_id = _grant_lease(db, "user01@corp.com", device_id)
 
-    def fake_execute(cmd, log_path, timeout, cwd=None):
-        Path(log_path).write_text("ok\n", encoding="utf-8")
-        return 0, "ok"
+    def fake_upgrade(*, product, device_ip, version, preserve_data, log_path, job_cwd):
+        if log_path:
+            Path(log_path).write_text("ok\n", encoding="utf-8")
+        return True, "ok"
 
-    monkeypatch.setattr(flash, "_execute", fake_execute)
-    monkeypatch.setattr(flash, "read_firmware_version", lambda ip, port: "V1.00.01.130")
+    monkeypatch.setattr(flash, "_run_db_upgrade", fake_upgrade)
+    monkeypatch.setattr(flash, "_read_flashed_version", lambda ip, port: "V1.00.01.130")
 
     r = db.call("user01@corp.com", res_flash, lease_id=lease_id, version="130")
     assert r["status"] == "QUEUED"
@@ -1008,3 +1009,19 @@ def test_flash_db_source_returns_mode_server_db(db, monkeypatch):
     assert done["status"] == "SUCCEEDED"
     assert done["mode"] == "server_db"
     assert done["executor"] == "server"
+
+
+def test_flash_default_source_unsupported(db):
+    """缺省 source 且 flash_method=unsupported → FLASH_UNSUPPORTED。"""
+    _ensure_product(db, db_project_name="esl2")
+    session = db.session()
+    try:
+        pt = session.get(ProductType, "QM102V")
+        pt.flash_method = "unsupported"
+        session.commit()
+    finally:
+        session.close()
+    device_id = _make_device(db)
+    lease_id = _grant_lease(db, "user01@corp.com", device_id)
+    r = db.call("user01@corp.com", res_flash, lease_id=lease_id)
+    assert r["error"] == "FLASH_UNSUPPORTED"

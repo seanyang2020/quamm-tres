@@ -3,6 +3,15 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.16] - 2026-11-28
+
+### 统一固件升级链路（机型升级方式 + DB 源智能适配 + 特征过滤）
+- 机型新增 flash_method（db/image/unsupported）与 feature_filter（AND 特征过滤），删除 jenkins_url。
+- DB 路径支持 工程名/相对路径/完整 URL/局域网地址 归一化，填 DB 时自动探测版本目录特征词供勾选。
+- DB 升级改走 db_source（下载/解压/xosadb2update），吸收 dbxostest 的 debug 包/最大包选择，不再调外部脚本。
+- 镜像升级（image）默认经编译机 xosadb2update + -e data；unsupported 返回 FLASH_UNSUPPORTED。
+- MCP res_product_types / res_flash / res_firmware_versions 暴露 flash_method / feature_filter / features。
+
 ## [0.54.15] - 2026-11-28
 
 ### 新增：节点侧问题反馈入口（供 deskserialhub 等 COMRes 节点使用）

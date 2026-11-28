@@ -81,10 +81,43 @@ FORM_TTL_MINUTES = 30
 # v0.12：四列都非空才算「完整」，缺任一即「信息不全」（不强制填全）。
 COMPLETE_FIELDS = ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path")
 METADATA_FIELDS = (
-    "defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes",
+    "defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "notes",
+    "flash_method", "feature_filter", "db_project_name",
 )
 # v0.23：芯片/浮点能力（不纳入「完整度」判定，允许信息不全，不阻塞注册）。
 CHIP_FIELDS = ("chip_model", "float_abi", "has_fpu")
+_VALID_FLASH_METHODS = ("db", "image", "unsupported")
+
+
+def normalize_db_project_name(value: str | None) -> str | None:
+    """保存前探测归一化 db_project_name；空值保持 None。"""
+    text = (str(value).strip() if value is not None else "") or ""
+    if not text:
+        return None
+    from app import db_source
+
+    try:
+        norm = db_source.normalize_project_spec(text)
+    except DomainError:
+        return text
+    return (norm.get("normalized") or text).strip() or None
+
+
+def normalize_feature_filter(value) -> str | None:
+    """feature_filter 存 JSON 数组文本；空 → None。"""
+    import json as _json
+
+    from app import db_source
+
+    features = db_source.parse_feature_filter(value)
+    if not features:
+        return None
+    return _json.dumps(features, ensure_ascii=False)
+
+
+def normalize_flash_method(value: str | None, default: str = "db") -> str:
+    method = (str(value).strip().lower() if value is not None else "") or default
+    return method if method in _VALID_FLASH_METHODS else default
 
 # 已知 ARM CPU part -> 主芯片型号（探测自动回填 chip_model 用，best-effort）。
 _CPU_PART_MODELS = {
@@ -312,6 +345,16 @@ def list_products(session: Session, keyword: str | None = None, only_available: 
             row[f] = getattr(p, f, None)
         for f in CHIP_FIELDS:
             row[f] = getattr(p, f, None)
+        # 派生展示：feature_filter 解析为 list，flash_method 缺省 db
+        row["flash_method"] = normalize_flash_method(getattr(p, "flash_method", None))
+        try:
+            from app import db_source
+
+            row["feature_filter"] = db_source.parse_feature_filter(
+                getattr(p, "feature_filter", None)
+            ) or None
+        except Exception:
+            row["feature_filter"] = getattr(p, "feature_filter", None)
         result.append(row)
     return result
 

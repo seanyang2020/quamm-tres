@@ -1,10 +1,12 @@
 """DB 构建源（吸纳 dbxostest.py 的核心逻辑，库式实现，经 MCP 释放）。
 
 能力：
-- 智能适配提供的 DB 目录：支持源别名（daily/release）、完整 URL、相对工程路径；
+- 智能适配提供的 DB 目录：支持源别名（daily/release）、完整 URL、局域网地址、相对工程路径；
 - 探测 DB 目录是否可用（HTTP 可达、目录类型：源根/工程/版本）；
 - 枚举工程、发现整数 DB 版本（latest/ 目录、HTML 解析、二分兜底稀疏版本）；
-- 列出/下载 CURRENT*.gz 包、解压并定位 qmimages/script.ini；
+- 版本目录特征词提炼、按 feature 关键字（AND）过滤版本/包名；
+- 列出/下载 CURRENT*.gz 包（同版本多包时优先 debug，否则最大包，对齐 dbxostest）；
+- 解压并定位 qmimages/script.ini；
 - 读取设备当前 DB 版本（adb shell /.DB_*）；
 - 经 xosadb2update 执行 DB 版本升级。
 
@@ -13,6 +15,7 @@
 from __future__ import annotations
 
 import glob
+import json
 import logging
 import os
 import re
@@ -37,10 +40,16 @@ DEFAULT_TIMEOUT = 8
 MAX_VERSION = 2000
 PACKAGE_RE = re.compile(r"CURRENT[^\s]*\.tar\.gz$", re.IGNORECASE)
 _HREF_RE = re.compile(r'href="([^"]+)"')
+_IPV4_RE = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3})([/\\].*)?$")
+_DATE_TOKEN_RE = re.compile(r"^(?:\d{8}|\d{4}-\d{2}-\d{2})$")
+_FEATURE_SPLIT_RE = re.compile(r"[_\-\.\s/]+")
+# Apache 列表行里偶发的字节大小（用于无 debug 时选最大包）
+_SIZE_RE = re.compile(
+    r'href="([^"]+\.tar\.gz)"[^<]*</a>\s+\S+\s+\S+\s+(\d+)',
+    re.IGNORECASE,
+)
 WORK_ROOT = Path(__file__).resolve().parent.parent / "var" / "db_source"
 
-# v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
-# 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
 # v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
 # 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。
 # v0.28.4：默认改为全局路径 /usr/local/bin/xosadb2update，整机只放一份，所有用户/服务共享。
@@ -48,6 +57,44 @@ XOSADB2UPDATE_PATH = "/usr/local/bin/xosadb2update"
 
 
 # ---------------- 路径智能适配 ----------------
+
+def _xos_base_url() -> str:
+    try:
+        from app.config import settings
+
+        base = (settings.xos_base_url or SOURCES["daily"]).rstrip("/") + "/"
+        return base
+    except Exception:
+        return SOURCES["daily"]
+
+
+def _ensure_trailing_slash(url: str) -> str:
+    return url if url.endswith("/") else url + "/"
+
+
+def _lan_to_http(spec: str) -> str | None:
+    """把局域网路径归一为 http://host/path/；无法识别返回 None。"""
+    raw = (spec or "").strip()
+    if not raw:
+        return None
+    # smb://host/path
+    if raw.lower().startswith("smb://"):
+        rest = raw[6:].lstrip("/")
+        return _ensure_trailing_slash("http://" + rest.replace("\\", "/"))
+    # \\host\path 或 //host/path
+    if raw.startswith("\\\\") or raw.startswith("//"):
+        rest = raw.lstrip("\\/").replace("\\", "/")
+        return _ensure_trailing_slash("http://" + rest)
+    # host\path（含反斜杠）
+    if "\\" in raw:
+        return _ensure_trailing_slash("http://" + raw.replace("\\", "/"))
+    # 172.16.1.201/Daily/... 或 172.16.1.201
+    m = _IPV4_RE.match(raw)
+    if m:
+        host, path = m.group(1), (m.group(2) or "").replace("\\", "/")
+        return _ensure_trailing_slash("http://" + host + path)
+    return None
+
 
 def normalize_source(spec: str | None = None, project_path: str | None = None) -> dict:
     """把用户给的 DB 目录规格归一为 {base_url, project_url}。
@@ -59,15 +106,112 @@ def normalize_source(spec: str | None = None, project_path: str | None = None) -
     if spec in SOURCES:
         base = SOURCES[spec]
     elif spec.startswith("http://") or spec.startswith("https://"):
-        base = spec if spec.endswith("/") else spec + "/"
+        base = _ensure_trailing_slash(spec)
     else:
-        raise DomainError("INVALID_SOURCE", f"无法识别的 DB 源：{spec}（用 daily/release 或完整 URL）")
+        lan = _lan_to_http(spec)
+        if lan:
+            base = lan
+        else:
+            raise DomainError(
+                "INVALID_SOURCE",
+                f"无法识别的 DB 源：{spec}（用 daily/release 或完整 URL）",
+            )
 
     project_url = None
     p = (project_path or "").strip("/")
     if p:
         project_url = base + p + "/"
     return {"source": spec, "base_url": base, "project_url": project_url}
+
+
+def normalize_project_spec(spec: str | None) -> dict:
+    """归一化机型 db_project_name：别名 / URL / 局域网 / 相对工程名。
+
+    返回 {source, base_url, project_url, normalized}。
+    - daily/release：当作源根（project_url=None，normalized=别名）
+    - 完整 http(s) / 局域网地址：归一为 http URL（末尾 /）
+    - 相对工程名（含多级）：拼到 xos_base_url 下
+    """
+    raw = (spec or "").strip()
+    if not raw:
+        raise DomainError("PRODUCT_NO_DB_PROJECT", "db_project_name 为空，无法定位 DB 工程")
+
+    if raw in SOURCES:
+        base = SOURCES[raw]
+        return {
+            "source": raw,
+            "base_url": base,
+            "project_url": None,
+            "normalized": raw,
+        }
+
+    if raw.startswith("http://") or raw.startswith("https://"):
+        url = _ensure_trailing_slash(raw)
+        return {
+            "source": url,
+            "base_url": url,
+            "project_url": url,
+            "normalized": url,
+        }
+
+    lan = _lan_to_http(raw)
+    if lan:
+        return {
+            "source": lan,
+            "base_url": lan,
+            "project_url": lan,
+            "normalized": lan,
+        }
+
+    # 相对工程名 / 多级相对路径
+    base = _xos_base_url()
+    rel = raw.strip("/")
+    project_url = base + rel + "/"
+    return {
+        "source": "daily",
+        "base_url": base,
+        "project_url": project_url,
+        "normalized": rel,
+    }
+
+
+def parse_feature_filter(raw) -> list[str]:
+    """解析 feature_filter（JSON 数组或逗号分隔）为非空关键字列表。"""
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    text = str(raw).strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            data = None
+        if isinstance(data, list):
+            return [str(x).strip() for x in data if str(x).strip()]
+    return [p.strip() for p in re.split(r"[,;]+", text) if p.strip()]
+
+
+def matches_features(name: str, features: list[str] | None) -> bool:
+    """目录名/包名是否包含全部 feature 关键字（AND，大小写不敏感）。"""
+    if not features:
+        return True
+    lower = (name or "").lower()
+    return all(f.lower() in lower for f in features if f)
+
+
+def _tokenize_name(name: str) -> list[str]:
+    parts = [p for p in _FEATURE_SPLIT_RE.split(name or "") if p]
+    out = []
+    for p in parts:
+        if p.isdigit():
+            continue
+        if _DATE_TOKEN_RE.match(p):
+            continue
+        out.append(p)
+    return out
 
 
 # ---------------- HTTP 基础 ----------------
@@ -173,15 +317,92 @@ def find_versions(project_url: str, version: int | None = None) -> dict:
     return {"selected": top, "version_url": project_url + f"{top}/", "strategy": "binary_search"}
 
 
-def list_packages(version_url: str) -> list[dict]:
-    version_url = version_url if version_url.endswith("/") else version_url + "/"
+def list_version_features(project_url: str) -> dict:
+    """列出工程下版本子目录并提炼特征词（剔除日期与纯数字版本 token）。
+
+    返回 {features:[{name,count,dirs}], versions:[...]}。
+    """
+    project_url = _ensure_trailing_slash(project_url)
+    entries = _entries(project_url)
+    versions = sorted(
+        {e["name"] for e in entries if e["is_dir"] and not e["name"].startswith(".")}
+    )
+    stats: dict[str, dict] = {}
+    for name in versions:
+        for tok in _tokenize_name(name):
+            key = tok.lower()
+            bucket = stats.setdefault(key, {"name": tok, "count": 0, "dirs": []})
+            bucket["count"] += 1
+            if name not in bucket["dirs"]:
+                bucket["dirs"].append(name)
+    features = sorted(stats.values(), key=lambda x: (-x["count"], x["name"].lower()))
+    return {"features": features, "versions": versions}
+
+
+def filter_version_dirs(
+    dirs: list[str], features: list[str] | None = None
+) -> list[str]:
+    """按 feature 关键字（AND）过滤版本目录名。"""
+    if not features:
+        return list(dirs)
+    return [d for d in dirs if matches_features(d, features)]
+
+
+def select_best_package(packages: list[dict]) -> dict | None:
+    """同版本多包时优先 debug，否则选体积最大（无 size 时退回首个）。
+
+    规则对齐 dbxostest.select_best_package / 服务端列表选型。
+    """
+    if not packages:
+        return None
+    if len(packages) == 1:
+        return packages[0]
+    debug = [p for p in packages if "debug" in (p.get("name") or "").lower()]
+    if debug:
+        return debug[0]
+    sized = [p for p in packages if isinstance(p.get("size"), int)]
+    if sized:
+        return max(sized, key=lambda p: int(p["size"]))
+    return packages[0]
+
+
+def list_packages(
+    version_url: str,
+    features: list[str] | None = None,
+    *,
+    select_best: bool = False,
+) -> list[dict]:
+    """列出版本目录下 CURRENT*.tar.gz；可按 feature 过滤；可选只返回最佳包。
+
+    select_best=True 时返回单元素列表（debug 优先，否则最大包），对齐 dbxostest。
+    """
+    version_url = _ensure_trailing_slash(version_url)
+    html = _http(version_url)
+    sizes: dict[str, int] = {}
+    for name, size_s in _SIZE_RE.findall(html):
+        try:
+            sizes[name.rstrip("/")] = int(size_s)
+        except ValueError:
+            pass
+
     out = []
-    for e in _entries(version_url):
-        if not e["is_dir"] and PACKAGE_RE.search(e["name"]):
-            furl = version_url + e["href"]
-            out.append({"name": e["name"], "url": furl})
+    for href in _HREF_RE.findall(html):
+        if href in ("../", "./", "/") or href.startswith("?") or href.endswith("/"):
+            continue
+        name = href.rstrip("/")
+        if not PACKAGE_RE.search(name):
+            continue
+        if not matches_features(name, features):
+            continue
+        item = {"name": name, "url": version_url + href}
+        if name in sizes:
+            item["size"] = sizes[name]
+        out.append(item)
     if not out:
         raise DomainError("NO_PACKAGE", f"版本目录无 CURRENT*.tar.gz：{version_url}")
+    if select_best:
+        best = select_best_package(out)
+        return [best] if best else out
     return out
 
 

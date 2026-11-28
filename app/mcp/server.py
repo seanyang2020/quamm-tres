@@ -101,6 +101,8 @@ def res_product_types(include_disabled: bool = False) -> list[dict]:
                 counts["total"] += 1
                 if d.status in counts:
                     counts[d.status] += 1
+            from app import db_source as _dbs
+
             out.append(
                 {
                     "type_code": pt.type_code,
@@ -113,6 +115,13 @@ def res_product_types(include_disabled: bool = False) -> list[dict]:
                     "model_pattern": pt.model_pattern,
                     "defconfig": pt.defconfig,
                     "db_project_name": getattr(pt, "db_project_name", None),
+                    "flash_method": catalog.normalize_flash_method(
+                        getattr(pt, "flash_method", None)
+                    ),
+                    "feature_filter": _dbs.parse_feature_filter(
+                        getattr(pt, "feature_filter", None)
+                    )
+                    or None,
                     "devices": counts,
                 }
             )
@@ -135,8 +144,9 @@ def res_product_type_upsert(
     sdk_repo_cmd: str | None = None,
     build_cmd: str | None = None,
     image_path: str | None = None,
-    jenkins_url: str | None = None,
     db_project_name: str | None = None,
+    flash_method: str | None = None,
+    feature_filter: str | None = None,
     notes: str | None = None,
     chip_model: str | None = None,
     float_abi: str | None = None,
@@ -148,7 +158,8 @@ def res_product_type_upsert(
 
     已存在的 type_code 视为更新，不存在则新增。new_type_code 用于改主键：
     会级联迁移已有设备的 model_class、刷机任务与排队记录，再删旧行。
-    品类决定申请时的 product_type 池，也决定 Web 品类页入口。
+    flash_method: db|image|unsupported；feature_filter 为 JSON 数组或逗号分隔关键字；
+    db_project_name 支持工程名/相对路径/URL/局域网地址（保存前归一化）。
     """
     from app.models import ProductType, FlashJob, QueueEntry
 
@@ -190,8 +201,6 @@ def res_product_type_upsert(
             ("sdk_repo_cmd", sdk_repo_cmd),
             ("build_cmd", build_cmd),
             ("image_path", image_path),
-            ("jenkins_url", jenkins_url),
-            ("db_project_name", db_project_name),
             ("notes", notes),
             ("chip_model", chip_model),
             ("float_abi", float_abi),
@@ -199,6 +208,12 @@ def res_product_type_upsert(
         ):
             if value is not None:
                 setattr(pt, field, value)
+        if db_project_name is not None:
+            pt.db_project_name = catalog.normalize_db_project_name(db_project_name)
+        if flash_method is not None:
+            pt.flash_method = catalog.normalize_flash_method(flash_method)
+        if feature_filter is not None:
+            pt.feature_filter = catalog.normalize_feature_filter(feature_filter)
         if has_fpu is not None:
             pt.has_fpu = bool(has_fpu)
         session.flush()
@@ -636,7 +651,8 @@ def res_device_reprobe(device_id: str) -> dict:
 def res_firmware_versions(product_type: str, limit: int = 20) -> dict:
     """列出机型在 DB 服务器上的可用固件版本（按构建时间倒序）。
 
-    数据源与 dbxostest 相同：Daily/XOS/<db_project_name>/ 的版本目录。
+    经 normalize_project_spec 解析 db_project_name；按机型 feature_filter（AND）过滤。
+    额外返回 features（特征词及命中目录数），供前端/Agent 配置过滤关键字。
     机型未配置 db_project_name -> PRODUCT_NO_DB_PROJECT；服务器不可达 -> SOURCE_UNAVAILABLE。
     """
     return _guard_ro(flash.list_versions, product_type=product_type, limit=limit)
@@ -648,7 +664,7 @@ def res_flash(
     version: str | None = None,
     preserve_data: bool = True,
     confirm_erase_data: bool = False,
-    source: str = "db",
+    source: str | None = None,
     build_server_id: str | None = None,
     image_mode: str | None = None,
     script_ini: str | None = None,
@@ -657,13 +673,15 @@ def res_flash(
     image_name: str | None = None,
     image_sha256: str | None = None,
 ) -> dict:
-    """异步刷机：默认 source=db 从 201 拉包；也可 local / build_server 直刷本地或编译机镜像。
+    """异步刷机。source 缺省按机型 flash_method 自动路由；也可显式 db/local/build_server。
 
     - 仅 GRANTED 租约、仅租约持有人（或管理员）
     - preserve_data=True（默认）保留 data 分区；False 必须同时 confirm_erase_data=True
-    - source=db：version 为空取最新；返回 mode=server_db
+    - source=None（缺省）：flash_method=db→DB 升级；image→编译机镜像（build_server_id+image_path）；
+      unsupported→FLASH_UNSUPPORTED
+    - source=db：version 为空取最新（已按 feature_filter）；返回 mode=server_db
     - source=local：不启服务端线程，返回 WAITING_AGENT + command_argv，Agent 刷完调 res_flash_report
-    - source=build_server：SSH 到已登记编译机执行 xosadb2update（镜像不经 201）；缺工具 -> RUNNER_TOOL_MISSING
+    - source=build_server：SSH 到已登记编译机执行 xosadb2update；缺工具 -> RUNNER_TOOL_MISSING
     - image_mode=script 需 script_ini；partition 需 partition+file_path
     - 同一租约已有 QUEUED/RUNNING/WAITING_AGENT 任务 -> FLASH_IN_PROGRESS
     """

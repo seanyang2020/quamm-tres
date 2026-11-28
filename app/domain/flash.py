@@ -1,9 +1,11 @@
-"""固件下载 / 刷机（v0.14）。
+"""固件下载 / 刷机（v0.14 / flash-unified）。
 
 复用现成工具，不重新发明刷写协议：
-- 版本来源：HTTP 目录 `http://172.16.1.201/Daily/XOS/<db_project_name>/`（dbxostest 同一源）
-- 刷机执行：`python3 dbxostest.py -t <project> -i <ip> -v <version> -u "-f -a -e data" ...`
-  （dbxostest 内部调用 xosadb2update；preserve_data=True 必带 `-e data`）
+- 版本来源：经 ``db_source.normalize_project_spec`` 解析机型 ``db_project_name``
+  （工程名 / 相对路径 / URL / 局域网地址）→ Daily/XOS/<project>/
+- DB 刷机：``db_source`` 下载包 + 解压定位 script.ini + ``xosadb2update -f -a [-e data]``
+- 镜像刷机：编译机 SSH 执行 xosadb2update（flash_method=image / source=build_server）
+- 缺省 source 按机型 flash_method 自动路由（db / image / unsupported）
 
 刷机 5-15 分钟，必须异步：MCP 调用只落一条 flash_job（QUEUED）并起后台线程，
 线程内 QUEUED -> RUNNING -> SUCCEEDED / FAILED，状态与日志全部落库/落盘，
@@ -34,6 +36,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
+from app import db_source
 from app.config import settings
 from app.constants import LeaseState
 from app.db import SessionLocal
@@ -55,6 +58,11 @@ SOURCE_DB = "db"
 SOURCE_LOCAL = "local"
 SOURCE_BUILD_SERVER = "build_server"
 _VALID_SOURCES = (SOURCE_DB, SOURCE_LOCAL, SOURCE_BUILD_SERVER)
+
+FLASH_METHOD_DB = "db"
+FLASH_METHOD_IMAGE = "image"
+FLASH_METHOD_UNSUPPORTED = "unsupported"
+_VALID_FLASH_METHODS = (FLASH_METHOD_DB, FLASH_METHOD_IMAGE, FLASH_METHOD_UNSUPPORTED)
 
 EXECUTOR_SERVER = "server"
 EXECUTOR_AGENT = "agent"
@@ -80,10 +88,10 @@ _VERSION_STATE_INCOMPATIBLE = "INCOMPATIBLE"
 _VERSION_STATE_UPGRADE = "UPGRADE_REQUIRED"
 _VERSION_STATE_PATCH_BEHIND = "PATCH_BEHIND"
 
-# 目录列表形如：<a href="236/">236/</a>   07-Nov-2026 19:01       -
+# 目录列表：数字或带特征后缀（236 / 236_4M_release）；构建时间可选
 _LISTING_RE = re.compile(
-    r'<a href="(\d+)/">[^<]*</a>\s*'
-    r"(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2})"
+    r'<a href="([^"/]+)/">[^<]*</a>\s*'
+    r"(\d{2}-[A-Za-z]{3}-\d{4} \d{2}:\d{2})?"
 )
 # V1.00.01.236 / 1.0.0 / 1.2.3.4（第 4 段是 build，不参与 semver 门槛）。
 # 必须至少 major.minor，纯 build 号（如 "154"）不算 semver，按 UNKNOWN_VERSION 处理。
@@ -172,13 +180,18 @@ def _http_get(url: str, timeout: int | None = None) -> str:
 
 def _parse_listing(html: str, base_url: str) -> list[dict]:
     """解析 Apache 目录列表 -> [{version, url, build_time}]。"""
+    base = base_url.rstrip("/")
     versions: list[dict] = []
+    seen: set[str] = set()
     for version, build_time in _LISTING_RE.findall(html):
+        if version in (".", "..") or version in seen:
+            continue
+        seen.add(version)
         versions.append(
             {
                 "version": version,
-                "url": f"{base_url}/{version}/",
-                "build_time": build_time,
+                "url": f"{base}/{version}/",
+                "build_time": build_time or "",
             }
         )
     return versions
@@ -187,10 +200,13 @@ def _parse_listing(html: str, base_url: str) -> list[dict]:
 def _sort_versions(versions: list[dict]) -> None:
     def key(item: dict):
         try:
-            ts = datetime.strptime(item["build_time"], "%d-%b-%Y %H:%M").timestamp()
+            ts = datetime.strptime(item.get("build_time") or "", "%d-%b-%Y %H:%M").timestamp()
         except (ValueError, KeyError):
             ts = 0.0
-        return (ts, int(item["version"]))
+        name = str(item.get("version") or "")
+        m = re.match(r"^(\d+)", name)
+        num = int(m.group(1)) if m else 0
+        return (ts, num, name)
 
     versions.sort(key=key, reverse=True)
 
@@ -206,8 +222,28 @@ def _require_project(product: ProductType) -> str:
     return project
 
 
-def _fetch_versions(project: str) -> list[dict]:
-    url = f"{settings.xos_base_url.rstrip('/')}/{project}/"
+def _project_url(project: str) -> tuple[str, dict]:
+    """经 normalize_project_spec 得到工程 URL 与归一化结果。"""
+    norm = db_source.normalize_project_spec(project)
+    url = norm.get("project_url") or norm.get("base_url")
+    if not url:
+        raise DomainError(
+            "PRODUCT_NO_DB_PROJECT",
+            f"无法从 db_project_name={project!r} 解析工程目录",
+        )
+    return url, norm
+
+
+def _product_features(product: ProductType | None) -> list[str]:
+    if product is None:
+        return []
+    return db_source.parse_feature_filter(getattr(product, "feature_filter", None))
+
+
+def _fetch_versions(
+    project: str, features: list[str] | None = None
+) -> list[dict]:
+    url, _norm = _project_url(project)
     try:
         html = _http_get(url)
     except urllib.error.HTTPError as e:
@@ -225,6 +261,8 @@ def _fetch_versions(project: str) -> list[dict]:
             "SOURCE_UNAVAILABLE", f"DB 服务器不可达：{e}", {"url": url}
         ) from e
     versions = _parse_listing(html, url.rstrip("/"))
+    if features:
+        versions = [v for v in versions if db_source.matches_features(v["version"], features)]
     _sort_versions(versions)
     return versions
 
@@ -234,25 +272,38 @@ def list_versions(session: Session, product_type: str, limit: int = 20) -> dict:
     if product is None:
         raise DomainError("UNKNOWN_TARGET", f"机型 {product_type} 不存在于机型字典")
     project = _require_project(product)
-    versions = _fetch_versions(project)
+    features = _product_features(product)
+    versions = _fetch_versions(project, features=features)
+    url, norm = _project_url(project)
+    try:
+        feat_info = db_source.list_version_features(url)
+    except DomainError:
+        feat_info = {"features": [], "versions": []}
     return {
         "product_type": product_type,
         "db_project_name": project,
+        "normalized": norm.get("normalized"),
+        "project_url": url,
+        "feature_filter": features,
+        "features": feat_info.get("features") or [],
         "count": len(versions),
         "versions": versions[: max(1, int(limit))],
     }
 
 
 def latest_version(session: Session, product_type: str) -> str:
-    """取该机型最新版本号；供 res_flash(version=None) 与刷机线程共用。"""
+    """取该机型最新版本号（已按 feature_filter 过滤）；供 res_flash 与刷机线程共用。"""
     product = session.get(ProductType, product_type)
     if product is None:
         raise DomainError("UNKNOWN_TARGET", f"机型 {product_type} 不存在于机型字典")
-    versions = _fetch_versions(_require_project(product))
+    project = _require_project(product)
+    features = _product_features(product)
+    versions = _fetch_versions(project, features=features)
     if not versions:
         raise DomainError(
             "NO_FIRMWARE_VERSION",
-            f"工程 {_require_project(product)} 下没有可用版本目录",
+            f"工程 {project} 下没有可用版本目录"
+            + (f"（feature_filter={features}）" if features else ""),
         )
     return versions[0]["version"]
 
@@ -280,28 +331,8 @@ def _job_work_dir(job_id: str) -> Path:
     return path
 
 
-def _build_command(project: str, ip: str, version: str, preserve_data: bool, log_path: str) -> list[str]:
-    # -e data 排除 data 分区（保留用户数据）。erase 模式去掉该参数，其余不变。
-    update_args = "-f -a -e data" if preserve_data else "-f -a"
-    return [
-        settings.python_bin,
-        settings.dbxostest_path,
-        "-t",
-        project,
-        "-i",
-        ip,
-        "-v",
-        str(version),
-        # argparse 会把以 '-' 开头的独立值当成选项，必须用 --opt=value 形式透传
-        f"--update-args={update_args}",
-        "-f",
-        "--log",
-        log_path,
-    ]
-
-
 def _execute(cmd: list[str], log_path: str, timeout: int, cwd: Path) -> tuple[int, str]:
-    """跑 dbxostest；stdout/stderr 兜底写日志（正常时 dbxostest 自己写 --log）。
+    """通用子进程执行（保留供单测与兜底）；stdout/stderr 写入 log_path。
 
     cwd 必须是该 job 的独立工作目录（见 `_job_work_dir`），不可再共用全局 flash_work_dir。
     """
@@ -317,7 +348,7 @@ def _execute(cmd: list[str], log_path: str, timeout: int, cwd: Path) -> tuple[in
     except subprocess.TimeoutExpired:
         return 124, f"刷机超时（>{timeout}s）"
     except (FileNotFoundError, OSError) as e:
-        return 127, f"无法启动 dbxostest：{e}"
+        return 127, f"无法启动进程：{e}"
 
     output = (proc.stdout or "") + (proc.stderr or "")
     log_file = Path(log_path)
@@ -347,11 +378,84 @@ def _read_flashed_version(ip: str, port: int) -> str | None:
     return None
 
 
+def _run_db_upgrade(
+    *,
+    product: ProductType,
+    device_ip: str,
+    version: str,
+    preserve_data: bool,
+    log_path: str | None,
+    job_cwd: Path,
+) -> tuple[bool, str]:
+    """经 db_source 下载/解压/upgrade；返回 (ok, output_or_error)。"""
+    project = _require_project(product)
+    features = _product_features(product)
+    project_url, norm = _project_url(project)
+    update_args = "-f -a -e data" if preserve_data else "-f -a"
+    _append_log(
+        log_path,
+        f"normalize={norm.get('normalized')} project_url={project_url} "
+        f"version={version} features={features} update_args={update_args}",
+    )
+
+    # 工作目录切到 job cwd，下载落到此树下（与 discard/cleanup 对齐）
+    old_root = db_source.WORK_ROOT
+    db_source.WORK_ROOT = job_cwd / "db_source"
+    package_path = None
+    extract_dir = None
+    try:
+        try:
+            db_source.prune_work_root()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("flash db prune failed: %s", e)
+
+        version_url = db_source._ensure_trailing_slash(project_url) + str(version).strip("/") + "/"
+        if not db_source.url_ok(version_url):
+            raise DomainError("VERSION_NOT_FOUND", f"版本目录不可达：{version_url}")
+
+        pkgs = db_source.list_packages(
+            version_url, features=features, select_best=True
+        )
+        pkg = pkgs[0]
+        _append_log(log_path, f"selected_package={pkg.get('name')} url={pkg.get('url')}")
+
+        label = f"{job_cwd.name}"
+        dl = db_source.download_package(pkg["url"], label)
+        package_path = dl.get("package")
+        _append_log(log_path, f"downloaded size={dl.get('size')} path={package_path}")
+
+        ex = db_source.extract_and_find_ini(dl["package"])
+        extract_dir = ex.get("extract_dir")
+        script_ini = ex["script_ini"]
+        _append_log(log_path, f"script_ini={script_ini}")
+
+        result = db_source.upgrade(
+            device_ip,
+            script_ini,
+            update_args=update_args,
+            timeout=settings.flash_timeout_seconds,
+        )
+        tail = result.get("output_tail") or ""
+        _append_log(log_path, tail)
+        return True, tail
+    except DomainError as e:
+        msg = f"{e.code}: {e.message}"
+        _append_log(log_path, msg)
+        return False, msg
+    finally:
+        try:
+            db_source.discard_work(package_path, extract_dir)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("flash discard_work failed: %s", e)
+        db_source.WORK_ROOT = old_root
+
+
 def _run_job(job_id: str) -> None:
     """后台线程主流程：QUEUED -> RUNNING -> SUCCEEDED / FAILED。
 
     每个 job 使用独立工作目录（jobs/<job_id>/），结束后整目录删除；
     日志在 var/flash/logs/<job_id>.log，不随工作目录清理。
+    DB 升级走 db_source.download + extract + upgrade（不再调外部 dbxostest.py）。
     """
     job_cwd: Path | None = None
     session = SessionLocal()
@@ -379,19 +483,23 @@ def _run_job(job_id: str) -> None:
             job.version = latest_version(session, product.type_code)
             session.commit()
 
-        cmd = _build_command(
-            _require_project(product),
-            device.ip,
+        logger.info(
+            "flash job %s start cwd=%s version=%s ip=%s",
+            job_id,
+            job_cwd,
             job.version,
-            job.preserve_data,
-            job.log_path or "",
+            device.ip,
         )
-        logger.info("flash job %s start cwd=%s: %s", job_id, job_cwd, " ".join(cmd))
-        rc, output = _execute(
-            cmd, job.log_path or "", settings.flash_timeout_seconds, cwd=job_cwd
+        ok, output = _run_db_upgrade(
+            product=product,
+            device_ip=device.ip,
+            version=str(job.version),
+            preserve_data=bool(job.preserve_data),
+            log_path=job.log_path,
+            job_cwd=job_cwd,
         )
 
-        if rc == 0:
+        if ok:
             flashed = _read_flashed_version(device.ip, device.adb_port or 5555)
             # 回读失败（设备重启未就绪）时退化为刚刷的目录版本号
             device.firmware_version = flashed or str(job.version)
@@ -399,7 +507,7 @@ def _run_job(job_id: str) -> None:
             job.error = None
         else:
             job.status = STATUS_FAILED
-            job.error = _tail_error(output) or f"dbxostest 退出码 {rc}"
+            job.error = _tail_error(output) or output[:2000] or "DB 升级失败"
         job.finished_at = utcnow()
         session.commit()
         logger.info("flash job %s finished: %s", job_id, job.status)
@@ -825,6 +933,30 @@ def _assert_no_active_job(session: Session, lease_id: str) -> None:
         )
 
 
+def _resolve_flash_method(product: ProductType | None) -> str:
+    method = (
+        (getattr(product, "flash_method", None) or FLASH_METHOD_DB)
+        if product is not None
+        else FLASH_METHOD_DB
+    )
+    method = str(method).strip().lower() or FLASH_METHOD_DB
+    if method not in _VALID_FLASH_METHODS:
+        return FLASH_METHOD_DB
+    return method
+
+
+def _image_script_ini_from_product(product: ProductType) -> str | None:
+    """机型 image_path → script_ini；目录则补 /script.ini。"""
+    raw = (product.image_path or "").strip()
+    if not raw:
+        return None
+    if raw.lower().endswith("script.ini"):
+        return raw
+    if raw.endswith("/") or raw.lower().endswith("qmimages"):
+        return raw.rstrip("/") + "/script.ini"
+    return raw
+
+
 def start_flash(
     session: Session,
     auth: AuthContext,
@@ -832,7 +964,7 @@ def start_flash(
     version: str | None = None,
     preserve_data: bool = True,
     confirm_erase_data: bool = False,
-    source: str = SOURCE_DB,
+    source: str | None = None,
     build_server_id: str | None = None,
     image_mode: str | None = None,
     script_ini: str | None = None,
@@ -841,17 +973,58 @@ def start_flash(
     image_name: str | None = None,
     image_sha256: str | None = None,
 ) -> dict:
-    src = (source or SOURCE_DB).strip().lower()
+    _lease, device = _assert_lease_flashable(
+        session, auth, lease_id, preserve_data, confirm_erase_data
+    )
+    _assert_no_active_job(session, lease_id)
+
+    product = (
+        session.get(ProductType, device.model_class) if device.model_class else None
+    )
+
+    # source 缺省：按机型 flash_method 自动路由
+    if source is None or str(source).strip() == "":
+        method = _resolve_flash_method(product)
+        if method == FLASH_METHOD_UNSUPPORTED:
+            raise DomainError(
+                "FLASH_UNSUPPORTED",
+                f"机型 {getattr(product, 'type_code', device.model_class)} "
+                f"flash_method=unsupported，不支持远程升级",
+            )
+        if method == FLASH_METHOD_IMAGE:
+            if product is None:
+                raise DomainError(
+                    "FLASH_UNSUPPORTED",
+                    f"设备 {device.device_id} 未关联机型，无法按 image 升级",
+                )
+            return _start_build_server(
+                session,
+                auth,
+                lease_id,
+                device,
+                preserve_data=preserve_data,
+                build_server_id=build_server_id or product.build_server_id,
+                image_mode=image_mode or IMAGE_MODE_SCRIPT,
+                script_ini=script_ini or _image_script_ini_from_product(product),
+                partition=partition,
+                file_path=file_path,
+                image_name=image_name,
+                image_sha256=image_sha256,
+            )
+        return _start_db(
+            session,
+            lease_id,
+            device,
+            version=version,
+            preserve_data=preserve_data,
+        )
+
+    src = str(source).strip().lower()
     if src not in _VALID_SOURCES:
         raise DomainError(
             "INVALID_SOURCE",
             f"source 仅支持 {'|'.join(_VALID_SOURCES)}，收到：{source}",
         )
-
-    _lease, device = _assert_lease_flashable(
-        session, auth, lease_id, preserve_data, confirm_erase_data
-    )
-    _assert_no_active_job(session, lease_id)
 
     if src == SOURCE_LOCAL:
         return _start_local(
@@ -1279,4 +1452,7 @@ def firmware_status(session: Session, device_id: str) -> dict:
         "reason": verdict["reason"],
         "recommendation": verdict["recommendation"],
         "state": verdict["state"],
+        "flash_method": _resolve_flash_method(product),
+        "feature_filter": _product_features(product) or None,
+        "db_project_name": getattr(product, "db_project_name", None) if product else None,
     }

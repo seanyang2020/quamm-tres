@@ -1276,8 +1276,8 @@ def _product_int(value, default: int, minimum: int = 0, maximum: int | None = No
 
 
 def _apply_product_eng_fields(pt: ProductType, payload: dict) -> None:
-    """工程/编译/能力元数据：6 个自由文本 + 芯片型号/浮点 ABI/FPU。"""
-    for field in ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "jenkins_url", "notes"):
+    """工程/编译/能力元数据：自由文本 + 芯片型号/浮点 ABI/FPU + 升级链路字段。"""
+    for field in ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path", "notes"):
         if field in payload:
             value = payload[field]
             setattr(pt, field, (str(value).strip() if value is not None else None) or None)
@@ -1289,6 +1289,10 @@ def _apply_product_eng_fields(pt: ProductType, payload: dict) -> None:
         pt.float_abi = value if value in ("hard", "soft", "auto") else "auto"
     if "has_fpu" in payload:
         pt.has_fpu = _product_flag(payload["has_fpu"])
+    if "flash_method" in payload:
+        pt.flash_method = catalog.normalize_flash_method(payload.get("flash_method"))
+    if "feature_filter" in payload:
+        pt.feature_filter = catalog.normalize_feature_filter(payload.get("feature_filter"))
 
 
 def _derived_override(pt: "ProductType", payload: dict) -> None:
@@ -1299,13 +1303,24 @@ def _derived_override(pt: "ProductType", payload: dict) -> None:
     否则派生出来的机型还得手工一项项补（v0.28.7 的实现就是被空值覆盖）。
     """
     text_fields = ("defconfig", "sdk_repo_cmd", "build_cmd", "image_path",
-                   "jenkins_url", "notes", "model_pattern", "db_project_name")
+                   "notes", "model_pattern", "db_project_name")
     for field in text_fields:
         if field in payload:
             value = payload[field]
             text = (str(value).strip() if value is not None else "")
             if text:
-                setattr(pt, field, text)
+                if field == "db_project_name":
+                    pt.db_project_name = catalog.normalize_db_project_name(text)
+                else:
+                    setattr(pt, field, text)
+    if "flash_method" in payload:
+        text = str(payload.get("flash_method") or "").strip()
+        if text:
+            pt.flash_method = catalog.normalize_flash_method(text)
+    if "feature_filter" in payload:
+        ff = catalog.normalize_feature_filter(payload.get("feature_filter"))
+        if ff:
+            pt.feature_filter = ff
     if "chip_model" in payload:
         value = payload["chip_model"]
         text = (str(value).strip() if value is not None else "")
@@ -1365,7 +1380,11 @@ def _apply_product_basic_fields(pt: ProductType, payload: dict) -> None:
         pt.model_pattern = (str(value).strip() if value is not None else None) or None
     if "db_project_name" in payload:
         value = payload["db_project_name"]
-        pt.db_project_name = (str(value).strip() if value is not None else None) or None
+        pt.db_project_name = catalog.normalize_db_project_name(value)
+    if "flash_method" in payload:
+        pt.flash_method = catalog.normalize_flash_method(payload.get("flash_method"))
+    if "feature_filter" in payload:
+        pt.feature_filter = catalog.normalize_feature_filter(payload.get("feature_filter"))
     for field in ("required_major", "required_minor", "required_patch"):
         if field in payload:
             setattr(pt, field, _product_int(payload[field], getattr(pt, field), 0, 9999))
@@ -1378,6 +1397,65 @@ def _apply_product_basic_fields(pt: ProductType, payload: dict) -> None:
 def list_product_types(session: Session = Depends(get_session)):
     """设备类型完整列表（含 6 个元数据字段 + 完整度标签），供设置页「设备类型」Tab。"""
     return catalog.list_products(session)
+
+
+@router.get("/product-types/db-features")
+def probe_product_type_db_features(spec: str = ""):
+    """探测 DB 工程版本目录特征词，供机型表单勾选 feature_filter。
+
+    始终 HTTP 200：成功 error=null；解析/探测失败返回可读中文 error，不抛 500。
+    须注册在 /product-types/{type_code} 之前，避免被当成 type_code。
+    """
+    from app import db_source
+
+    empty = {
+        "error": None,
+        "normalized": None,
+        "project_url": None,
+        "features": [],
+        "versions": [],
+    }
+    try:
+        norm = db_source.normalize_project_spec(spec)
+    except DomainError as e:
+        return {**empty, "error": e.message}
+    except Exception as e:  # noqa: BLE001 — 前端探测入口，吞异常换可读 error
+        return {**empty, "error": f"解析 DB 路径失败：{e}"}
+
+    url = norm.get("project_url") or norm.get("base_url")
+    if not url:
+        return {
+            **empty,
+            "error": "无法解析出可探测的工程 URL",
+            "normalized": norm.get("normalized"),
+        }
+
+    try:
+        info = db_source.list_version_features(url)
+    except DomainError as e:
+        return {
+            "error": e.message,
+            "normalized": norm.get("normalized"),
+            "project_url": url,
+            "features": [],
+            "versions": [],
+        }
+    except Exception as e:  # noqa: BLE001
+        return {
+            "error": f"探测失败：{e}",
+            "normalized": norm.get("normalized"),
+            "project_url": url,
+            "features": [],
+            "versions": [],
+        }
+
+    return {
+        "normalized": norm.get("normalized"),
+        "project_url": url,
+        "features": info.get("features") or [],
+        "versions": info.get("versions") or [],
+        "error": None,
+    }
 
 
 @router.get("/product-types/{type_code}")
@@ -1526,7 +1604,9 @@ def add_product_type(
         enabled=True,
         model_pattern=payload.get("model_pattern"),
         chip_model=(str(chip_model).strip() or None) if chip_model is not None else None,
-        db_project_name=(str(db_project_name).strip() or None) if db_project_name is not None else None,
+        db_project_name=catalog.normalize_db_project_name(db_project_name),
+        flash_method=catalog.normalize_flash_method(payload.get("flash_method")),
+        feature_filter=catalog.normalize_feature_filter(payload.get("feature_filter")),
         float_abi=fa,
         has_fpu=has_fpu,
         created_at=utcnow(),

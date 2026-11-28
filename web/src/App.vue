@@ -885,7 +885,12 @@ watch(
 
 const productTypes = ref([])
 const ptEditDialog = ref(false)
-const ptEditRow = ref({ type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555, model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '', chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '' })
+const ptEditRow = ref({
+  type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1, adb_port: 5555,
+  model_pattern: '', defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', notes: '',
+  chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, new_type_code: '',
+  flash_method: 'db', feature_filter: [], db_project_name: '', db_features: [], db_probing: false,
+})
 
 // v0.16：版本/术语说明移入设置页「关于」；版本信息仍在挂载时加载
 const versionInfo = ref(null)
@@ -897,8 +902,9 @@ const ptCreateSaving = ref(false)
 const ptCreateRow = ref({
   type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
   adb_port: 5555, model_pattern: '',
-  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+  defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', notes: '',
   chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
+  flash_method: 'db', feature_filter: [], db_project_name: '', db_features: [], db_probing: false,
 })
 const ptCreateTitle = ref('新增机型')
 const ptCreateRules = computed(() => {
@@ -908,9 +914,50 @@ const ptCreateRules = computed(() => {
     : {
         type_code: [{ required: true, message: 'type_code 必填', trigger: 'blur' }],
         defconfig: [req], sdk_repo_cmd: [req], build_cmd: [req],
-        image_path: [req], jenkins_url: [req],
+        image_path: [req],
       }
 })
+function parseFeatureFilter(raw) {
+  if (Array.isArray(raw)) return raw.map((x) => String(x).trim()).filter(Boolean)
+  if (raw == null || raw === '') return []
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed.map((x) => String(x).trim()).filter(Boolean)
+    } catch (e) { /* 失败回退空数组 */ }
+    return []
+  }
+  return []
+}
+function ptFlashPayload(row) {
+  const dbName = (row.db_project_name || '').trim()
+  const ff = Array.isArray(row.feature_filter) ? row.feature_filter.filter(Boolean) : []
+  return {
+    flash_method: row.flash_method || 'db',
+    db_project_name: dbName || null,
+    feature_filter: ff.length ? JSON.stringify(ff) : null,
+  }
+}
+async function probeDbFeatures(targetRow) {
+  const spec = (targetRow.db_project_name || '').trim()
+  if (!spec) { ElMessage.warning('请先填写 DB 路径'); return }
+  targetRow.db_probing = true
+  try {
+    const r = await api('/api/product-types/db-features?spec=' + encodeURIComponent(spec))
+    if (r && r.error) {
+      ElMessage.error(r.error)
+      targetRow.db_features = []
+      return
+    }
+    targetRow.db_features = (r && Array.isArray(r.features)) ? r.features : []
+    ElMessage.success('探测到 ' + targetRow.db_features.length + ' 个候选特征')
+  } catch (e) {
+    ElMessage.error(e.message)
+    targetRow.db_features = []
+  } finally {
+    targetRow.db_probing = false
+  }
+}
 
 const API_BASE = (import.meta.env.BASE_URL || '/').replace(/\/$/, '')
 // 把相对 BASE_URL（'./' 或 '/quamm/'）拼成绝对地址：公网隧道 / Caddy 子路径下，
@@ -4690,10 +4737,14 @@ function openPtEdit(row) {
     adb_port: row.adb_port || 5555, model_pattern: row.model_pattern || '',
     defconfig: row.defconfig || '', sdk_repo_cmd: row.sdk_repo_cmd || '',
     build_cmd: row.build_cmd || '', image_path: row.image_path || '',
-    jenkins_url: row.jenkins_url || '', notes: row.notes || '',
+    notes: row.notes || '',
     chip_model: row.chip_model || '', float_abi: row.float_abi || 'auto', has_fpu: !!row.has_fpu,
     build_server_id: row.build_server_id || null,
     new_type_code: row.type_code,
+    flash_method: row.flash_method || 'db',
+    feature_filter: parseFeatureFilter(row.feature_filter),
+    db_project_name: row.db_project_name || '',
+    db_features: [], db_probing: false,
   }
   ptEditDialog.value = true
 }
@@ -4711,9 +4762,10 @@ async function savePtEdit() {
         model_pattern: ptEditRow.value.model_pattern,
         defconfig: ptEditRow.value.defconfig, sdk_repo_cmd: ptEditRow.value.sdk_repo_cmd,
         build_cmd: ptEditRow.value.build_cmd, image_path: ptEditRow.value.image_path,
-        jenkins_url: ptEditRow.value.jenkins_url, notes: ptEditRow.value.notes,
+        notes: ptEditRow.value.notes,
         chip_model: ptEditRow.value.chip_model, float_abi: ptEditRow.value.float_abi,
         has_fpu: ptEditRow.value.has_fpu, build_server_id: ptEditRow.value.build_server_id,
+        ...ptFlashPayload(ptEditRow.value),
       }),
     })
     const movedDev = (r && r.moved_devices) || 0
@@ -4750,8 +4802,9 @@ function resetPtCreate() {
   ptCreateRow.value = {
     type_code: '', display_name: '', has_screen: false, has_led: false, serial_count: 1,
     adb_port: 5555, model_pattern: '',
-    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', jenkins_url: '', notes: '',
+    defconfig: '', sdk_repo_cmd: '', build_cmd: '', image_path: '', notes: '',
     chip_model: '', float_abi: 'auto', has_fpu: false, build_server_id: null, copy_from: '',
+    flash_method: 'db', feature_filter: [], db_project_name: '', db_features: [], db_probing: false,
   }
   ptAllowIncomplete.value = false
   ptCreateTitle.value = '新增机型'
@@ -4785,10 +4838,14 @@ async function openPtDerive(row, fromDevice) {
     adb_port: tpl.adb_port || 5555, model_pattern: tpl.model_pattern || '',
     defconfig: tpl.defconfig || '', sdk_repo_cmd: tpl.sdk_repo_cmd || '',
     build_cmd: tpl.build_cmd || '', image_path: tpl.image_path || '',
-    jenkins_url: tpl.jenkins_url || '', notes: tpl.notes || '',
+    notes: tpl.notes || '',
     chip_model: tpl.chip_model || '', float_abi: tpl.float_abi || 'auto',
     has_fpu: !!tpl.has_fpu, build_server_id: tpl.build_server_id || null,
     copy_from: code,
+    flash_method: tpl.flash_method || 'db',
+    feature_filter: parseFeatureFilter(tpl.feature_filter),
+    db_project_name: tpl.db_project_name || '',
+    db_features: [], db_probing: false,
   }
   ptCreateTitle.value = '派生机型（模板 ' + code + '）'
   ptCreateDialog.value = true
@@ -4813,9 +4870,10 @@ async function submitPtCreate() {
         adb_port: row.adb_port, model_pattern: row.model_pattern,
         copy_from: row.copy_from || null,
         defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
-        image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+        image_path: row.image_path, notes: row.notes,
         chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
         build_server_id: row.build_server_id,
+        ...ptFlashPayload(row),
       }),
     }).then((r) => { if (r && r.name_warning) { ElMessage.warning(r.name_warning) } })
     // 派生：后端已在一次请求里整行复制（含工程字段），不用再 PUT；普通新增仍走两步。
@@ -4824,9 +4882,10 @@ async function submitPtCreate() {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           defconfig: row.defconfig, sdk_repo_cmd: row.sdk_repo_cmd, build_cmd: row.build_cmd,
-          image_path: row.image_path, jenkins_url: row.jenkins_url, notes: row.notes,
+          image_path: row.image_path, notes: row.notes,
           chip_model: row.chip_model, float_abi: row.float_abi, has_fpu: row.has_fpu,
           build_server_id: row.build_server_id,
+          ...ptFlashPayload(row),
         }),
       })
     }
@@ -7266,7 +7325,7 @@ const legendRole = [
 
           <el-tab-pane label="设备类型" name="product-types">
             <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px">
-              <h3 style="margin: 0">设备类型元数据（defconfig / SDK / 编译 / 镜像 / Jenkins / 芯片·浮点 / 备注）</h3>
+              <h3 style="margin: 0">设备类型元数据（defconfig / SDK / 编译 / 镜像·升级方式 / 芯片·浮点 / 备注）</h3>
               <el-button v-if="me.role === 'admin'" type="primary" @click="openPtCreate">新增机型</el-button>
             </div>
             <p style="color: #909399">新增机型时 5 个工程字段默认必填；勾选「允许不完整（仅测试）」可放开。无引用时可物理删除（需二次确认）。</p>
@@ -7525,8 +7584,34 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="SDK 获取命令" class="pt-full"><el-input v-model="ptEditRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" class="pt-full"><el-input v-model="ptEditRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
-            <el-form-item label="镜像路径"><el-input v-model="ptEditRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
-            <el-form-item label="Jenkins 链接"><el-input v-model="ptEditRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
+            <el-form-item label="镜像路径">
+              <el-input v-model="ptEditRow.image_path" :placeholder="ptEditRow.flash_method === 'image' ? '编译机上的镜像 script.ini 路径或 qmimages 目录' : 'out/qm10xd_linux/qmimages/'" />
+              <div v-if="ptEditRow.flash_method === 'image'" class="form-hint">镜像升级：填写编译机上的 script.ini 路径或 qmimages 目录。</div>
+            </el-form-item>
+            <el-form-item label="升级方式">
+              <el-select v-model="ptEditRow.flash_method" style="width: 100%">
+                <el-option label="DB 升级（默认）" value="db" />
+                <el-option label="镜像升级" value="image" />
+                <el-option label="不支持远程升级" value="unsupported" />
+              </el-select>
+              <div class="form-hint">决定刷机入口默认走 DB / 镜像，或直接拒绝远程升级。</div>
+            </el-form-item>
+            <el-form-item v-if="ptEditRow.flash_method === 'db'" label="DB 路径" class="pt-full">
+              <div style="display:flex; gap:8px; width:100%">
+                <el-input v-model="ptEditRow.db_project_name" placeholder="工程名 / 相对路径 / http(s) URL / 局域网地址如 \\host\path" style="flex:1" />
+                <el-button :loading="ptEditRow.db_probing" @click="probeDbFeatures(ptEditRow)">探测特征</el-button>
+              </div>
+              <div v-if="ptEditRow.db_features && ptEditRow.db_features.length" style="margin-top:8px">
+                <div class="form-hint" style="margin-bottom:4px">候选特征（AND 过滤版本目录名）：</div>
+                <el-checkbox-group v-model="ptEditRow.feature_filter">
+                  <el-checkbox v-for="f in ptEditRow.db_features" :key="f.name" :label="f.name">
+                    {{ f.name }}（{{ f.count }} 个目录）
+                  </el-checkbox>
+                </el-checkbox-group>
+              </div>
+            </el-form-item>
+            <el-alert v-if="ptEditRow.flash_method === 'unsupported'" type="warning" :closable="false" show-icon style="margin-bottom:10px"
+              title="该机型已标记为不支持远程升级，刷机入口将返回 FLASH_UNSUPPORTED" />
             <el-form-item label="浮点 ABI">
               <el-select v-model="ptEditRow.float_abi" style="width: 100%">
                 <el-option label="auto（探测自动判定）" value="auto" />
@@ -8020,8 +8105,34 @@ const legendRole = [
             </el-form-item>
             <el-form-item label="SDK 获取命令" prop="sdk_repo_cmd" class="pt-full"><el-input v-model="ptCreateRow.sdk_repo_cmd" type="textarea" :rows="2" placeholder="repo init -u http://.../manifest; repo sync -j8" /></el-form-item>
             <el-form-item label="编译命令" prop="build_cmd" class="pt-full"><el-input v-model="ptCreateRow.build_cmd" type="textarea" :rows="2" placeholder="make distclean && make xxx_defconfig && make xos -j8" /></el-form-item>
-            <el-form-item label="镜像路径" prop="image_path"><el-input v-model="ptCreateRow.image_path" placeholder="out/qm10xd_linux/qmimages/" /></el-form-item>
-            <el-form-item label="Jenkins 链接" prop="jenkins_url"><el-input v-model="ptCreateRow.jenkins_url" placeholder="http://.../Daily/XOS/moto_ld_102d/" /></el-form-item>
+            <el-form-item label="镜像路径" prop="image_path">
+              <el-input v-model="ptCreateRow.image_path" :placeholder="ptCreateRow.flash_method === 'image' ? '编译机上的镜像 script.ini 路径或 qmimages 目录' : 'out/qm10xd_linux/qmimages/'" />
+              <div v-if="ptCreateRow.flash_method === 'image'" class="form-hint">镜像升级：填写编译机上的 script.ini 路径或 qmimages 目录。</div>
+            </el-form-item>
+            <el-form-item label="升级方式">
+              <el-select v-model="ptCreateRow.flash_method" style="width: 100%">
+                <el-option label="DB 升级（默认）" value="db" />
+                <el-option label="镜像升级" value="image" />
+                <el-option label="不支持远程升级" value="unsupported" />
+              </el-select>
+              <div class="form-hint">决定刷机入口默认走 DB / 镜像，或直接拒绝远程升级。</div>
+            </el-form-item>
+            <el-form-item v-if="ptCreateRow.flash_method === 'db'" label="DB 路径" class="pt-full">
+              <div style="display:flex; gap:8px; width:100%">
+                <el-input v-model="ptCreateRow.db_project_name" placeholder="工程名 / 相对路径 / http(s) URL / 局域网地址如 \\host\path" style="flex:1" />
+                <el-button :loading="ptCreateRow.db_probing" @click="probeDbFeatures(ptCreateRow)">探测特征</el-button>
+              </div>
+              <div v-if="ptCreateRow.db_features && ptCreateRow.db_features.length" style="margin-top:8px">
+                <div class="form-hint" style="margin-bottom:4px">候选特征（AND 过滤版本目录名）：</div>
+                <el-checkbox-group v-model="ptCreateRow.feature_filter">
+                  <el-checkbox v-for="f in ptCreateRow.db_features" :key="f.name" :label="f.name">
+                    {{ f.name }}（{{ f.count }} 个目录）
+                  </el-checkbox>
+                </el-checkbox-group>
+              </div>
+            </el-form-item>
+            <el-alert v-if="ptCreateRow.flash_method === 'unsupported'" type="warning" :closable="false" show-icon style="margin-bottom:10px"
+              title="该机型已标记为不支持远程升级，刷机入口将返回 FLASH_UNSUPPORTED" />
             <el-form-item label="硬件 FPU"><el-switch v-model="ptCreateRow.has_fpu" /></el-form-item>
             <el-form-item label="允许不完整"><el-checkbox v-model="ptAllowIncomplete">允许不完整（仅测试）</el-checkbox></el-form-item>
             <el-form-item label="备注" class="pt-full"><el-input v-model="ptCreateRow.notes" type="textarea" :rows="2" placeholder="其他备注" /></el-form-item>

@@ -51,11 +51,17 @@ class ProductType(Base):
     sdk_repo_cmd: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     build_cmd: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    jenkins_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # v0.14：固件策略。db_project_name 对应 DB 服务器 Daily/XOS/<name>/；
+    # 升级方式：db=DB 目录（xosadb2update）；image=编译机镜像；unsupported=不支持远程升级
+    flash_method: Mapped[str] = mapped_column(
+        String(16), default="db", server_default="db", nullable=False
+    )
+    # DB 版本特征关键字 JSON 数组（AND）：如 ["4M","release"]，过滤版本目录/包名
+    feature_filter: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # v0.14：固件策略。db_project_name 可填工程名 / 相对路径 / 完整 URL / 局域网地址
+    # （保存前经 db_source.normalize_project_spec 归一化）；
     # required_* 为最低可分配版本（0 = 不强制），对应 semver X.Y.Z。
-    db_project_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    db_project_name: Mapped[str | None] = mapped_column(String(512), nullable=True)
     required_major: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
