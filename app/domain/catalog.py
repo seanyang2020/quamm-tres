@@ -372,6 +372,58 @@ def _eng_config_dict(d: Device) -> dict | None:
         return None
 
 
+def _batch_active_leases(session: Session) -> dict[str, dict]:
+    """一次查出所有活跃租约扁平字段：device_id → {holder_email, lease_id, ...}。"""
+    from app.models import Principal
+
+    rows = (
+        session.query(
+            Lease.device_id,
+            Lease.lease_id,
+            Lease.state,
+            Lease.expires_at,
+            Principal.email,
+        )
+        .join(Principal, Principal.id == Lease.principal_id)
+        .filter(Lease.state.in_(LeaseState.ACTIVE))
+        .all()
+    )
+    out: dict[str, dict] = {}
+    for device_id, lease_id, state, expires_at, email in rows:
+        out[device_id] = {
+            "holder_email": email,
+            "lease_id": lease_id,
+            "lease_expires_at": expires_at.isoformat() if expires_at else None,
+            "lease_state": state,
+        }
+    return out
+
+
+def _active_lease_for_device(session: Session, device_id: str) -> dict | None:
+    from app.models import Principal
+
+    row = (
+        session.query(
+            Lease.lease_id,
+            Lease.state,
+            Lease.expires_at,
+            Principal.email,
+        )
+        .join(Principal, Principal.id == Lease.principal_id)
+        .filter(Lease.device_id == device_id, Lease.state.in_(LeaseState.ACTIVE))
+        .first()
+    )
+    if row is None:
+        return None
+    lease_id, state, expires_at, email = row
+    return {
+        "holder_email": email,
+        "lease_id": lease_id,
+        "lease_expires_at": expires_at.isoformat() if expires_at else None,
+        "lease_state": state,
+    }
+
+
 def _public_device(
     d: Device,
     session: Session,
@@ -379,11 +431,15 @@ def _public_device(
     holder_email: str | None = None,
     serial_stats: tuple[bool, int] | None = None,
     capabilities_summary: dict | None = None,
+    lease_info: dict | None = None,
+    viewer_email: str | None = None,
 ) -> dict:
     """设备公开视图；for_agent=True 时脱敏（不给占用人身份，见 11 §7.5）。
 
     serial_stats: 可选预计算 (serial_openable, serial_ports)，列表接口批量传入避免 N+1。
     capabilities_summary: 可选预计算能力摘要（由 build_summaries 批量生成）。
+    lease_info: Web 视图活跃租约扁平字段（holder_email/lease_id/...）；detail 与 list 同源。
+    viewer_email: 当前登录者，用于 lease_is_mine。
     """
     allow_suspect = bool(get_runtime_value(session, "allow_apply_when_suspect"))
     from app.domain import consistency
@@ -391,6 +447,16 @@ def _public_device(
     if serial_stats is None:
         stats_map = _batch_serial_stats(session, [d.device_id])
         serial_stats = stats_map.get(d.device_id, (False, 0))
+
+    li = lease_info or {}
+    # 兼容旧调用只传 holder_email
+    resolved_holder = holder_email if holder_email is not None else li.get("holder_email")
+    lease_id = li.get("lease_id")
+    lease_expires_at = li.get("lease_expires_at")
+    lease_state = li.get("lease_state")
+    lease_is_mine = bool(
+        resolved_holder and viewer_email and resolved_holder == viewer_email
+    ) if (resolved_holder or viewer_email) else False
 
     data = {
         "device_id": d.device_id,
@@ -407,7 +473,12 @@ def _public_device(
         "last_probe_at": d.last_probe_at.isoformat() if d.last_probe_at else None,
         "share_scope": d.share_scope or "shared",
         "locked": bool(d.locked),
-        "holder_email": holder_email,
+        # Agent 视图脱敏：不暴露占用者 / 租约细节
+        "holder_email": None if for_agent else resolved_holder,
+        "lease_id": None if for_agent else lease_id,
+        "lease_expires_at": None if for_agent else lease_expires_at,
+        "lease_state": None if for_agent else lease_state,
+        "lease_is_mine": False if for_agent else lease_is_mine,
         # 只读派生：设备中心「串口」按钮灰显用；不落库
         "serial_openable": bool(serial_stats[0]),
         "serial_ports": int(serial_stats[1]),
@@ -453,6 +524,7 @@ def list_devices(
     limit: int = 100,
     for_agent: bool = True,
     claimable_only: bool = False,
+    viewer_email: str | None = None,
 ) -> list[dict]:
     q = session.query(Device)
     if model_class:
@@ -471,25 +543,19 @@ def list_devices(
             if is_claimable(d.status, d.health_level, allow_suspect) and not d.locked
         ]
     devices = devices[:limit]
-    holders: dict[str, str] = {}
+    lease_map: dict[str, dict] = {}
     if not for_agent:
-        # Web 视图展示"当前占用者"（活跃租约的 principal 邮箱），便于看清谁占着。
-        from app.models import Lease, Principal
-        from app.constants import LeaseState
-        rows = (
-            session.query(Lease.device_id, Principal.email)
-            .join(Principal, Principal.id == Lease.principal_id)
-            .filter(Lease.state.in_(LeaseState.ACTIVE))
-            .all()
-        )
-        holders = {dev_id: email for dev_id, email in rows}
+        # Web 视图：活跃租约扁平字段（list/detail 同源，不再用 owner 代理）
+        lease_map = _batch_active_leases(session)
     serial_map = _batch_serial_stats(session, [d.device_id for d in devices])
     return [
         _public_device(
             d,
             session,
             for_agent=for_agent,
-            holder_email=holders.get(d.device_id),
+            holder_email=(lease_map.get(d.device_id) or {}).get("holder_email"),
+            lease_info=lease_map.get(d.device_id),
+            viewer_email=viewer_email,
             serial_stats=serial_map.get(d.device_id, (False, 0)),
         )
         for d in devices
@@ -521,11 +587,24 @@ def list_positions(session: Session) -> list[dict]:
     return sorted(rows, key=lambda r: (r["position_code"] is None, r["position_code"] or ""))
 
 
-def device_info(session: Session, device_id: str, for_agent: bool = True) -> dict:
+def device_info(
+    session: Session,
+    device_id: str,
+    for_agent: bool = True,
+    viewer_email: str | None = None,
+) -> dict:
     d = session.get(Device, device_id)
     if d is None:
         raise DomainError("NOT_FOUND", f"device {device_id} not found")
-    return _public_device(d, session, for_agent=for_agent)
+    lease_info = None if for_agent else _active_lease_for_device(session, device_id)
+    return _public_device(
+        d,
+        session,
+        for_agent=for_agent,
+        holder_email=(lease_info or {}).get("holder_email"),
+        lease_info=lease_info,
+        viewer_email=viewer_email,
+    )
 
 
 # ---------- v0.28：已注册设备手动探测（单体 / 批量待检·离线） ----------
@@ -1318,4 +1397,12 @@ def device_update(
         device_id=d.device_id, detail={"fields": sorted(changes.keys())},
     )
     session.commit()
-    return _public_device(d, session, for_agent=False)
+    lease_info = _active_lease_for_device(session, d.device_id)
+    return _public_device(
+        d,
+        session,
+        for_agent=False,
+        holder_email=(lease_info or {}).get("holder_email"),
+        lease_info=lease_info,
+        viewer_email=actor_email,
+    )

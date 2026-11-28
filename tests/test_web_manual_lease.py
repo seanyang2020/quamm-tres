@@ -89,6 +89,19 @@ def test_web_apply_granted_occupies_device(client, session, db):
     row = next(x for x in devices.json() if x["device_id"] == "dev_web_lease_a")
     assert row["status"] == DeviceStatus.OCCUPIED
     assert row["holder_email"] == "user01@corp.com"
+    assert row["lease_id"] == lease["lease_id"]
+    assert row["lease_state"] in LeaseState.ACTIVE
+    assert row["lease_expires_at"]
+    assert row["lease_is_mine"] is True
+
+    detail = client.get("/api/devices/dev_web_lease_a", cookies=cookies)
+    assert detail.status_code == 200, detail.text
+    dbody = detail.json()
+    assert dbody["holder_email"] == "user01@corp.com"
+    assert dbody["lease_id"] == lease["lease_id"]
+    assert dbody["lease_is_mine"] is True
+    assert dbody["lease_expires_at"]
+    assert dbody["lease_state"] in LeaseState.ACTIVE
 
     leases = client.get("/api/leases", cookies=cookies)
     assert leases.status_code == 200

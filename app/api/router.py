@@ -317,10 +317,16 @@ def devices(
     model_class: str | None = None,
     status: str | None = None,
     limit: int = 500,
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
     session: Session = Depends(get_session),
 ):
     rows = catalog.list_devices(
-        session, model_class=model_class, status=status, limit=limit, for_agent=False
+        session,
+        model_class=model_class,
+        status=status,
+        limit=limit,
+        for_agent=False,
+        viewer_email=(identity.email if identity else None),
     )
     # 轻量串口能力标记（含 power_n/log_n）；失败不阻断列表
     try:
@@ -351,9 +357,18 @@ def config_audit(session: Session = Depends(get_session)):
 
 
 @router.get("/devices/{device_id}")
-def device_detail(device_id: str, session: Session = Depends(get_session)):
+def device_detail(
+    device_id: str,
+    identity: web_auth.WebIdentity | None = Depends(web_auth.optional_identity),
+    session: Session = Depends(get_session),
+):
     try:
-        return catalog.device_info(session, device_id, for_agent=False)
+        return catalog.device_info(
+            session,
+            device_id,
+            for_agent=False,
+            viewer_email=(identity.email if identity else None),
+        )
     except catalog.DomainError as e:
         raise HTTPException(status_code=404, detail=e.message)
 

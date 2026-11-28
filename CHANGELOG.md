@@ -3,6 +3,13 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.22] - 2026-11-28
+
+### 修复：设备 list/detail 注入真实租约扁平字段
+- `holder_email` / `lease_id` / `lease_expires_at` / `lease_state` / `lease_is_mine`
+  在 list 与 detail 同源注入；detail 不再缺租约字段。
+- 前缀 `lease_*` 避免与调度行 `email`/`expires_at` 混用；不再用 `owner` 当租约代理。
+
 ## [0.54.21] - 2026-11-28
 
 ### 功能：Web 人工短租 + 执行路径强制租约门禁
