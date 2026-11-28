@@ -3,6 +3,21 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.19] - 2026-11-28
+
+### 修复：COMRes 指纹 MAC 归一化匹配 + 串口添加设备三项问题
+- COMRes 指纹匹配：MAC 归一化（冒号/无冒号视为同一身份，12 位 hex 键），排除 retired 设备；
+  已绑 retired 的心跳强制重绑，不再抛 MultipleResultsFound（157a4e2 主体，随本版一并发布）。
+- 串口添加（添加设备 → UART）三项修复：
+  1. 已绑定端口不再被前端静默过滤，保留行并灰显，备注列显示「已绑定 名称/状态」，
+     retired 标注「绑定已失效（retired），可解绑后重加」，提供「查看设备」与「解绑」入口。
+  2. L3 判据放宽：自动探测的 ok 指纹（identity 含 mac/sn/ip 任一）也可建机，
+     前后端同步（`serialLevel()` 与 `create_device_from_binding` 门禁），
+     不再要求 `verdict == 'manual_probe' && probe.level == 'L3'`。
+  3. 残留假指纹防误加：verdict=partial 或 net 段所有网卡 DOWN / MAC 全
+     00:00:00:00:00:00 时按 L2 拒绝；自动探测来源的指纹在选择时提示
+     「该指纹来自自动探测（非手动探测），请确认当前接的就是这台设备」。
+
 ## [0.54.17] - 2026-11-28
 
 ### 修复：/opt 只读 release 下 DB 升级报 Permission denied

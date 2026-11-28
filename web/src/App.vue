@@ -409,7 +409,7 @@ async function loadSerialAddResources() {
   serialAddLoading.value = true
   try {
     const r = await api('/api/wirelog/serial-resources')
-    serialAddResources.value = (r.resources || []).filter((x) => !x.bound_device_id)
+    serialAddResources.value = (r.resources || [])
   } catch (e) { ElMessage.error('读取串口资源失败：' + String(e.message || e)) }
   finally { serialAddLoading.value = false }
 }
@@ -435,13 +435,23 @@ function serialQualified(row) {
   return serialLevel(row) === 'L3'
 }
 
+// 残留假指纹：verdict=partial，或 net 段所有网卡 DOWN / MAC 全 00:00:00:00:00:00
+function serialFingerprintFake(row) {
+  const p = row.probe || {}
+  if (p.verdict === 'partial') return true
+  const nics = Array.isArray(p.net) ? p.net.filter((n) => n && typeof n === 'object') : []
+  if (!nics.length) return false
+  const zero = ['', '00:00:00:00:00:00', 'ff:ff:ff:ff:ff:ff']
+  const allDown = nics.every((n) => !n.up)
+  const allZero = nics.every((n) => zero.includes(String(n.mac || '').trim().toLowerCase()))
+  return allDown || allZero
+}
+
 function serialLevel(row) {
   const p = row.probe || {}
   const id = (p.identity || {})
-  if (p.verdict === 'manual_probe' && (p.probe || {}).level === 'L3'
-      && (id.mac || id.sn || id.ip)) {
-    return 'L3'
-  }
+  if (serialFingerprintFake(row)) return serialReady(row) ? 'L2' : 'L0'
+  if (id.mac || id.sn || id.ip) return serialReady(row) ? 'L3' : 'L0'
   return serialReady(row) ? 'L2' : 'L0'
 }
 
@@ -467,6 +477,10 @@ async function probeSerialResource(row) {
 }
 
 function onSerialRowClick(row) {
+  if (row.bound_device_id) {
+    ElMessage.info('该串口已绑定设备：' + serialBoundRemark(row))
+    return
+  }
   if (!serialQualified(row)) {
     ElMessage.info('该串口未达 L3，先点「探测」补齐指纹')
     return
@@ -474,10 +488,43 @@ function onSerialRowClick(row) {
   pickSerialResource(row)
 }
 
+function serialBoundRemark(row) {
+  const dev = row.bound_device || {}
+  const name = dev.display_name || dev.device_id || row.bound_device_id
+  return dev.status === 'retired'
+    ? `绑定已失效（retired）：${name}，可解绑后重加`
+    : `已绑定 ${name}/${dev.status || 'unknown'}`
+}
+
+async function unbindSerialSlot(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定解绑 ${row.node_name || row.node_id} · ${row.com_name || row.tty_name || ('COM' + row.slot)}`
+        + `（${serialBoundRemark(row)}）？`,
+      '解绑确认', { type: 'warning' })
+  } catch { return }
+  try {
+    await api(`/api/wirelog/nodes/${row.node_id}/slots/${row.slot}/detach`,
+      { method: 'POST' })
+    ElMessage.success('已解绑')
+    await loadSerialAddResources()
+  } catch (e) {
+    ElMessage.error('解绑失败：' + String(e.message || e))
+  }
+}
+
 function pickSerialResource(row) {
+  if (row.bound_device_id) {
+    ElMessage.warning('该串口已绑定设备，不能重复添加：' + serialBoundRemark(row))
+    return
+  }
   if (!serialQualified(row)) {
     ElMessage.warning('该串口未达 L3（需可达且取到 MAC/SN/IP），不能添加')
     return
+  }
+  const p = row.probe || {}
+  if (p.verdict !== 'manual_probe') {
+    ElMessage.warning('该指纹来自自动探测（非手动探测），请确认当前接的就是这台设备')
   }
   const id = serialIdentity(row)
   serialAddPick.value = row
@@ -7744,6 +7791,7 @@ const legendRole = [
             </div>
             <el-table :data="serialAddResources" border size="small" max-height="320"
                       v-loading="serialAddLoading" style="width:100%"
+                      :row-class-name="({ row }) => row.bound_device_id ? 'serial-row-bound' : ''"
                       :row-style="{ cursor: 'pointer' }" @row-click="onSerialRowClick">
               <el-table-column label="日志机/路" min-width="150">
                 <template #default="{ row }">
@@ -7771,15 +7819,28 @@ const legendRole = [
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="操作" width="150">
+              <el-table-column label="备注" min-width="160">
                 <template #default="{ row }">
-                  <el-button size="small" link type="primary"
-                             :loading="serialProbingKey === (row.node_id + ':' + row.slot)"
-                             :disabled="!!serialProbingKey"
-                             @click.stop="probeSerialResource(row)">探测</el-button>
-                  <el-button size="small" link type="primary"
-                             :disabled="!serialQualified(row)"
-                             @click.stop="pickSerialResource(row)">选择</el-button>
+                  <template v-if="row.bound_device_id">
+                    <div>{{ serialBoundRemark(row) }}</div>
+                  </template>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="200">
+                <template #default="{ row }">
+                  <el-button v-if="row.bound_device_id" size="small" link type="primary"
+                             @click.stop="jumpToDevice(row.bound_device_id)">查看设备</el-button>
+                  <el-button v-if="row.bound_device_id" size="small" link type="danger"
+                             @click.stop="unbindSerialSlot(row)">解绑</el-button>
+                  <template v-else>
+                    <el-button size="small" link type="primary"
+                               :loading="serialProbingKey === (row.node_id + ':' + row.slot)"
+                               :disabled="!!serialProbingKey"
+                               @click.stop="probeSerialResource(row)">探测</el-button>
+                    <el-button size="small" link type="primary"
+                               :disabled="!serialQualified(row)"
+                               @click.stop="pickSerialResource(row)">选择</el-button>
+                  </template>
                 </template>
               </el-table-column>
             </el-table>
@@ -8147,6 +8208,10 @@ const legendRole = [
 </template>
 
 <style>
+.serial-row-bound {
+  color: var(--el-text-color-disabled);
+  background: var(--el-fill-color-lighter);
+}
 .wl-config-bar {
   display: flex;
   align-items: center;

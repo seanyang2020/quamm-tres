@@ -11,7 +11,6 @@ import json
 import secrets
 import time
 
-from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -863,6 +862,17 @@ def _json_or_none(raw):
         return raw
 
 
+def _fp_net_all_down(net) -> bool:
+    """net 段所有网卡 DOWN 或 MAC 全 00:00:00:00:00:00 → 残留假指纹（按 L2 处理）。"""
+    nics = [n for n in (net or []) if isinstance(n, dict)]
+    if not nics:
+        return False
+    zero = {"", "00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff"}
+    all_down = all(not n.get("up") for n in nics)
+    all_zero = all(str(n.get("mac") or "").strip().lower() in zero for n in nics)
+    return all_down or all_zero
+
+
 def list_serial_resources(session, node_id=None):
     """串口资源清单：宿主 → 各路串口 → 是否已绑定设备。"""
     q = session.query(WireLogPortBinding)
@@ -934,8 +944,8 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     fp_mac = str(ident.get("mac") or "").strip().lower() or None
     fp_sn = str(ident.get("sn") or "").strip() or None
     fp_ip = str(ident.get("ip") or "").strip() or None
-    use_mac = (str(mac or "").strip().lower() or fp_mac
-               or (str(binding.shell_mac).strip().lower() if binding.shell_mac else None))
+    # 不用 shell_mac 兜底：那是宿主本机网卡，会把宿主 MAC 写成设备 MAC。
+    use_mac = str(mac or "").strip().lower() or fp_mac
     use_sn = str(sn or "").strip() or fp_sn
     use_ip = str(ip or "").strip() or fp_ip or binding.shell_ip
 
@@ -956,20 +966,34 @@ def create_device_from_binding(session, node_id, slot, owner=None,
     if not reachable:
         raise DomainError("SERIAL_NOT_L3",
                           "串口未达到 L3（节点不在线或串口不可达），请先手动探测")
-    manual = probe.get("probe") or {}
-    if probe.get("verdict") != "manual_probe" or manual.get("level") != "L3":
+    # 自动探测（COMRes 上报）与手动探测的 ok 指纹均可建机；只要 identity 有
+    # mac/sn/ip 任一即可。verdict=partial（半截指纹）或 net 段显示所有网卡
+    # DOWN / MAC 全 0 的残留假指纹不算有效身份，按 L2 拒绝。
+    if probe.get("verdict") == "partial" or _fp_net_all_down(probe.get("net")):
         raise DomainError("SERIAL_NOT_L3",
-                          "串口未经过手动探测或探测未达 L3，请先点「探测」")
+                          "串口指纹为 partial/网卡全 DOWN 的残留假指纹，请先手动探测核验")
     if not any((use_mac, use_sn, use_ip)):
         raise DomainError("SERIAL_NOT_L3",
                           "串口未取到 MAC/SN/IP，无法达到 L3；请先手动探测或补身份")
 
     # 同一台设备：按 MAC → SN → IP 命中现有记录就只挂串口，不重复建机。
+    # MAC 与 comres._mac_match_key 对齐（去冒号/横线/空白 → 12 位 hex），
+    # 避免「a0:ac:…」与「A0-AC-…」在串口建机时又新建一条重复设备。
+    from app.domain.comres import _mac_match_key
     existing = None
     if use_mac:
-        existing = (session.query(Device)
-                    .filter(func.lower(Device.mac) == use_mac,
-                            Device.status != DeviceStatus.RETIRED).first())
+        mac_key = _mac_match_key(use_mac)
+        if mac_key:
+            candidates = (
+                session.query(Device)
+                .filter(Device.mac.isnot(None),
+                        Device.status != DeviceStatus.RETIRED)
+                .all()
+            )
+            for cand in candidates:
+                if _mac_match_key(cand.mac) == mac_key:
+                    existing = cand
+                    break
     if existing is None and use_sn:
         existing = (session.query(Device)
                     .filter(Device.sn == use_sn,

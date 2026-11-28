@@ -303,12 +303,54 @@ def _sn_variants(sn: str) -> list[str]:
     return out
 
 
+def _mac_match_key(value: str | None) -> str | None:
+    """MAC 匹配键：小写并去掉 ``:`` / ``-`` / 空白 → 12 位 hex。
+
+    与 ``serial_probe._norm_mac``（保留冒号）语义不同，专用于设备指纹比对。
+    """
+    if not value:
+        return None
+    key = re.sub(r"[:\-\s]", "", str(value).strip().lower())
+    if re.fullmatch(r"[0-9a-f]{12}", key):
+        return key
+    return None
+
+
+def _device_by_mac_key(session: Session, mac_key: str | None) -> "Device | None":
+    """按归一化 MAC 键命中非 retired 设备；多行时取首条（不抛 MultipleResultsFound）。"""
+    if not mac_key:
+        return None
+    rows = (
+        session.query(Device)
+        .filter(Device.mac.isnot(None), Device.status != DeviceStatus.RETIRED)
+        .all()
+    )
+    for dev in rows:
+        if _mac_match_key(dev.mac) == mac_key:
+            return dev
+    return None
+
+
 def _device_by_sn(session: Session, sn: str) -> "Device | None":
     for cand in _sn_variants(sn):
-        device = session.query(Device).filter(Device.sn == cand).one_or_none()
+        device = (
+            session.query(Device)
+            .filter(Device.sn == cand, Device.status != DeviceStatus.RETIRED)
+            .first()
+        )
         if device is not None:
             return device
     return None
+
+
+def _device_by_ip(session: Session, ip: str) -> "Device | None":
+    if not ip:
+        return None
+    return (
+        session.query(Device)
+        .filter(Device.ip == ip, Device.status != DeviceStatus.RETIRED)
+        .first()
+    )
 
 
 def _sn_taken_by_other(session: Session, sn: str, device: "Device") -> bool:
@@ -327,18 +369,21 @@ def _match_device(session: Session, port: dict, local_ip: str | None):
     候选顺序：fingerprint.identity.mac → port.mac/shell_mac → identity.sn →
     port.sn → identity.ip / port.ip / shell_ip / local_ip / endpoint host。
     来自 fingerprint.identity 的命中 basis 为 fp_mac / fp_sn / fp_ip。
+    所有候选排除 status=retired；MAC 两侧统一 ``_mac_match_key`` 归一化。
     """
     ident = _fp_identity(port)
 
-    fp_mac = (ident.get("mac") or "").strip().lower()
-    if fp_mac:
-        device = session.query(Device).filter(Device.mac.ilike(fp_mac)).one_or_none()
+    fp_mac_raw = (ident.get("mac") or "").strip()
+    fp_mac_key = _mac_match_key(fp_mac_raw)
+    if fp_mac_key:
+        device = _device_by_mac_key(session, fp_mac_key)
         if device is not None:
             return device, "fp_mac"
 
-    mac = (port.get("mac") or port.get("shell_mac") or "").strip().lower()
-    if mac and mac != fp_mac:
-        device = session.query(Device).filter(Device.mac.ilike(mac)).one_or_none()
+    mac_raw = (port.get("mac") or port.get("shell_mac") or "").strip()
+    mac_key = _mac_match_key(mac_raw)
+    if mac_key and mac_key != fp_mac_key:
+        device = _device_by_mac_key(session, mac_key)
         if device is not None:
             return device, "mac"
 
@@ -368,13 +413,13 @@ def _match_device(session: Session, port: dict, local_ip: str | None):
 
     # IP 候选：identity.ip 优先（fp_ip），否则 port/local/endpoint（ip）
     if fp_ip:
-        device = session.query(Device).filter(Device.ip == fp_ip).one_or_none()
+        device = _device_by_ip(session, fp_ip)
         if device is not None:
             return device, "fp_ip"
 
     for cand in (port_ip, fallback_ip, endpoint_ip):
         if cand and cand != fp_ip:
-            device = session.query(Device).filter(Device.ip == cand).one_or_none()
+            device = _device_by_ip(session, cand)
             if device is not None:
                 return device, "ip"
 
@@ -815,12 +860,13 @@ def _binding_identity_drifted(session, binding: WireLogPortBinding,
     dev = session.get(Device, binding.bound_device_id)
     if dev is None:
         return False
-    mac = (port.get("mac") or port.get("shell_mac") or "").strip().lower()
+    mac = (port.get("mac") or port.get("shell_mac") or "").strip()
     if not mac:
         ident = _fp_identity(port)
-        mac = (ident.get("mac") or "").strip().lower()
-    if mac:
-        return (dev.mac or "").strip().lower() != mac
+        mac = (ident.get("mac") or "").strip()
+    port_mac_key = _mac_match_key(mac)
+    if port_mac_key:
+        return _mac_match_key(dev.mac) != port_mac_key
     ip = (port.get("ip") or port.get("shell_ip") or "").strip()
     if ip:
         return (dev.ip or "").strip() != ip
@@ -900,8 +946,16 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
 
     # 已有 auto 占位：身份没变才 keep_bound；探到更准的身份（MAC/IP）或换了设备，
     # 必须重新匹配，否则一次弱身份（只剩适配器 SN）会把错误绑定锁死到 TTL 结束。
+    # 已绑 retired 设备时禁止 keep_bound，强制重匹配（否则 drift=false 会短路）。
     prev_device_id = binding.bound_device_id
     drifted = _binding_identity_drifted(session, binding, port)
+    prev_retired = False
+    if prev_device_id:
+        prev_dev = session.get(Device, prev_device_id)
+        prev_retired = (
+            prev_dev is not None
+            and str(prev_dev.status or "") == DeviceStatus.RETIRED
+        )
     sn, mac, _ip = _port_identity(port)
     # 上报方已把「适配器SN」与设备身份分开，但这次没有设备身份：
     # 原绑定若只是 comres-<适配器SN> 占位，说明它是拿桥的SN冒充设备，必须清掉。
@@ -914,6 +968,7 @@ def _apply_auto_match(session, binding: WireLogPortBinding, port: dict,
         and _allocation_marker_active(binding)
         and not drifted
         and not stale_placeholder
+        and not prev_retired
     ):
         _renew_auto_lease_if_needed(binding)
         _retire_orphan_placeholders(session, port.get("usb_serial"))
