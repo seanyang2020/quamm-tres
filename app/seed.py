@@ -114,7 +114,9 @@ def seed_admin(session, rotate: bool = False) -> tuple[str, str] | None:
             email=ADMIN_EMAIL,
             name="管理员",
             employee_no="E000",
-            quota=0,  # 管理员不占配额，靠 is_admin 走管理动作
+            # 管理员不占配额（quota=0）：租约入口 leasing.apply 对 is_admin 豁免配额门禁，
+            # 因此 admin 仍可直接租设备，且不占用普通用户配额。
+            quota=0,
             is_admin=True,
             status="active",
             created_at=now,

@@ -1,27 +1,35 @@
-# t1139 — 进度
+# inner-4405 — 进度
 
-> 任务：普通用户（role=user）可添加设备；机型/设备类型增删改仍仅 admin
-> task_id: t1139
+> 任务：Quamm TRES 租约配额门禁修复：admin 账号可正常申请/租约设备
+> task_id: inner-4405
 > 工作区：`/home/scm/github_gitee/quamm-res`
-> 分支：`feat/capabilities`（HEAD 62cce60 v0.53.0，工作区大量未提交）
+> 分支：当前工作区（HEAD `e927470`，VERSION 0.54.12）
 
 ## 状态：已完成（停住等审）
+
+## 根因
+
+`app/domain/leasing.py` 的 `apply()` 在 ACL 裁决前先查配额，未豁免 admin；`app/seed.py` 中 admin `quota=0`，导致 `0 >= 0` 恒触发 `QUOTA_EXCEEDED`。ACL 层 `can_use_device` 已对 `is_admin` 放行，无问题。
 
 ## 本轮工作
 
 | 项 | 内容 | 状态 |
 |---|---|---|
-| 后端依赖 | probe/register/discover 由 `require_admin` 改 `require_login`，docstring 补 v0.54.5 | ✅ |
-| 未放开 | 截图、probe-batch、删除设备等 admin 接口均未改 | ✅ |
-| 前端按钮 | 概况标题、el-empty、品类详标题、细网格空态四处去除 admin 限制 | ✅ |
-| 机型页 | 「新增机型」按钮保持 `v-if="me.role === 'admin'"` | ✅ |
-| 新测试 | `tests/test_device_add_user.py` 5 例全绿 | ✅ |
-| 版本 | VERSION 0.54.5，CHANGELOG `[0.54.5]` | ✅ |
-| 构建 | `cd web && npm run build` 退出码 0，新 dist `index-5pGRhd4R.js` | ✅ |
-| 禁止项 | 未 commit/push、未重启服务、未改其它仓/文档 | ✅ |
+| 配额门禁 | `apply()` 仅在 `not auth.is_admin` 时检查 `count_active_leases >= principal.quota`；admin 直接进入 ACL/分配 | ✅ |
+| 第二处门禁排查 | 全仓 grep `count_active_leases` / `quota`：仅 `leasing.apply()` 为门禁；`mcp/server.py` 的 `res_whoami` 只读展示；无第二处需豁免 | ✅ |
+| seed 语义 | admin `quota=0` 保留，仅修正注释（admin 不占配额，租约入口豁免） | ✅ |
+| 单测 | `tests/test_quota.py` 新增 admin quota=0 连续租 2 台；原有普通用户超额用例保留 | ✅ |
+| 本机服务 | 重启 `quamm-tres`/`quamm-worker`，`/api/health` = ok / 0.54.12 | ✅ |
+| 实测 | admin Bearer token：`dev_080989bb98` → GRANTED `L-f39793a0a2` → RELEASED；复核 active_leases=0、设备 available | ✅ |
+| 201 部署 | 本机无 SSH 通道，未执行；交付写明离线 bundle + `scripts/deploy-git.sh` | N/A |
 
-## 备注
+## 测试结果
 
-- 进入任务时 `VERSION` 实际为 `0.54.6`（未提交，CHANGELOG 最高仍 0.54.4）。按任务明确目标写为 `0.54.5`，需确认是否与并行任务冲突。
-- MCP：`res_device_probe`/`res_device_register` 本就无 admin 判定（仅 require_auth），与 Web 新语义一致；机型 MCP 工具仍 admin-only。
-- 既有 `tests/test_registration.py` 2 例失败为历史遗留（seed 机型列表为空），与本任务无关。
+- `tests/test_quota.py tests/test_device_acl.py tests/test_credentials_role.py`：`16 passed`（退出码 0）
+- `tests/test_apply_flow.py`：`2 passed, 2 failed`；失败为 v0.17 起 `PRODUCT_TYPES=[]` 导致的既有用例过期（断言 5 个预置机型），与本改动无关
+- 四文件合并：`18 passed, 2 failed`（同上）
+
+## 备注 / 风险
+
+- 未提交、未 push、未部署 201、未改前端/数据库既有记录。
+- `test_apply_flow.py` 的两个产品字典用例在未改动的 HEAD 上同样失败（`seed_product_types` 无预置数据），建议另立任务清理，本次未扩大范围。
