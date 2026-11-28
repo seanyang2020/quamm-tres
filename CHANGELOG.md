@@ -3,6 +3,15 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.17] - 2026-11-28
+
+### 修复：/opt 只读 release 下 DB 升级报 Permission denied
+- 现象：`/opt/quamm-tres/releases/<ver>/var` 写入失败，DB 升级未开始。
+- 原因：`db_source` / `cache_prune` 的 `WORK_ROOT` 按 `__file__` 定位到 release 内 `var/`，
+  旧部署在仓库根可写，迁到 `/opt/quamm-tres/releases/<ver>`（root 0555）后不可写。
+- 修复：`WORK_ROOT` 改为跟随 `RES_DATA_DIR`（生产 `/var/lib/quamm-tres/var`），
+  不再往 release 目录写缓存；`flash` 工作/日志目录由 systemd env 指到 `/var/lib`、`/var/log`。
+
 ## [0.54.16] - 2026-11-28
 
 ### 统一固件升级链路（机型升级方式 + DB 源智能适配 + 特征过滤）

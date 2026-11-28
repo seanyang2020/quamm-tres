@@ -48,7 +48,22 @@ _SIZE_RE = re.compile(
     r'href="([^"]+\.tar\.gz)"[^<]*</a>\s+\S+\s+\S+\s+(\d+)',
     re.IGNORECASE,
 )
-WORK_ROOT = Path(__file__).resolve().parent.parent / "var" / "db_source"
+def _default_work_root() -> Path:
+    """运行时目录：优先 ``settings.data_dir``（部署到 /opt 后 release 目录只读）。
+
+    旧部署在仓库根 ``var/db_source`` 下可写；0.54.x 迁到 /opt 只读 release 后
+    ``Path(__file__).parent.parent / "var"`` 会命中 releases/<ver>/var 导致
+    ``Permission denied``，故统一改到 ``RES_DATA_DIR``（默认 ./var）。
+    """
+    try:
+        from app.config import settings
+        base = Path(settings.data_dir).expanduser()
+    except Exception:
+        base = Path(__file__).resolve().parent.parent / "var"
+    return (base / "db_source").resolve()
+
+
+WORK_ROOT = _default_work_root()
 
 # v0.23.0：xosadb2update 默认路径做成可配置常量（环境变量 XOSADB2UPDATE_PATH 可覆盖）。
 # 不改变 upgrade() 的默认 update_args：仍是 -f -a -e data（保留 data 区，不升级 data 区）。

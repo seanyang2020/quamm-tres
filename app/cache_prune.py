@@ -37,7 +37,17 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 # 与 app/db_source.py 的 WORK_ROOT 保持一致（该模块按 __file__ 定位项目根）
-WORK_ROOT = Path(__file__).resolve().parent.parent / "var" / "db_source"
+def _default_work_root() -> Path:
+    """与 db_source.WORK_ROOT 一致：跟随 RES_DATA_DIR，兼容 /opt 只读 release。"""
+    try:
+        from app.config import settings
+        base = Path(settings.data_dir).expanduser()
+    except Exception:
+        base = Path(__file__).resolve().parent.parent / "var"
+    return (base / "db_source").resolve()
+
+
+WORK_ROOT = _default_work_root()
 EXTRACT_PREFIX = "dbxos_"
 TMP_DBXOS_PREFIX = "dbxos_"
 
