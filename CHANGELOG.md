@@ -3,6 +3,13 @@
 所有值得注意的改动都会记录在此文件。
 版本号唯一真源是根目录 `VERSION` 文件；本文件与 git tag 仅作镜像。
 
+## [0.54.15] - 2026-11-28
+
+### 新增：节点侧问题反馈入口（供 deskserialhub 等 COMRes 节点使用）
+- `POST /api/comres/feedback`，Bearer node_token 鉴权，body `{category, content, agent_label?}`；
+  写入 Agent 反馈列表（管理员在「设置 → Agent 意见」评审），`agent_label` 缺省为 `comres-node:{node_id}`。
+- `feedback.submit_feedback()` 增加 `agent_label` 覆盖参数，MCP `res_feedback` 行为不变。
+
 ## [0.54.14] - 2026-11-28
 
 ### 优化：资源调度「设备」列显示 device_id 并可点击进入设备卡片

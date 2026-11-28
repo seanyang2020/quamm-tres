@@ -285,3 +285,24 @@ def post_maintenance_prune(payload: dict = Body(default={}),
         session, dry_run=dry_run,
         actor=getattr(identity, "email", None) or "admin",
     )
+
+
+@router.post("/feedback")
+def node_feedback(authorization: str | None = Header(default=None),
+                  payload: dict = Body(...),
+                  session: Session = Depends(get_session)):
+    """节点侧提交问题反馈（Bearer node_token），直接进 TRES 反馈列表。
+
+    body: {"category": "bug|improvement|question|praise", "content": "..."}
+    """
+    from app.domain import feedback as fb, wirelog
+
+    token = _bearer(authorization)
+    node = wirelog._auth_node(session, token)
+    return _domain_http(
+        fb.submit_feedback, session,
+        credential=None,
+        category=payload.get("category"),
+        content=payload.get("content"),
+        agent_label=str(payload.get("agent_label") or f"comres-node:{node.node_id}"),
+    )

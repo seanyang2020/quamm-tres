@@ -15,7 +15,8 @@ REVIEW_STATUSES = ("accepted", "rejected", "deferred")
 _MAX_CONTENT = 4000
 
 
-def submit_feedback(db, *, credential=None, category: str, content: str) -> dict:
+def submit_feedback(db, *, credential=None, category: str, content: str,
+                    agent_label: str | None = None) -> dict:
     cat = (category or "").strip().lower()
     if cat not in CATEGORIES:
         raise DomainError("INVALID_CATEGORY", f"category 须为 {', '.join(CATEGORIES)}")
@@ -28,7 +29,7 @@ def submit_feedback(db, *, credential=None, category: str, content: str) -> dict
     row = AgentFeedback(
         feedback_id="fb_" + secrets.token_hex(6),
         credential_id=getattr(credential, "id", None),
-        agent_label=getattr(credential, "agent_label", None),
+        agent_label=(agent_label or getattr(credential, "agent_label", None)),
         category=cat,
         content=text,
         status="pending",
